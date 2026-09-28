@@ -762,157 +762,31 @@ class PaymentService {
     }
   }
 
-  // Mark tenant as paid (creates payment record and updates tenant)
+  /// Mark Paid: record the tenant's payment as received today.
+  ///
+  /// This wrote its own payment doc with status 'paid' and a month-end
+  /// dueDate, which the create rules refuse for everyone but a super admin
+  /// (a client may only create a completed payment dated now), so for an
+  /// owner or manager it failed and nothing was saved. It now goes through
+  /// [recordManualPayment], the Record payment dialog's path: a completed
+  /// payment, a posted ledger line, and paidThrough moved on by the whole
+  /// months [amount] buys (advancePaidThrough).
   static Future<String> markTenantAsPaid({
     required String facilityId,
     required String tenantId,
     required double amount,
     PaymentMethod method = PaymentMethod.cash,
     String? notes,
-  }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) throw Exception('User not authenticated');
-
-      if (kDebugMode) {
-        print('🔄 Marking tenant as paid: $tenantId');
-      }
-
-      // Get tenant information
-      final tenantDoc = await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('tenants')
-          .doc(tenantId)
-          .get();
-
-      if (!tenantDoc.exists) {
-        throw Exception('Tenant not found');
-      }
-
-      final tenantData = tenantDoc.data()!;
-      final tenantName = tenantData['name'] ?? 'Unknown';
-      final unitNumber = tenantData['unitNumber'] ?? '';
-
-      // Advance paidThrough by the whole months this payment actually covers.
-      //
-      // It used to jump to the end of the current month regardless of amount,
-      // so a tenant three months behind who paid $25 was marked paid through
-      // today: isTenantLate went false, the delinquency job skipped them, and
-      // collection stopped on the rest of the debt. Paying six months forward
-      // had the mirror problem, advancing only to this month's end.
-      final now = DateTime.now();
-      final endOfCurrentMonth = DateTime(now.year, now.month + 1, 0);
-      final monthlyRate = (tenantData['monthlyRate'] as num?)?.toDouble() ?? 0.0;
-      final existingPaidThrough = (tenantData['paidThrough'] as Timestamp?)?.toDate();
-
-      final newPaidThrough = advancePaidThrough(
-        amountPaid: amount,
-        monthlyRate: monthlyRate,
-        existingPaidThrough: existingPaidThrough,
-        now: now,
-      );
-
-      // Create payment record
-      final paymentRef = await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('payments')
-          .add({
-        'tenantId': tenantId,
-        'facilityId': facilityId,
-        'tenantName': tenantName,
-        'unitNumber': unitNumber,
-        'amount': amount,
-        'status': 'paid',
-        'paidAt': FieldValue.serverTimestamp(),
-        'paidDate': FieldValue.serverTimestamp(),
-        'dueDate': Timestamp.fromDate(endOfCurrentMonth),
-        'method': method.name,
-        'notes': notes,
-        'contractId': tenantData['contractId'] ?? '',
-        'createdByUid': user.uid,
-        'createdBy': user.uid,
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-        'isActive': true,
-      });
-
-      // Update tenant's paidThrough date, only when a whole month was covered.
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('tenants')
-          .doc(tenantId)
-          .update({
-        if (newPaidThrough != null) 'paidThrough': Timestamp.fromDate(newPaidThrough),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-
-      // Create ledger entry and allocate payment
-      try {
-        // Check if ledger entry already exists for this payment
-        final ledgerEntries = await LedgerService.getLedgerEntries(
-          tenantId: tenantId,
-          facilityId: facilityId,
-        );
-        
-        LedgerEntry? existingEntry;
-        try {
-          existingEntry = ledgerEntries.firstWhere(
-            (e) => e.referenceId == paymentRef.id,
-          );
-        } catch (_) {
-          existingEntry = null;
-        }
-
-        if (existingEntry == null) {
-          // Create ledger entry for this payment
-          await LedgerService.createLedgerEntry(
-            tenantId: tenantId,
-            facilityId: facilityId,
-            type: LedgerEntryType.payment,
-            amount: -amount, // Negative for payments
-            description: 'Payment - ${method.displayName}${notes != null ? ': $notes' : ''}',
-            referenceId: paymentRef.id,
-            entryDate: now,
-            status: LedgerEntryStatus.posted,
-            metadata: {
-              'paymentMethod': method.name,
-              'paymentId': paymentRef.id,
-            },
-          );
-        }
-
-        // Allocate payment to oldest charges
-        await LedgerService.allocatePayment(
-          paymentId: paymentRef.id,
-          tenantId: tenantId,
-          facilityId: facilityId,
-          paymentAmount: amount,
-        );
-      } catch (e) {
-        // Don't fail payment marking if ledger fails
-        if (kDebugMode) {
-          print('⚠️ Error creating/updating ledger entry for payment ${paymentRef.id}: $e');
-        }
-      }
-
-      if (kDebugMode) {
-        print('✅ Tenant marked as paid successfully: $tenantId');
-        print('✅ Payment record created: ${paymentRef.id}');
-        print(newPaidThrough != null
-            ? '✅ Tenant paidThrough updated to: $newPaidThrough'
-            : '✅ Payment recorded; paidThrough unchanged (less than one month)');
-      }
-
-      return paymentRef.id;
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ Error marking tenant as paid: $e');
-      }
-      rethrow;
-    }
+    String? reference,
+  }) {
+    return recordManualPayment(
+      facilityId: facilityId,
+      tenantId: tenantId,
+      amount: amount,
+      method: method,
+      notes: notes,
+      reference: reference,
+    );
   }
 
   // Helper method to update tenant's paidThrough date
