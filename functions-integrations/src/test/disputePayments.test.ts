@@ -9,8 +9,9 @@
  * dispute's id onto the PaymentIntent and the ledger row
  * (metadata.disputeId), so the payment nets against the dispute.
  *
- * Runs the deployed chargeTenantOffSession callable and the deployed webhook
- * dispatch against an in-memory Firestore and a recording Stripe client.
+ * Runs the deployed chargeTenantOffSession and processRefund callables and the
+ * deployed webhook dispatch against an in-memory Firestore and a recording
+ * Stripe client.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,6 +20,7 @@ import { buildPublicLinkPaymentIntentMetadata, getStripeClient, splitLedgerBalan
 import type { FakeFirestore } from '@sfc/functions-shared/testing/fakeFirestore';
 import { dispatchStripeWebhookEvent } from '../stripeWebhook';
 import { chargeTenantOffSession } from '../stripeFacilityOffSessionCharge';
+import { processRefund } from '../stripeFacilityProcessRefund';
 import { ACCOUNT, event, LEDGERS, setup, TOKEN } from './support/webhookFakes';
 
 const OWNER = 'owner_uid';
@@ -66,6 +68,9 @@ function stripeCharges(): Created[] {
 }
 
 const charge = (chargeTenantOffSession as unknown as {
+  run: (data: unknown, context: unknown) => Promise<Record<string, unknown>>;
+}).run;
+const refund = (processRefund as unknown as {
   run: (data: unknown, context: unknown) => Promise<Record<string, unknown>>;
 }).run;
 const staff = { auth: { uid: OWNER }, app: { appId: 'test' } };
@@ -167,5 +172,35 @@ test('refunding a dispute payment reopens the dispute and leaves rent alone', as
   assert.equal((row.metadata as Record<string, unknown>).disputeId, 'du_1');
   // Before: the refund's +100 was collectible, so autopay charged the
   // refunded dispute money back to the card along with April.
+  assert.deepEqual(split(fake), { total: 200, disputed: 100, collectible: 100 });
+});
+
+test('a card refund of a dispute payment made from the app is tagged too', async () => {
+  const { fake, stripe } = lostDispute();
+  const created = stripeCharges();
+  await charge(
+    { facilityId: 'f1', tenantId: 't1', paymentMethodId: 'pm_1', amount: 100, disputeId: 'du_1' },
+    staff,
+  );
+  stripe.put(ACCOUNT, 'pi_hand_1', {
+    id: 'pi_hand_1',
+    object: 'payment_intent',
+    amount: 10000,
+    status: 'succeeded',
+    latest_charge: 'ch_hand_1',
+    metadata: created[0].params.metadata,
+  });
+  const client = getStripeClient() as unknown as Record<string, Record<string, unknown>>;
+  client.refunds.create = async () => ({ id: 're_hand_1', amount: 10000, status: 'succeeded' });
+
+  // processRefund writes the same refund_{id} row the webhook does, without
+  // merge, so whichever lands last must carry the dispute id.
+  const result = await refund(
+    { facilityId: 'f1', tenantId: 't1', amount: 100, refundMethod: 'creditCard', referenceId: 'pi_hand_1' },
+    staff,
+  );
+
+  assert.equal(result.success, true);
+  assert.equal((fake.read(`${LEDGERS}/refund_re_hand_1`)!.metadata as Record<string, unknown>).disputeId, 'du_1');
   assert.deepEqual(split(fake), { total: 200, disputed: 100, collectible: 100 });
 });
