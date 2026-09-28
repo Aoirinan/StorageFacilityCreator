@@ -115,6 +115,108 @@ export function resolveLateFee(params: {
   return Math.round(fee * 100) / 100;
 }
 
+/**
+ * Whether the job may charge late fees for this facility.
+ *
+ * Off unless the operator switched it on. This read `!== false`, so a
+ * facility whose billingSettings had a late fee amount but no
+ * enableAutoLateFees field (every facility set up through the edit screen or
+ * an import) was charged automatically without ever being asked. Customer
+ * facing automations default off; the switch in the app reads the same way.
+ */
+export function autoLateFeesEnabled(billingSettings: Record<string, unknown> | null | undefined): boolean {
+  return billingSettings?.enableAutoLateFees === true;
+}
+
+export interface DelinquencyThresholds {
+  noticeDays: number;
+  finalNoticeDays: number;
+  lienDays: number;
+  lockoutDays: number;
+}
+
+/** The delinquencyStatus a tenant this many days late is stamped with, or null. */
+export function delinquencyStatusFor(daysLate: number, rules: DelinquencyThresholds): string | null {
+  if (daysLate >= rules.lockoutDays) return 'lockout';
+  if (daysLate >= rules.lienDays) return 'lien';
+  if (daysLate >= rules.finalNoticeDays) return 'final_notice';
+  if (daysLate >= rules.noticeDays) return 'late';
+  return null;
+}
+
+export type DelinquencyFlagPlan =
+  | { action: 'stamp'; status: string; lienEligible: boolean }
+  | { action: 'skipNoPaidThrough' }
+  | { action: 'none' };
+
+/**
+ * What the job does to delinquencyStatus / lienEligibleDate for a tenant it
+ * found late with a balance.
+ *
+ * A tenant with no paidThrough is not stamped. Their lateness would be a guess
+ * from createdAt (createdAt + 30 days), and createdAt is when the record was
+ * made, not when they last paid: every tenant imported from a paper ledger
+ * would read as 45+ days late six weeks after the import and be flagged for
+ * lockout and lien whether or not they had paid. The job logs them instead.
+ */
+export function planDelinquencyFlags(params: {
+  hasPaidThrough: boolean;
+  daysLate: number;
+  rules: DelinquencyThresholds;
+}): DelinquencyFlagPlan {
+  const status = delinquencyStatusFor(params.daysLate, params.rules);
+  if (!status) return { action: 'none' };
+  if (!params.hasPaidThrough) return { action: 'skipNoPaidThrough' };
+  return { action: 'stamp', status, lienEligible: params.daysLate >= params.rules.lienDays };
+}
+
+/** A lien doc (facilities/{id}/liens) that is still in force. */
+export function isActiveLien(lien: Record<string, unknown> | null | undefined): boolean {
+  if (!lien) return false;
+  // LienService soft-deletes with isActive: false, and moves status to
+  // 'resolved' or 'cancelled' when the lien ends. A doc with no status was
+  // written before the field existed: treat it as active, the safe side.
+  if (lien.isActive === false) return false;
+  const status = lien.status;
+  return status === undefined || status === null || status === 'active';
+}
+
+export type DelinquencyClearPlan =
+  | { action: 'clear' }
+  | { action: 'keep'; reason: 'noFlags' | 'stillLate' | 'owes' | 'activeLien' };
+
+/**
+ * Whether the job clears a tenant's delinquencyStatus and lienEligibleDate.
+ *
+ * Nothing used to clear them, so a tenant who caught up stayed flagged for
+ * lockout or lien forever. They are cleared once the tenant is no longer late
+ * (paidThrough past the grace boundary, or no paidThrough to measure from)
+ * and owes nothing. A tenant with an active lien doc keeps them: the lien is
+ * a legal process the operator started and ends by resolving or cancelling
+ * it, and the flag should not disappear under it.
+ */
+export function planDelinquencyClear(params: {
+  hasFlags: boolean;
+  lateByPaidThrough: boolean;
+  balance: number;
+  hasActiveLien: boolean;
+}): DelinquencyClearPlan {
+  if (!params.hasFlags) return { action: 'keep', reason: 'noFlags' };
+  if (params.lateByPaidThrough) return { action: 'keep', reason: 'stillLate' };
+  if (params.balance > 0) return { action: 'keep', reason: 'owes' };
+  if (params.hasActiveLien) return { action: 'keep', reason: 'activeLien' };
+  return { action: 'clear' };
+}
+
+/** True when the tenant doc carries either flag this job writes. */
+export function hasDelinquencyFlags(tenant: Record<string, unknown>): boolean {
+  const status = tenant.delinquencyStatus;
+  return (
+    (typeof status === 'string' && status.trim() !== '') ||
+    (tenant.lienEligibleDate !== undefined && tenant.lienEligibleDate !== null)
+  );
+}
+
 export const processDelinquencyAutomation = functions.runWith({ secrets: SENDGRID_SECRETS }).pubsub
   .schedule('0 3 * * *')
   .timeZone('UTC')
@@ -251,7 +353,7 @@ async function processDelinquencyForFacility(
       finalNoticeDays: billingSettings.finalNoticeDays || 14,
       lienDays: billingSettings.lienDays || 30,
       lockoutDays: billingSettings.lockoutDays || 45,
-      enableAutoLateFees: billingSettings.enableAutoLateFees !== false,
+      enableAutoLateFees: autoLateFeesEnabled(billingSettings),
       enableAutoNotices: noticeSettings.enabled && noticeSettings.email,
       enableAutoLockout: billingSettings.enableAutoLockout === true,
     };
@@ -290,26 +392,12 @@ async function processDelinquencyForFacility(
         const graceBoundary = new Date(startOfMonth);
         graceBoundary.setDate(graceBoundary.getDate() - rules.gracePeriodDays);
 
-        const isLate = !paidThrough || paidThrough < graceBoundary;
-        
-        if (!isLate) {
-          continue; // Skip non-delinquent tenants
-        }
-
-        const daysLate = calculateDaysLate({
-          now,
-          paidThrough,
-          createdAt: tenantData.createdAt?.toDate?.() ?? null,
-          gracePeriodDays: rules.gracePeriodDays,
-        });
-
-        // Get ledger balance
-        const ledgerSnapshot = await admin.firestore()
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('ledgers')
-          .where('tenantId', '==', tenantId)
-          .get();
+        // Late by paidThrough. A tenant with no paidThrough is still looked at
+        // below (late fees and notices, both opt-in, measure them from
+        // createdAt), but is never stamped delinquent: see planDelinquencyFlags.
+        const lateByPaidThrough = !!paidThrough && paidThrough < graceBoundary;
+        const isLate = !paidThrough || lateByPaidThrough;
+        const hasFlags = hasDelinquencyFlags(tenantData);
 
         // Ledger entries are signed: charges positive, payments and credits
         // negative. This loop used to SUBTRACT the amount for payments and
@@ -322,14 +410,85 @@ async function processDelinquencyForFacility(
         //
         // Only `posted` entries count, matching sumLedgerBalance and the Dart
         // ledger service; `pending` rows are not yet real money.
-        const balance = sumLedgerBalance(
-          ledgerSnapshot.docs
-            .map((entry) => entry.data())
-            .filter((entryData) => entryData.status === 'posted'),
-        );
+        const readBalance = async (): Promise<number> => {
+          const ledgerSnapshot = await admin.firestore()
+            .collection('facilities')
+            .doc(facilityId)
+            .collection('ledgers')
+            .where('tenantId', '==', tenantId)
+            .get();
+          return sumLedgerBalance(
+            ledgerSnapshot.docs
+              .map((entry) => entry.data())
+              .filter((entryData) => entryData.status === 'posted'),
+          );
+        };
+
+        // Clears delinquencyStatus / lienEligibleDate from a tenant who has
+        // caught up. Nothing used to, so a flag once written stayed forever.
+        const clearFlagsIfCaughtUp = async (balance: number): Promise<void> => {
+          if (!hasFlags) return;
+          let hasActiveLien = false;
+          if (balance <= 0 && !lateByPaidThrough) {
+            const liensSnapshot = await admin.firestore()
+              .collection('facilities')
+              .doc(facilityId)
+              .collection('liens')
+              .where('tenantId', '==', tenantId)
+              .get();
+            hasActiveLien = liensSnapshot.docs.some((lien) => isActiveLien(lien.data()));
+          }
+          const plan = planDelinquencyClear({ hasFlags, lateByPaidThrough, balance, hasActiveLien });
+          if (plan.action !== 'clear') {
+            if (plan.reason === 'activeLien') {
+              functions.logger.info('Delinquency flags kept: tenant has an active lien', {
+                facilityId,
+                tenantId,
+              });
+            }
+            return;
+          }
+          if (dryRun) return;
+          await tenantDoc.ref.update({
+            delinquencyStatus: admin.firestore.FieldValue.delete(),
+            lienEligibleDate: admin.firestore.FieldValue.delete(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          await writeAuditLog(facilityId, {
+            eventType: 'delinquency.flagsCleared',
+            actorUid: 'system',
+            targetType: 'tenant',
+            targetId: tenantId,
+            tenantId,
+            before: {
+              delinquencyStatus: tenantData.delinquencyStatus ?? null,
+              lienEligibleDate: tenantData.lienEligibleDate ?? null,
+            },
+            after: { delinquencyStatus: null, lienEligibleDate: null },
+            metadata: { automated: true, balance, paidThroughSet: !!paidThrough },
+          });
+        };
+
+        if (!isLate) {
+          // Not late: only a tenant still carrying a flag needs a look.
+          if (hasFlags) await clearFlagsIfCaughtUp(await readBalance());
+          continue;
+        }
+
+        const daysLate = calculateDaysLate({
+          now,
+          paidThrough,
+          createdAt: tenantData.createdAt?.toDate?.() ?? null,
+          gracePeriodDays: rules.gracePeriodDays,
+        });
+
+        const balance = await readBalance();
 
         if (balance <= 0) {
-          continue; // Balance is paid
+          // Balance is paid. With no paidThrough there is no lateness to
+          // measure, so a flag left from the old createdAt guess goes too.
+          await clearFlagsIfCaughtUp(balance);
+          continue;
         }
 
         // Apply late fee if needed
@@ -532,27 +691,27 @@ ${facilityData?.name || 'Management Team'}
           }
         }
 
-        // Update tenant delinquency status
-        let delinquencyStatus = '';
-        if (daysLate >= rules.lockoutDays) {
-          delinquencyStatus = 'lockout';
-        } else if (daysLate >= rules.lienDays) {
-          delinquencyStatus = 'lien';
-        } else if (daysLate >= rules.finalNoticeDays) {
-          delinquencyStatus = 'final_notice';
-        } else if (daysLate >= rules.noticeDays) {
-          delinquencyStatus = 'late';
+        // Update tenant delinquency status. Not for a tenant with no
+        // paidThrough: their daysLate is a guess from createdAt.
+        const flagPlan = planDelinquencyFlags({ hasPaidThrough: !!paidThrough, daysLate, rules });
+        if (flagPlan.action === 'skipNoPaidThrough') {
+          functions.logger.info('Delinquency status not set: tenant has no paidThrough', {
+            facilityId,
+            tenantId,
+            daysSinceOnboardingGrace: daysLate,
+            balance,
+          });
         }
 
-        if (delinquencyStatus) {
+        if (flagPlan.action === 'stamp' && !dryRun) {
           await tenantDoc.ref.update({
-            delinquencyStatus: delinquencyStatus,
+            delinquencyStatus: flagPlan.status,
             lastLateFeeDate: admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           });
 
           // Set lien eligible date if applicable
-          if (daysLate >= rules.lienDays) {
+          if (flagPlan.lienEligible) {
             const lienEligibleDate = new Date(now);
             lienEligibleDate.setDate(lienEligibleDate.getDate() - rules.lienDays);
             await tenantDoc.ref.update({
@@ -561,8 +720,11 @@ ${facilityData?.name || 'Management Team'}
           }
         }
 
-        // Trigger lockout if needed
-        if (rules.enableAutoLockout && daysLate >= rules.lockoutDays) {
+        // Trigger lockout if needed. Never for a tenant with no paidThrough,
+        // for the same reason they are not stamped: we cannot tell how late
+        // they are, and turning off someone's gate code on a guess is not
+        // something to do automatically.
+        if (rules.enableAutoLockout && !!paidThrough && daysLate >= rules.lockoutDays) {
           // Disable gate access
           const gateAccessSnapshot = await admin.firestore()
             .collection('facilities')
