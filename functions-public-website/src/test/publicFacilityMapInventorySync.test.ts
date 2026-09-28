@@ -6,6 +6,7 @@ import {
   fitUnitsToDocument,
   readEveryDoc,
   syncPublicFacilityMapInventoryForFacility,
+  syncPublicFacilityMapInventoryOnTenantWrite,
   syncPublicFacilityMapInventoryOnUnitWrite,
 } from '../publicFacilityMapInventorySync';
 import { InMemoryFirestore, installInMemoryFirestore } from './support/inMemoryFirestore';
@@ -270,6 +271,50 @@ test('turning internal use on or off resyncs the public map', async () => {
   installInMemoryFirestore(inMemory);
   await trigger({ ...office, notes: 'a' }, { ...office, notes: 'b' });
   assert.equal(inMemory.read(`publicFacilityMaps/${MAP_SLUG}`)?.inventorySyncedAt, undefined);
+});
+
+test("a unit's area or number before a renumbering changing resyncs the public map", async () => {
+  // Which tenant claims the unit depends on both (isUnitClaimedByActiveTenant).
+  const unit = { unitNumber: '12', status: 'available', unitType: 'standard', area: 'Complex 2' };
+  for (const [field, from, to] of [
+    ['area', 'Complex 2', 'Complex 3'],
+    ['legacyUnitNumber', undefined, 'C2-12'],
+  ] as const) {
+    const inMemory = new InMemoryFirestore();
+    seedPublishedMap(inMemory);
+    installInMemoryFirestore(inMemory);
+
+    // Before: neither was an inventory key, so the change was ignored.
+    await syncPublicFacilityMapInventoryOnUnitWrite.run(unitChange({ ...unit, [field]: from }, { ...unit, [field]: to }), {
+      params: { facilityId: MAP_FACILITY, unitId: 'A2' },
+    });
+
+    assert.ok(inMemory.read(`publicFacilityMaps/${MAP_SLUG}`)?.inventorySyncedAt, field);
+  }
+});
+
+test("a tenant's unitId or unitArea changing resyncs the public map", async () => {
+  const tenant = { name: 'Al', isActive: true, unitNumber: '12' };
+  for (const [field, to] of [
+    ['unitId', 'A2'],
+    ['unitArea', 'Complex 3'],
+  ] as const) {
+    const inMemory = new InMemoryFirestore();
+    seedPublishedMap(inMemory);
+    installInMemoryFirestore(inMemory);
+
+    // Before: only isActive and unitNumber were, so a tenant linked to a unit
+    // by id left the map claiming by number until something else changed.
+    await syncPublicFacilityMapInventoryOnTenantWrite.run(
+      {
+        before: { exists: true, data: () => tenant },
+        after: { exists: true, data: () => ({ ...tenant, [field]: to }) },
+      } as unknown as Parameters<typeof syncPublicFacilityMapInventoryOnTenantWrite.run>[0],
+      { params: { facilityId: MAP_FACILITY, tenantId: 't1' } },
+    );
+
+    assert.ok(inMemory.read(`publicFacilityMaps/${MAP_SLUG}`)?.inventorySyncedAt, field);
+  }
 });
 
 test('a unit type the owner has not opened to online rental is not rentable', async () => {

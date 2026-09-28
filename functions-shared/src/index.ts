@@ -313,8 +313,9 @@ export {
   unitsHeldByTenant,
 } from './tenants/permanentDeleteRules';
 
-export type { UnitNotOfferedReason } from './units/onlineRental';
+export type { ActiveTenantUnitClaims, UnitNotOfferedReason } from './units/onlineRental';
 export {
+  activeTenantUnitClaims,
   enabledOnlineUnitTypes,
   hasTenantLink,
   isArchivedForOnlineRental,
@@ -324,9 +325,8 @@ export {
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
   isUnlistedUnit,
-  readUnitNumbersClaimedByActiveTenants,
+  readActiveTenantUnitClaims,
   unitNotOfferedOnlineReason,
-  unitNumbersClaimedByActiveTenants,
   unitTypeOf,
 } from './units/onlineRental';
 

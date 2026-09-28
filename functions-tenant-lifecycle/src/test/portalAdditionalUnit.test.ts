@@ -9,6 +9,8 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as admin from 'firebase-admin';
 import * as functions from 'firebase-functions/v1';
 import { InMemoryFirestore, installInMemoryFirestore } from './support/inMemoryFirestore';
@@ -271,4 +273,69 @@ test("the portal tenant's own unit is not offered back to them", async () => {
 
   assert.deepEqual(units.map((u) => u.id), ['a2']);
   await assert.rejects(() => hold('a1'), refusedAsUnavailable);
+});
+
+test("the portal tenant's own unit, named by their unitId, is not offered back to them; its number in another area is", async () => {
+  const inMemory = new InMemoryFirestore();
+  seedPortalTenant(inMemory);
+  // Numbers repeat across areas: the tenant is in 12 in Complex 3.
+  inMemory.seed(`facilities/${FACILITY}/tenants/${TENANT}`, {
+    ...inMemory.read(`facilities/${FACILITY}/tenants/${TENANT}`),
+    unitNumber: '12',
+    unitId: 'c3-12',
+    unitArea: 'Complex 3',
+  });
+  seedUnit(inMemory, 'c2-12', { unitNumber: '12', area: 'Complex 2' });
+  seedUnit(inMemory, 'c3-12', { unitNumber: '12', area: 'Complex 3' });
+  const { list, hold } = loadPortal(inMemory);
+
+  const { units } = await list();
+
+  // Before: claimed by number, so neither 12 was offered.
+  assert.deepEqual(units.map((u) => u.id), ['c2-12']);
+  assert.equal((await hold('c2-12')).success, true);
+  await assert.rejects(() => hold('c3-12'), refusedAsUnavailable);
+});
+
+type FixtureDoc = { id: string; data: Record<string, unknown> };
+type PublicMapCase = {
+  name: string;
+  units: FixtureDoc[];
+  tenants: FixtureDoc[];
+  publicSettings?: Record<string, unknown>;
+  expected: Record<string, Record<string, unknown>>;
+};
+
+/** The cases the public map's two writers and the public hold run (test/fixtures/public_map_units.json). */
+function publicMapCases(): PublicMapCase[] {
+  const file = path.join(__dirname, '..', '..', '..', 'test', 'fixtures', 'public_map_units.json');
+  return (JSON.parse(fs.readFileSync(file, 'utf8')) as { cases: PublicMapCase[] }).cases;
+}
+
+test('every shared public map case: the portal lists and holds exactly the units the map offers', async () => {
+  const cases = publicMapCases();
+  assert.ok(cases.length >= 10, 'the shared fixture was not read');
+  for (const c of cases) {
+    for (const unit of c.units) {
+      // A fresh facility per unit, so one unit's hold does not decide another's.
+      const inMemory = new InMemoryFirestore();
+      seedPortalTenant(inMemory);
+      if (c.publicSettings) inMemory.seed(`facilities/${FACILITY}/settings/public`, c.publicSettings);
+      for (const u of c.units) inMemory.seed(unitPath(u.id), u.data);
+      for (const t of c.tenants) inMemory.seed(`facilities/${FACILITY}/tenants/${t.id}`, t.data);
+      const { list, hold } = loadPortal(inMemory);
+
+      const offered = c.expected[unit.id]?.isRentable === true;
+      const why = `${c.name}: ${unit.id}`;
+      // The list shows only units whose status is available; the hold takes a reserved one too.
+      const listable = offered && String(unit.data.status).toLowerCase() === 'available';
+      assert.equal((await list()).units.some((u) => u.id === unit.id), listable, why);
+      if (offered) {
+        assert.equal((await hold(unit.id)).success, true, why);
+      } else {
+        await assert.rejects(() => hold(unit.id), refusedAsUnavailable, why);
+        assertNothingHeld(inMemory, unit.id);
+      }
+    }
+  }
 });

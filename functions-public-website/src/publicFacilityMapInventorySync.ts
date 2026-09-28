@@ -1,6 +1,7 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import {
+  activeTenantUnitClaims,
   enabledOnlineUnitTypes,
   hasTenantLink,
   isArchivedForOnlineRental,
@@ -8,7 +9,6 @@ import {
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
   isUnlistedUnit,
-  unitNumbersClaimedByActiveTenants,
   unitTypeOf,
 } from '@sfc/functions-shared';
 
@@ -26,6 +26,10 @@ const INVENTORY_KEYS = [
   'isActive',
   'publicListingEnabled',
   'internalUse',
+  // Which tenant claims the unit: an id-less tenant's number in the unit's
+  // area, or its number before a renumbering (isUnitClaimedByActiveTenant).
+  'area',
+  'legacyUnitNumber',
 ];
 
 function slugify(raw: string): string {
@@ -139,8 +143,9 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
   // a doc with no isActive claimed its unit here but not in the app's own
   // publish (FacilityMapV2Service), and the two writers of this list
   // disagreed about that unit. Shared with the online rental callables,
-  // which refuse a unit this marks rented.
-  const tenantClaimed = unitNumbersClaimedByActiveTenants(tenantDocs.map((tdoc) => tdoc.data()));
+  // which refuse a unit this marks rented. By unitId where the tenant has one,
+  // so a unit number repeated in another area is not taken with it.
+  const tenantClaims = activeTenantUnitClaims(tenantDocs.map((tdoc) => tdoc.data()));
 
   const unitDocs = await readEveryDoc(db.collection(`facilities/${facilityId}/units`));
   const units: Record<string, any>[] = [];
@@ -170,7 +175,7 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
     // the app's publish, and a missing one as undefined, which Firestore rejects.
     const unum = String(d.unitNumber ?? '');
     const linkedToTenant = hasTenantLink(d);
-    const claimedByActiveTenant = isUnitClaimedByActiveTenant(d, tenantClaimed);
+    const claimedByActiveTenant = isUnitClaimedByActiveTenant(doc.id, d, tenantClaims);
     const statusAllowsRental = st === 'available' || st === 'reserved';
     const publicListingEnabled = !isUnlistedUnit(d);
     // The online rental callables rent only what isUnitOfferedOnline allows:
@@ -274,7 +279,8 @@ export const syncPublicFacilityMapInventoryOnUnitWrite = functions.firestore
     }
   });
 
-const TENANT_INVENTORY_KEYS = ['isActive', 'unitNumber'];
+// unitId and unitArea decide which unit a tenant claims (activeTenantUnitClaims).
+const TENANT_INVENTORY_KEYS = ['isActive', 'unitNumber', 'unitId', 'unitArea'];
 
 /** When staff creates/moves tenants without updating the unit doc, refresh public inventory. */
 export const syncPublicFacilityMapInventoryOnTenantWrite = functions.firestore

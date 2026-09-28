@@ -13,11 +13,12 @@ import {
   isUnitHeldByTenant,
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
-  readUnitNumbersClaimedByActiveTenants,
+  readActiveTenantUnitClaims,
   sendFacilityEmailWithCompliance,
   unitNotOfferedOnlineReason,
   unitTypeOf,
 } from '@sfc/functions-shared';
+import type { ActiveTenantUnitClaims } from '@sfc/functions-shared';
 import {
   amountsMatchCents,
   isPublicMoveInStripePaymentRequired,
@@ -305,18 +306,45 @@ async function assertFacilityTakesOnlineRentals(facilityId: string): Promise<Rec
 }
 
 /**
- * Someone else has the unit, or the owner has it out of service: a status
- * other than available or reserved (a missing one is let through, as move-in
- * always has), a link to a tenant, or an active tenant whose unit number is
- * this unit's ([claimed], from readUnitNumbersClaimedByActiveTenants). The
- * public map shows the last two as rented. Renting it would overwrite that
- * tenant or that status, or put a second tenant in the unit, so it is refused
- * before payment and refunded after.
+ * Someone else has the unit [unitId] ([unit] is its doc), or the owner has it
+ * out of service: a status other than available or reserved (a missing one is
+ * let through, as move-in always has), a link to a tenant, or an active
+ * tenant who claims it ([claims], from readActiveTenantUnitClaims: by their
+ * unitId, or with none by number in their area). The public map shows the
+ * last two as rented. Renting it would overwrite that tenant or that status,
+ * or put a second tenant in the unit, so it is refused before payment and
+ * refunded after.
  */
-function unitIsTaken(unit: Record<string, unknown>, claimed: ReadonlySet<string>): boolean {
+function unitIsTaken(unitId: string, unit: Record<string, unknown>, claims: ActiveTenantUnitClaims): boolean {
   const status = String(unit.status || '').toLowerCase();
   if (status && status !== 'available' && status !== 'reserved') return true;
-  return isUnitHeldByTenant(unit, claimed);
+  return isUnitHeldByTenant(unitId, unit, claims);
+}
+
+/** A doc's text field trimmed, or null when it is not a string or is blank (TenantModel.textField). */
+function textOf(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+/**
+ * The fields that make the unit [unitId] ([unit] is its doc) a new tenant's
+ * unit, as the app's move-in writes them (TenantService.createTenant with a
+ * picked unit, TenantModel.primaryUnitCreate): the unit's number trimmed, its
+ * id, and its area trimmed, left out when it has none. Without unitId an
+ * online tenant's unit was named by number alone, which is no one unit where
+ * numbers repeat across areas: the claim rule (activeTenantUnitClaims) then
+ * took every unit with that number off the market.
+ */
+function primaryUnitCreateFields(unitId: string, unit: Record<string, unknown>): Record<string, string> {
+  const unitNumber = String(unit.unitNumber ?? '').trim();
+  const unitArea = textOf(unit.area);
+  return {
+    ...(unitNumber ? { unitNumber } : {}),
+    unitId,
+    ...(unitArea ? { unitArea } : {}),
+  };
 }
 
 function facilityTenants(facilityId: string): admin.firestore.CollectionReference {
@@ -453,15 +481,16 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
     // One refusal for all of these, so a caller cannot tell an unlisted or
     // internal-use unit from a rented one. The unit type too: the public map
     // marks a type the owner turned off not rentable, but a direct call held
-    // it. And a unit a tenant has, by link or by an active tenant's unit
-    // number: the map shows it rented, but a stale map or a direct call with
-    // its published id held it, and a second tenant moved in. The tenants are
-    // read only for a unit that passes the rest.
+    // it. And a unit a tenant has, by link or by an active tenant's claim
+    // (their unitId, or with none their unit number in their area): the map
+    // shows it rented, but a stale map or a direct call with its published id
+    // held it, and a second tenant moved in. The tenants are read only for a
+    // unit that passes the rest.
     if (
       (unitStatus !== 'available' && unitStatus !== 'reserved') ||
       !isUnitOfferedOnline(unitData) ||
       !isUnitTypeOfferedOnline(unitData, enabledUnitTypes) ||
-      unitIsTaken(unitData, await readUnitNumbersClaimedByActiveTenants(facilityTenants(String(facilityId)), tx))
+      unitIsTaken(unitRef.id, unitData, await readActiveTenantUnitClaims(facilityTenants(String(facilityId)), tx))
     ) {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
     }
@@ -685,7 +714,7 @@ export const createPublicMoveInCheckout = functions
   // public hold, 60 for a tenant-portal one). completePublicMoveIn has to
   // refund or move in such a renter once they have paid, so checkout refuses
   // them first. Same test and refusal as both holds, including a tenant's
-  // link or unit number, which the public map shows as rented; trimmed as
+  // link or claim, which the public map shows as rented; trimmed as
   // loadPublicMoveInChargeQuote does, so the unit checked is the unit priced.
   const reservedUnitId = String(reservation.unitId || '').trim();
   if (reservedUnitId) {
@@ -705,7 +734,7 @@ export const createPublicMoveInCheckout = functions
       (unitStatus !== 'available' && unitStatus !== 'reserved') ||
       !isUnitOfferedOnline(unitData) ||
       !isUnitTypeOfferedOnline(unitData, enabledOnlineUnitTypes(publicSettings)) ||
-      unitIsTaken(unitData, await readUnitNumbersClaimedByActiveTenants(facilityTenants(facilityId)))
+      unitIsTaken(reservedUnitId, unitData, await readActiveTenantUnitClaims(facilityTenants(facilityId)))
     ) {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
     }
@@ -1356,7 +1385,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       refuseUnlessPaid('unit-missing', new functions.https.HttpsError('not-found', 'Reserved unit not found'));
     } else {
       preloadedUnitData = unitSnap.data() as Record<string, any>;
-      if (unitIsTaken(preloadedUnitData, await readUnitNumbersClaimedByActiveTenants(facilityTenants(facilityId)))) {
+      if (unitIsTaken(unitSnap.id, preloadedUnitData, await readActiveTenantUnitClaims(facilityTenants(facilityId)))) {
         refuseUnlessPaid(
           'unit-taken',
           new functions.https.HttpsError('failed-precondition', 'Unit is no longer available'),
@@ -1713,11 +1742,11 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     const facilitySnap = await tx.get(facilityDocRef);
     const unitRef = unitId ? facilityDocRef.collection('units').doc(unitId) : null;
     const unitSnap = unitRef ? await tx.get(unitRef) : null;
-    // Who else has the unit: an active tenant who has it by unit number. Read
-    // here, so a tenant added since the reads above is seen.
-    const claimedUnitNumbers = unitRef
-      ? await readUnitNumbersClaimedByActiveTenants(facilityDocRef.collection('tenants'), tx)
-      : new Set<string>();
+    // Who else has the unit: an active tenant who claims it by their own
+    // record. Read here, so a tenant added since the reads above is seen.
+    const tenantClaims = unitRef
+      ? await readActiveTenantUnitClaims(facilityDocRef.collection('tenants'), tx)
+      : null;
     const holdRef = unitId ? unitHoldRef(facilityId, unitId) : null;
     const holdSnap = holdRef ? await tx.get(holdRef) : null;
 
@@ -1761,7 +1790,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       return refuse('unit-missing', new functions.https.HttpsError('not-found', 'Reserved unit not found'));
     }
     const freshUnit = (unitSnap?.data() || null) as Record<string, any> | null;
-    if (freshUnit && unitIsTaken(freshUnit, claimedUnitNumbers)) {
+    if (unitRef && freshUnit && tenantClaims && unitIsTaken(unitRef.id, freshUnit, tenantClaims)) {
       return refuse(
         'unit-taken',
         new functions.https.HttpsError('failed-precondition', 'Unit is no longer available'),
@@ -1852,6 +1881,8 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       phone: phone.trim(),
       phoneDigits: phone.replace(/[^\d]/g, ''),
       unitNumber: displayUnitNumber,
+      // The unit as read in this transaction, so the label, id and area agree.
+      ...(unitRef && freshUnit ? primaryUnitCreateFields(unitRef.id, freshUnit) : {}),
       monthlyRate: deriveMonthlyRate(),
       notes: String(data?.notes || '').trim(),
       createdAt: nowTs,

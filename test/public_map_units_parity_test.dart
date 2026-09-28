@@ -7,6 +7,7 @@ import 'package:sfcapp/models/facility_public_settings_model.dart';
 import 'package:sfcapp/services/facility_map_v2_service.dart';
 import 'package:sfcapp/services/facility_subcollections.dart';
 import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/utils/tenant_unit_claims.dart';
 
 import 'support/fake_facility_collection.dart';
 
@@ -69,8 +70,7 @@ void main() {
             : FacilityPublicSettings.fromMap(
                 {...Map<String, dynamic>.from(settings), 'facilityId': 'fac1'},
               ),
-        tenantClaimedUnitNumbers:
-            FacilityMapV2Service.claimedUnitNumbersFromActiveTenants(tenants),
+        tenantClaims: TenantUnitClaims.fromTenants(tenants),
       );
 
       // The fields each unit's entry names (isRentable and status in all of

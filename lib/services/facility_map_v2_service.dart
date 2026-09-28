@@ -7,7 +7,6 @@ import 'package:sfcapp/models/facility_map_v2_models.dart';
 import 'package:sfcapp/models/facility_public_settings_model.dart';
 import 'package:sfcapp/models/map_shape_model.dart';
 import 'package:sfcapp/models/permission_model.dart';
-import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/facility_public_service.dart';
 import 'package:sfcapp/services/map_layout_service.dart';
@@ -15,6 +14,7 @@ import 'package:sfcapp/services/permission_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/utils/firestore_field_read.dart';
+import 'package:sfcapp/utils/tenant_unit_claims.dart';
 
 class FacilityMapV2Service {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -166,12 +166,11 @@ class FacilityMapV2Service {
     final publicSettings =
         await FacilityPublicService.getPublicSettings(facilityId);
     final tenants = await TenantService.getTenantsForFacility(facilityId);
-    final claimedUnits = claimedUnitNumbersFromActiveTenants(tenants);
     final inventory = publicUnitInventory(
       facilityId: facilityId,
       units: units,
       publicSettings: publicSettings,
-      tenantClaimedUnitNumbers: claimedUnits,
+      tenantClaims: TenantUnitClaims.fromTenants(tenants),
     );
     final snapshot = _buildPublicSnapshot(
       facilityId: facilityId,
@@ -389,25 +388,17 @@ class FacilityMapV2Service {
           String facilityId) =>
       _fetchActiveUnitsOrdered(facilityId);
 
-  /// Normalized unit numbers (trim + lower case) for active tenants — catches
-  /// dashboard tenants whose unit doc was never set to occupied.
-  static Set<String> claimedUnitNumbersFromActiveTenants(
-      Iterable<TenantModel> tenants) {
-    final out = <String>{};
-    for (final t in tenants) {
-      if (!t.isActive) continue;
-      final n = t.unitNumber.trim().toLowerCase();
-      if (n.isNotEmpty) out.add(n);
-    }
-    return out;
-  }
-
   /// Builds the anonymous-safe `units` payload for [publicFacilityMaps] documents.
+  ///
+  /// [tenantClaims]: the units active tenants have by their own records
+  /// ([TenantUnitClaims.fromTenants]), which catches tenants whose unit doc
+  /// was never set to occupied.
   static List<Map<String, dynamic>> buildPublicUnitInventoryMaps({
     required List<UnitModel> units,
     required FacilityPublicSettings? publicSettings,
-    Set<String> tenantClaimedUnitNumbers = const <String>{},
+    TenantUnitClaims? tenantClaims,
   }) {
+    final claims = tenantClaims ?? TenantUnitClaims.none;
     final showPublicPricing = publicSettings?.publicPricingEnabled ?? true;
     final showUnitNumbers = publicSettings?.publicUnitNumbersEnabled ?? true;
     final enabledPublicUnitTypes =
@@ -432,11 +423,9 @@ class FacilityMapV2Service {
       final isPubliclyEnabledType = enabledPublicUnitTypes.isEmpty ||
           enabledPublicUnitTypes.contains(unitType);
 
-      final unitNumNorm = unit.unitNumber.trim().toLowerCase();
       final hasTenantLink =
           unit.tenantId != null && unit.tenantId!.trim().isNotEmpty;
-      final claimedByActiveTenant =
-          tenantClaimedUnitNumbers.contains(unitNumNorm);
+      final claimedByActiveTenant = claims.claims(unit);
       // The online rental holds (createPublicReservationHold,
       // createTenantPortalAdditionalUnitHold) and createPublicMoveInCheckout
       // accept a unit whose stored status lower-cases to 'available' or
@@ -525,13 +514,13 @@ class FacilityMapV2Service {
     required String facilityId,
     required List<UnitModel> units,
     required FacilityPublicSettings? publicSettings,
-    Set<String> tenantClaimedUnitNumbers = const <String>{},
+    TenantUnitClaims? tenantClaims,
     int maxBytes = maxPublishedUnitsBytes,
   }) {
     final all = buildPublicUnitInventoryMaps(
       units: units,
       publicSettings: publicSettings,
-      tenantClaimedUnitNumbers: tenantClaimedUnitNumbers,
+      tenantClaims: tenantClaims,
     );
     final fitted = fitUnitsToDocument(all, maxBytes: maxBytes);
     if (fitted.omitted > 0) {
@@ -573,12 +562,11 @@ class FacilityMapV2Service {
           await FacilityPublicService.getPublicSettings(facilityId);
       final units = await _fetchActiveUnitsOrdered(facilityId);
       final tenants = await TenantService.getTenantsForFacility(facilityId);
-      final claimedUnits = claimedUnitNumbersFromActiveTenants(tenants);
       final inventory = publicUnitInventory(
         facilityId: facilityId,
         units: units,
         publicSettings: publicSettings,
-        tenantClaimedUnitNumbers: claimedUnits,
+        tenantClaims: TenantUnitClaims.fromTenants(tenants),
       );
 
       await publicRef.update({

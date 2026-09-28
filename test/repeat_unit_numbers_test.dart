@@ -1044,7 +1044,7 @@ void main() {
       const warning = ValueKey('unitNumbersRepeatOnlineRentalsWarning');
       await pump(tester, value: true, online: true);
       expect(find.byKey(warning), findsOneWidget);
-      expect(find.textContaining('may be understated'), findsOneWidget);
+      expect(find.textContaining('matched by unit number alone'), findsOneWidget);
       final toggle = tester.widget<SwitchListTile>(find.byType(SwitchListTile));
       expect(toggle.onChanged, isNotNull);
 

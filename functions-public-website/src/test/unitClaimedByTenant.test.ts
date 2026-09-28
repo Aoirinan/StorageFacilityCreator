@@ -2,8 +2,10 @@
  * A unit a tenant already has is not rented online.
  *
  * The public map shows a unit as rented when it is linked to a tenant, or
- * when an active tenant's unitNumber names it (trimmed and lower-cased): an
- * owner can add a tenant with a unit number and never link the unit. The
+ * when an active tenant claims it: by their unitId, or with none by their
+ * unitNumber (trimmed and lower-cased) in their unitArea, or in any area
+ * without one. An owner can add a tenant with a unit number and never link
+ * the unit. The
  * holds, checkout and completion looked only at the unit, so such a unit
  * could be held, paid for and moved into, from a stale map or by a direct
  * call with the unit id the map publishes: two active tenants on one unit.
@@ -517,6 +519,131 @@ test('a renter whose hold ran out is refunded while another renter holds the uni
   assert.equal(inMemory.read(UNIT_PATH)?.tenantId, undefined);
   assert.equal(inMemory.read(HOLD_PATH)?.reservationId, SAM.reservationId);
   assertRefundedAsTaken(inMemory, harness, RITA);
+});
+
+test('every shared public map case: checkout reaches Stripe for exactly the units the map offers', async () => {
+  const cases = publicMapCases();
+  assert.ok(cases.length >= 10, 'the shared fixture was not read');
+  for (const c of cases) {
+    for (const unit of c.units) {
+      const inMemory = new InMemoryFirestore();
+      inMemory.seed(`facilities/${FACILITY}`, FACILITY_DATA);
+      inMemory.seed(`facilities/${FACILITY}/settings/public`, { ...c.publicSettings, publicRentalsEnabled: true });
+      // A rate on every unit, so the amount due is over the card minimum and
+      // only the unit check can stop checkout. The rate is not part of any case.
+      for (const u of c.units) inMemory.seed(`facilities/${FACILITY}/units/${u.id}`, { ...u.data, monthlyRate: 100 });
+      for (const t of c.tenants) inMemory.seed(`${TENANTS}/${t.id}`, t.data);
+      const reservation = {
+        facilityId: FACILITY,
+        unitId: unit.id,
+        status: 'pending',
+        moveInToken: RITA.token,
+        moveInDate: Timestamp.fromDate(new Date(2026, 8, 25)),
+        expiresAt: minutesFromNow(10),
+        email: RITA.email,
+        name: RITA.name,
+        metadata: {},
+      };
+      inMemory.seed(`publicReservations/${RITA.reservationId}`, reservation);
+      const quote = computePublicMoveInCharges({
+        reservation,
+        unitData: inMemory.read(`facilities/${FACILITY}/units/${unit.id}`),
+        facilityData: FACILITY_DATA,
+        moveInDate: reservation.moveInDate.toDate(),
+      });
+      const harness = load(inMemory);
+      const request = { reservationId: RITA.reservationId, token: RITA.token, amount: quote.totalAmount };
+
+      const why = `${c.name}: ${unit.id}`;
+      if (c.expected[unit.id]?.isRentable === true) {
+        assert.ok((await harness.checkout(request)).checkoutUrl, why);
+        assert.equal(harness.checkoutSessions, 1, why);
+      } else {
+        await assert.rejects(() => harness.checkout(request), refusedWith(NOT_AVAILABLE), why);
+        assert.equal(harness.checkoutSessions, 0, why);
+      }
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Unit numbers repeated across areas
+// ---------------------------------------------------------------------------
+
+const OTHER_12 = 'unit-c3-12';
+const OTHER_12_PATH = `facilities/${FACILITY}/units/${OTHER_12}`;
+
+/** [UNIT] is 12 in Complex 2 (its area stored untidy), and [OTHER_12] is 12 in Complex 3. */
+function seedTwelves(inMemory: InMemoryFirestore, other: Record<string, unknown> = {}) {
+  seedFacilityAndUnit(inMemory, FACILITY_DATA, { unitNumber: '12', area: '  Complex 2 ' });
+  inMemory.seed(OTHER_12_PATH, {
+    status: 'available',
+    unitNumber: '12',
+    area: 'Complex 3',
+    unitType: 'standard',
+    monthlyRate: 100,
+    ...other,
+  });
+}
+
+test('a renter who has paid for 12 in Complex 2 is moved in while a tenant has 12 in Complex 3 by unitId', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedTwelves(inMemory, { status: 'occupied', tenantId: 'tenant-c3' });
+  seedTenant(inMemory, 'tenant-c3', { isActive: true, unitNumber: '12', unitId: OTHER_12, unitArea: 'Complex 3' });
+  const paidCents = seedReservation(inMemory, RITA);
+  const harness = load(inMemory, paidCents);
+
+  // Before: claimed by number, so this unit was refused and Rita refunded.
+  const result = await harness.complete(RITA);
+
+  assert.equal(result.success, true);
+  assert.deepEqual(harness.refunds, []);
+  assert.equal(inMemory.read(UNIT_PATH)?.tenantId, result.tenantId);
+  assert.equal(inMemory.read(OTHER_12_PATH)?.tenantId, 'tenant-c3');
+});
+
+test("an online move-in names the tenant's unit by unitId and unitArea, as the app's move-in does", async () => {
+  const inMemory = new InMemoryFirestore();
+  seedTwelves(inMemory);
+  const paidCents = seedReservation(inMemory, RITA);
+  const harness = load(inMemory, paidCents);
+
+  const result = await harness.complete(RITA);
+
+  // TenantService.createTenant with a picked unit (TenantModel.primaryUnitCreate):
+  // the unit's number, its id, and its area trimmed.
+  const tenant = inMemory.read(`${TENANTS}/${result.tenantId}`) as Record<string, unknown>;
+  assert.equal(tenant.unitNumber, '12');
+  assert.equal(tenant.unitId, UNIT);
+  assert.equal(tenant.unitArea, 'Complex 2');
+});
+
+test('a unit with no area gives the online tenant a unitId and no unitArea', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedFacilityAndUnit(inMemory, FACILITY_DATA, { area: '   ' });
+  const paidCents = seedReservation(inMemory, RITA);
+  const harness = load(inMemory, paidCents);
+
+  const result = await harness.complete(RITA);
+
+  const tenant = inMemory.read(`${TENANTS}/${result.tenantId}`) as Record<string, unknown>;
+  assert.equal(tenant.unitNumber, 'U7');
+  assert.equal(tenant.unitId, UNIT);
+  assert.equal('unitArea' in tenant, false);
+});
+
+test('the tenant an online move-in creates claims only their own 12: the 12 in the other area can still be rented', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedTwelves(inMemory);
+  const paidCents = seedReservation(inMemory, RITA);
+  const harness = load(inMemory, paidCents);
+  assert.equal((await harness.complete(RITA)).success, true);
+
+  // Before: the new tenant had only the number 12, which claims every 12,
+  // so the Complex 3 unit was refused though nobody has it.
+  const held = await harness.hold(holdRequest(OTHER_12));
+
+  assert.equal(held.success, true);
 });
 
 test.after(() => {
