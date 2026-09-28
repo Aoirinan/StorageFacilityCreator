@@ -297,6 +297,24 @@ test("the portal tenant's own unit, named by their unitId, is not offered back t
   await assert.rejects(() => hold('c3-12'), refusedAsUnavailable);
 });
 
+test('an active tenant added in the unit while the portal hold transaction runs is seen, and nothing is held', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedPortalTenant(inMemory);
+  seedUnit(inMemory, 'a1');
+  // The owner types a tenant into A1 as the hold is about to commit.
+  inMemory.beforeCommit = (attempt) => {
+    if (attempt === 1) inMemory.seed(`facilities/${FACILITY}/tenants/added-meanwhile`, { isActive: true, unitNumber: 'A1' });
+  };
+  const { hold } = loadPortal(inMemory);
+
+  // Read with a plain get(), the tenants were not part of the transaction:
+  // it committed, and A1 was held for a second tenant.
+  await assert.rejects(() => hold('a1'), refusedAsUnavailable);
+
+  assert.equal(inMemory.transactionRetries, 1);
+  assertNothingHeld(inMemory, 'a1');
+});
+
 type FixtureDoc = { id: string; data: Record<string, unknown> };
 type PublicMapCase = {
   name: string;
