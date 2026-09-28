@@ -288,7 +288,7 @@ interface SuperAdminDeleteFacilityData {
 /**
  * Super admin only: permanently delete one facility (full Firestore subtree under
  * `facilities/{facilityId}`), remove its id from the linked facility creator account,
- * delete `publicFacilityMaps/{slug}` when it points at this facility, align Stripe
+ * delete every `publicFacilityMaps` doc of this facility (each slug it has had), align Stripe
  * subscription add-on quantity when the account has an active subscription, and
  * best-effort delete all Storage files under `facilities/{facilityId}/`.
  *
@@ -334,8 +334,9 @@ export const superAdminDeleteFacility = functions
     }
 
     // Shared with the owner's deleteFacilityPermanently (facilityPurge.ts):
-    // billing stopped first, then the public map entry, the account link,
-    // Storage and the whole Firestore subtree.
+    // billing stopped first, then the account link, the rows keyed by the
+    // facility (public map docs among them), Storage and the whole Firestore
+    // subtree.
     const accountId = String(facilityData.facilityCreatorAccountId || '').trim();
     try {
       const { subscriptionOutcomes } = await purgeFacility(
