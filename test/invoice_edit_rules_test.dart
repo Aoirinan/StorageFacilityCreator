@@ -38,7 +38,7 @@ void main() {
   group('validateInvoiceNumber', () {
     test('accepts an operator\'s own numbering, not just ours', () {
       expect(validateInvoiceNumber('2026-0041', existingNumbers: const []), isNull);
-      expect(validateInvoiceNumber('Caprock 118', existingNumbers: const []), isNull);
+      expect(validateInvoiceNumber('Test 118', existingNumbers: const []), isNull);
       expect(validateInvoiceNumber('INV-2026-001', existingNumbers: const []), isNull);
     });
 

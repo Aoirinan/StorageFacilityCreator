@@ -13,7 +13,7 @@ import type { StaysAuditEntry } from '../../common/audit';
 import type { StaysDeps } from '../../common/guards';
 import { FakeFirestore } from './fakeFirestore';
 
-export const FAC = 'fac-caprock';
+export const FAC = 'fac-test';
 export const OWNER = 'uid-owner';
 export const MANAGER = 'uid-manager';
 export const EMPLOYEE = 'uid-employee';
@@ -26,7 +26,7 @@ export const NOW = Date.parse('2026-10-01T18:00:00Z');
 
 export function seedFacility(fake: FakeFirestore, extra: Record<string, unknown> = {}): void {
   fake.seed(`facilities/${FAC}`, {
-    name: 'Caprock Storage & RV Park',
+    name: 'Test Storage & RV Park',
     ownerUid: OWNER,
     timeZone: TZ,
     roles: { [OWNER]: 'owner', [MANAGER]: 'manager', [EMPLOYEE]: 'employee', [VIEWER]: 'viewer' },

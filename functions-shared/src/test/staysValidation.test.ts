@@ -32,7 +32,7 @@ function input(patch: Record<string, unknown> = {}): Record<string, unknown> {
     taxLines: [],
     turnover: { mode: 'full', afterOwnerBlocks: false, checklistTemplate: [{ id: 'beds', label: 'Make beds' }], defaultAssigneeUid: null, defaultAssigneeName: null },
     accessCodeMode: 'phone_last4',
-    airbnb: { listingNameAliases: ['Cozy Caprock Cottage'], listingUrl: 'https://www.airbnb.com/rooms/12345', calendarUrl: null },
+    airbnb: { listingNameAliases: ['Cozy Test Cottage'], listingUrl: 'https://www.airbnb.com/rooms/12345', calendarUrl: null },
     notes: '',
     ...patch,
   };

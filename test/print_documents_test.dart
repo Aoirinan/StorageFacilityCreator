@@ -4,7 +4,7 @@ import 'package:sfcapp/models/document_logo_layout.dart';
 import 'package:sfcapp/utils/print_documents.dart';
 
 String invoice({
-  String facilityName = 'Caprock Storage',
+  String facilityName = 'Test Storage',
   String? facilityAddress = '100 Main St, Lubbock, TX 79401',
   String? facilityMailingAddress,
   String? facilityPhone = '806-555-0100',
@@ -246,13 +246,13 @@ void main() {
         tenantName: 'Jane Doe',
         amountFormatted: r'$95.00',
         dateFormatted: '2026-09-25 10:00',
-        businessName: 'Caprock Storage',
+        businessName: 'Test Storage',
         businessAddress: '100 Main St',
         businessMailingAddress: 'PO Box 42',
         logoUrl: logo,
       );
       expect(html, contains('<img class="logo"'));
-      expect(html, contains('<div class="facility-name">Caprock Storage</div>'));
+      expect(html, contains('<div class="facility-name">Test Storage</div>'));
       expect(html, contains('100 Main St'));
       expect(html, contains('Mail payments to:</span> PO Box 42'));
       expect(html, isNot(contains('Storage Facility Creator')));
@@ -272,7 +272,7 @@ void main() {
   });
   group('letterhead logo layout', () {
     String letterhead(DocumentLogoLayout layout,
-            {String? logoUrl = logo, String name = 'Caprock Storage'}) =>
+            {String? logoUrl = logo, String name = 'Test Storage'}) =>
         buildLetterheadHtml(
           facilityName: name,
           logoUrl: logoUrl,
@@ -318,7 +318,7 @@ void main() {
         tenantName: 'Jane Doe',
         amountFormatted: r'$95.00',
         dateFormatted: '2026-09-25 10:00',
-        businessName: 'Caprock Storage',
+        businessName: 'Test Storage',
         logoUrl: logo,
         logoLayout: const DocumentLogoLayout(
             height: 160, position: DocumentLogoPosition.center),
@@ -342,7 +342,7 @@ void main() {
       // Beside the details the position's own 180pt limit is the smaller.
       expect(
           buildLetterheadHtml(
-            facilityName: 'Caprock Storage',
+            facilityName: 'Test Storage',
             logoUrl: logo,
             contentWidthPt: receiptColumnPt,
           ),
@@ -394,7 +394,7 @@ void main() {
 
     test('center: the logo is a banner ahead of the letterhead block', () {
       final parts = buildLetterheadHtmlParts(
-        facilityName: 'Caprock Storage',
+        facilityName: 'Test Storage',
         logoUrl: logo,
         layout: const DocumentLogoLayout(position: DocumentLogoPosition.center),
       );
@@ -416,11 +416,11 @@ void main() {
 
     test('center without a logo prints no empty banner', () {
       final parts = buildLetterheadHtmlParts(
-        facilityName: 'Caprock Storage',
+        facilityName: 'Test Storage',
         layout: const DocumentLogoLayout(position: DocumentLogoPosition.center),
       );
       expect(parts.banner, isEmpty);
-      expect(parts.block, contains('Caprock Storage'));
+      expect(parts.block, contains('Test Storage'));
     });
 
     test('showName off hides the name text but keeps it as the alt text', () {
@@ -430,8 +430,8 @@ void main() {
       expect(
           html,
           contains('<div class="facility-name" data-logo-fallback hidden>'
-              'Caprock Storage</div>'));
-      expect(html, contains('alt="Caprock Storage"'));
+              'Test Storage</div>'));
+      expect(html, contains('alt="Test Storage"'));
       // Addresses still print.
       expect(html, contains('100 Main St'));
       expect(html, contains('Mail payments to:'));
@@ -441,7 +441,7 @@ void main() {
       for (final url in [null, '', 'javascript:alert(1)']) {
         final html = letterhead(const DocumentLogoLayout(showName: false),
             logoUrl: url);
-        expect(html, contains('<div class="facility-name">Caprock Storage</div>'),
+        expect(html, contains('<div class="facility-name">Test Storage</div>'),
             reason: '$url');
       }
     });
@@ -457,7 +457,7 @@ void main() {
         tenantName: 'Jane Doe',
         amountFormatted: r'$95.00',
         dateFormatted: '2026-09-25 10:00',
-        businessName: 'Caprock Storage',
+        businessName: 'Test Storage',
         logoUrl: logo,
         logoLayout: const DocumentLogoLayout(
           height: 120,
@@ -468,7 +468,7 @@ void main() {
       expect(html, contains('<div class="logo-banner"><img class="logo"'));
       expect(html, contains('height: 120pt'));
       expect(html, isNot(contains('<div class="facility-name">')));
-      expect(html, contains('data-logo-fallback hidden>Caprock Storage</div>'));
+      expect(html, contains('data-logo-fallback hidden>Test Storage</div>'));
       expect(html, contains('.facility-name[hidden] { display: none; }'));
       expect(html.indexOf('logo-banner'),
           lessThan(html.indexOf('<h1>Payment receipt</h1>')));

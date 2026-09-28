@@ -19,7 +19,7 @@ test('a new listing is stored validated, under lst_{requestId}, and a retry does
   const stored = env.fake.read(`${P}/stayListings/lst_${requestId}`)!;
   assert.equal(stored.name, 'Airbnb A');
   assert.equal(stored.extra, undefined);
-  assert.equal(stored.facilityId, 'fac-caprock');
+  assert.equal(stored.facilityId, 'fac-test');
   assert.equal(stored.createdBy, OWNER);
 
   const writes = env.fake.writesTo('stayListings').length;

@@ -10,12 +10,12 @@ void main() {
     });
 
     test('accepts ordinary addresses', () {
-      expect(validateOptionalTenantEmail('alexa@caprockstorage.com'), isNull);
+      expect(validateOptionalTenantEmail('alexa@examplestorage.com'), isNull);
       expect(validateOptionalTenantEmail('first.last+unit12@gmail.com'), isNull);
     });
 
     test('accepts the longer top-level domains the old four-letter limit rejected', () {
-      expect(validateOptionalTenantEmail('owner@caprock.storage'), isNull);
+      expect(validateOptionalTenantEmail('owner@example.storage'), isNull);
       expect(validateOptionalTenantEmail('owner@example.online'), isNull);
     });
 
@@ -39,7 +39,7 @@ void main() {
     });
 
     test('a real address is sendable', () {
-      expect(isSendableTenantEmail(' alexa@caprockstorage.com '), isTrue);
+      expect(isSendableTenantEmail(' alexa@examplestorage.com '), isTrue);
     });
   });
 }

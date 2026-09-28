@@ -31,7 +31,7 @@ Future<List<DocumentLogoLayout>> _pumpEditor(
                 changes.add(v);
               }),
               logo: logo,
-              facilityName: 'Caprock Storage',
+              facilityName: 'Test Storage',
               address: '100 Main St\nLubbock, TX 79401',
               mailingAddress: 'PO Box 42',
               phone: '806-555-0100',

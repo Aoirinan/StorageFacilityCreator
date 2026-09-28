@@ -67,7 +67,7 @@ void main() {
 
     final facility = FacilityModel(
       id: 'fac1',
-      name: 'Caprock Storage',
+      name: 'Test Storage',
       ownerUid: 'owner-1',
       createdAt: DateTime(2026, 1, 1),
     );

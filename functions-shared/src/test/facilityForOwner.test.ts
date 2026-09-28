@@ -14,7 +14,7 @@ const SUPER = 'super-admin-uid';
 const OWNER = 'owner-uid';
 
 test('the facility belongs to the owner, never to the super admin who made it', () => {
-  const doc = buildFacilityForOwner({ ownerUid: OWNER, name: 'Caprock Storage' }, SUPER);
+  const doc = buildFacilityForOwner({ ownerUid: OWNER, name: 'Test Storage' }, SUPER);
   assert.equal(doc.ownerUid, OWNER);
   // The creator is recorded, but gets no role from this write.
   assert.equal(doc.createdBySuperAdminUid, SUPER);
@@ -23,7 +23,7 @@ test('the facility belongs to the owner, never to the super admin who made it', 
 });
 
 test('a name and an owner are enough; everything else defaults', () => {
-  const doc = buildFacilityForOwner({ ownerUid: OWNER, name: 'Caprock Storage' }, SUPER);
+  const doc = buildFacilityForOwner({ ownerUid: OWNER, name: 'Test Storage' }, SUPER);
   assert.equal(doc.active, true);
   assert.equal(doc.totalUnits, 0);
   assert.equal(doc.occupiedUnits, 0);
@@ -39,10 +39,10 @@ test('supplied details are carried through and trimmed', () => {
   const doc = buildFacilityForOwner(
     {
       ownerUid: `  ${OWNER} `,
-      name: '  Caprock Storage  ',
+      name: '  Test Storage  ',
       address: ' 820 N Sargent Ave ',
       phone: ' 406-939-1228 ',
-      email: ' caprockstorage@gmail.com ',
+      email: ' test-owner@example.com ',
       timeZone: 'America/Denver',
       totalUnits: 86,
       gracePeriodDays: 10,
@@ -51,10 +51,10 @@ test('supplied details are carried through and trimmed', () => {
     SUPER,
   );
   assert.equal(doc.ownerUid, OWNER);
-  assert.equal(doc.name, 'Caprock Storage');
+  assert.equal(doc.name, 'Test Storage');
   assert.equal(doc.address, '820 N Sargent Ave');
   assert.equal(doc.phone, '406-939-1228');
-  assert.equal(doc.email, 'caprockstorage@gmail.com');
+  assert.equal(doc.email, 'test-owner@example.com');
   assert.equal(doc.timeZone, 'America/Denver');
   assert.equal(doc.totalUnits, 86);
   assert.equal(doc.billingSettings?.gracePeriodDays, 10);

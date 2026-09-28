@@ -79,7 +79,7 @@ List<String> _pdfWords(Uint8List bytes) {
 
 FacilityModel _facility() => FacilityModel(
       id: 'f1',
-      name: 'Caprock Storage',
+      name: 'Test Storage',
       ownerUid: 'owner',
       createdAt: DateTime(2026, 1, 1),
       address: '100 Main St\nLubbock, TX 79401',
@@ -275,7 +275,7 @@ void main() {
       final address = tenantPrintAddress([_address(street1: '1 Elm St')]);
       expect(address, '1 Elm St');
       final html = buildInvoiceHtml(
-        facilityName: 'Caprock Storage',
+        facilityName: 'Test Storage',
         tenantName: 'Jordan Tenant',
         tenantAddress: address,
         invoiceNumber: 'INV-0001',

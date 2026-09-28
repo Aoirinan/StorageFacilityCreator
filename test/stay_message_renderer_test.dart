@@ -11,22 +11,22 @@ final _values = <String, String?>{
   'checkInDate': 'Oct 3',
   'checkInTime': '3:00 pm',
   'doorCode': '4821',
-  'wifiName': 'Caprock',
-  'wifiPassword': 'rvpark2026',
+  'wifiName': 'Test Park',
+  'wifiPassword': 'guestpass2026',
 };
 
 void main() {
   test('fills every known variable', () {
     expect(
       StayMessageRenderer.render(_checkIn, _values),
-      'Hi Jane! Check-in at Airbnb 1 is Oct 3 after 3:00 pm. Door code: 4821. Wifi: Caprock / rvpark2026.',
+      'Hi Jane! Check-in at Airbnb 1 is Oct 3 after 3:00 pm. Door code: 4821. Wifi: Test Park / guestpass2026.',
     );
   });
 
   test('a missing or empty value shows as [name], never as a blank', () {
     final out = StayMessageRenderer.render(_checkIn, {..._values, 'doorCode': null, 'wifiName': '  '});
     expect(out, contains('Door code: [doorCode].'));
-    expect(out, contains('Wifi: [wifiName] / rvpark2026.'));
+    expect(out, contains('Wifi: [wifiName] / guestpass2026.'));
   });
 
   test('an unknown variable is shown, not dropped or filled', () {
@@ -52,7 +52,7 @@ void main() {
     expect(out, contains('Door code: [doorCode].'));
     // Listing-level values are still filled.
     expect(out, contains('Airbnb 1'));
-    expect(out, contains('Wifi: Caprock / rvpark2026.'));
+    expect(out, contains('Wifi: Test Park / guestpass2026.'));
   });
 
   test('lists the variables a body uses and the ones it cannot fill', () {
