@@ -42,8 +42,9 @@ class QuickBlockSheet extends ConsumerStatefulWidget {
 }
 
 class _QuickBlockSheetState extends ConsumerState<QuickBlockSheet> {
-  /// One id per sheet: a retry (or the confirmations below) never blocks twice.
-  late final String _requestId = newRequestId();
+  /// One id per set of dates: a retry (or the confirmations below) never
+  /// blocks twice, and different dates are a different block.
+  String _requestId = newRequestId();
   final _note = TextEditingController();
   String? _listingId;
   StayKind _kind = StayKind.ownerBlock;
@@ -61,6 +62,13 @@ class _QuickBlockSheetState extends ConsumerState<QuickBlockSheet> {
     _from = LocalDate.tryParse(widget.checkIn);
     final out = LocalDate.tryParse(widget.checkOut);
     _through = out?.addDays(-1) ?? _from;
+  }
+
+  /// Applies a change to the listing, kind or dates, with a fresh request id.
+  void _changed(void Function() apply) {
+    apply();
+    _requestId = newRequestId();
+    _error = null;
   }
 
   @override
@@ -134,7 +142,7 @@ class _QuickBlockSheetState extends ConsumerState<QuickBlockSheet> {
           if (e.reason == StaysErrorReason.shortLeadAckRequired && !acknowledgeShortLead) {
             final ok = await _confirm(
               'Block these dates on the channel too',
-              'This listing is also on another site, and it may not read the Stays calendar for a few hours. '
+              'This listing is also on another site, which does not see Stays blocks right away (and not at all until calendar sending is on). '
                   'Block the same dates in the Airbnb app (and any other site) so nobody books them meanwhile.',
               'I have blocked them there too',
             );
@@ -179,6 +187,7 @@ class _QuickBlockSheetState extends ConsumerState<QuickBlockSheet> {
         .toList();
     final controls = ref.watch(stayControlsProvider(widget.facilityId)).value;
     final today = controls == null ? null : staysTodayFor(controls, ref.watch(facilityClockProvider));
+    final exportOn = controls?.icalExportEnabled ?? false;
 
     Widget body;
     if (controls == null) {
@@ -203,7 +212,7 @@ class _QuickBlockSheetState extends ConsumerState<QuickBlockSheet> {
                 isDense: true,
                 hint: const Text('Choose a listing'),
                 items: [for (final l in listings) DropdownMenuItem(value: l.id, child: Text(l.name))],
-                onChanged: _saving ? null : (id) => setState(() => _listingId = id),
+                onChanged: _saving ? null : (id) => setState(() => _changed(() => _listingId = id)),
               ),
             ),
           ),
@@ -214,7 +223,7 @@ class _QuickBlockSheetState extends ConsumerState<QuickBlockSheet> {
               ButtonSegment(value: StayKind.maintenanceBlock, label: Text('Maintenance'), icon: Icon(Icons.build_outlined)),
             ],
             selected: {_kind},
-            onSelectionChanged: _saving ? null : (s) => setState(() => _kind = s.first),
+            onSelectionChanged: _saving ? null : (s) => setState(() => _changed(() => _kind = s.first)),
           ),
           const SizedBox(height: 12),
           Row(
@@ -227,10 +236,10 @@ class _QuickBlockSheetState extends ConsumerState<QuickBlockSheet> {
                       : () async {
                           final d = await _pick(from, today, last);
                           if (d == null) return;
-                          setState(() {
-                            _from = d;
-                            if ((_through ?? d).isBefore(d)) _through = d;
-                          });
+                          setState(() => _changed(() {
+                                _from = d;
+                                if ((_through ?? d).isBefore(d)) _through = d;
+                              }));
                         },
                   child: Text('First night: ${weekdayDateLabel(from)}'),
                 ),
@@ -243,7 +252,7 @@ class _QuickBlockSheetState extends ConsumerState<QuickBlockSheet> {
                       ? null
                       : () async {
                           final d = await _pick(through, from, last);
-                          if (d != null) setState(() => _through = d);
+                          if (d != null) setState(() => _changed(() => _through = d));
                         },
                   child: Text('Last night: ${weekdayDateLabel(through)}'),
                 ),
@@ -297,7 +306,9 @@ class _QuickBlockSheetState extends ConsumerState<QuickBlockSheet> {
               Text('Block dates', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600)),
               const SizedBox(height: 4),
               Text(
-                'A block keeps the nights off Stays bookings. It reaches Airbnb only through an SFC link, on Airbnb’s schedule.',
+                exportOn
+                    ? 'A block keeps the nights off Stays bookings. Airbnb picks it up from your SFC link on its own schedule, often only every few hours.'
+                    : 'A block keeps the nights off Stays bookings. Stays does not send blocks to Airbnb yet, so block the same dates in the Airbnb app too.',
                 style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13),
               ),
               const SizedBox(height: 12),

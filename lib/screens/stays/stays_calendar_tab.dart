@@ -164,6 +164,7 @@ class _StaysCalendarTabState extends ConsumerState<StaysCalendarTab> {
           const SizedBox(height: 12),
           StayConflictBanner(
             conflicts: conflicts,
+            syncEnabled: controls.icalSyncEnabled,
             onOpen: (stay) => showStayPeekSheet(context, facilityId: _fid, stay: stay, canManage: canManage),
           ),
         ],

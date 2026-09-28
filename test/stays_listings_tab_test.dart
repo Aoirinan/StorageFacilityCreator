@@ -54,6 +54,35 @@ void main() {
     expect(find.byKey(const Key('stays-listings-add')), findsOneWidget);
   });
 
+  testWidgets('acknowledged conflicts, and ones whose nights are all past, raise no banner or chip', (tester) async {
+    final h = _harness();
+    // Today is Oct 10 at the facility (the harness clock).
+    h.repository.seed(h.facilityId, StaysCollections.stays, 'man_fake1', {
+      ...h.repository.read(h.facilityId, StaysCollections.stays, 'man_fake1')!,
+      'conflict': {
+        'stayIds': ['airbnb_HMFAKE09'],
+        'nights': ['2026-11-02'],
+        'acknowledgedAt': DateTime.utc(2026, 10, 1),
+      },
+    });
+    h.repository.seed(h.facilityId, StaysCollections.stays, 'man_past', {
+      'listingId': 'l2',
+      'listingName': 'Cabin 2',
+      'kind': 'reservation',
+      'source': 'direct',
+      'status': 'conflict',
+      'checkIn': '2026-10-01',
+      'checkOut': '2026-10-03',
+      'conflict': {
+        'stayIds': ['x'],
+        'nights': ['2026-10-01', '2026-10-02'],
+      },
+    });
+    await h.pump(tester, StaysListingsTab(facilityId: h.facilityId));
+    expect(find.byKey(const Key('stay-conflict-banner')), findsNothing);
+    expect(find.text('Double booked'), findsNothing);
+  });
+
   testWidgets('staff see the listings read-only', (tester) async {
     final h = _harness(permissions: {PermissionType.viewStays});
     await h.pump(tester, StaysListingsTab(facilityId: h.facilityId));

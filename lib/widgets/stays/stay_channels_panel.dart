@@ -26,12 +26,35 @@ const String staysExportTimingNote =
     'A block you add in Stays can take that long to show there, so when a guest could book soon, '
     'block the dates in the Airbnb app too.';
 
+/// Shown instead of export links until support turns sending on (spec §11.4:
+/// links are made only in Stage B, after the shadow week).
+const String staysExportLaterNote =
+    'Sending your calendar to Airbnb comes after a one-week check; we\'ll turn it on.';
+
+/// Airbnb's own delay, which no check interval on our side can shorten.
+const String staysAirbnbDelayNote = 'Airbnb itself can take a few hours to update its own calendar export.';
+
+/// How fresh imported calendars are, without promising what Stays cannot do.
+String staysImportTimingNote({required bool syncEnabled}) => syncEnabled
+    ? 'Stays checks each calendar every 30 minutes. $staysAirbnbDelayNote'
+    : 'Automatic checks are off, so Stays reads a calendar only when you press Sync now. $staysAirbnbDelayNote';
+
 /// The two switches that decide whether calendars move at all.
 class StaysSyncSwitchesCard extends ConsumerStatefulWidget {
-  const StaysSyncSwitchesCard({super.key, required this.facilityId, required this.controls});
+  const StaysSyncSwitchesCard({
+    super.key,
+    required this.facilityId,
+    required this.controls,
+    this.hasAnyCalendar = false,
+  });
 
   final String facilityId;
   final StayControls controls;
+
+  /// Any calendar was ever connected here (removed ones too). Until then the
+  /// 30-minute switch is not offered: connecting the first calendar turns it
+  /// on, so "never set" means exactly this.
+  final bool hasAnyCalendar;
 
   @override
   ConsumerState<StaysSyncSwitchesCard> createState() => _StaysSyncSwitchesCardState();
@@ -84,31 +107,54 @@ class _StaysSyncSwitchesCardState extends ConsumerState<StaysSyncSwitchesCard> {
   @override
   Widget build(BuildContext context) {
     final c = widget.controls;
+    // Support clears a facility for sending (staysServerConfig.exportAllowlist);
+    // until then the owner sees why, not a switch the server would refuse.
+    final exportAllowed = ref.watch(staysAvailabilityProvider(widget.facilityId)).value?.exportAllowed ?? false;
+    final showImport = widget.hasAnyCalendar || c.icalSyncEnabled;
     return Card(
       child: Column(
         children: [
-          SwitchListTile(
-            key: const Key('stays-switch-import'),
-            title: const Text('Check calendars every 30 minutes'),
-            subtitle: const Text('Bookings and blocked dates from Airbnb and the other sites show up in Stays.'),
-            value: c.icalSyncEnabled,
-            onChanged: _saving
-                ? null
-                : (on) => _set(
-                      StayControlsChanges(icalSyncEnabled: on),
-                      on ? 'Stays now checks your calendars every 30 minutes.' : 'Automatic checks are off. Sync now still works.',
-                    ),
-          ),
+          if (showImport)
+            SwitchListTile(
+              key: const Key('stays-switch-import'),
+              title: const Text('Check calendars every 30 minutes'),
+              subtitle: Text(c.icalSyncEnabled
+                  ? 'On. Bookings and blocked dates from Airbnb and the other sites show up in Stays. $staysAirbnbDelayNote'
+                  : 'Off. Stays reads your calendars only when you press Sync now.'),
+              value: c.icalSyncEnabled,
+              onChanged: _saving
+                  ? null
+                  : (on) => _set(
+                        StayControlsChanges(icalSyncEnabled: on),
+                        on ? 'Stays now checks your calendars every 30 minutes.' : 'Automatic checks are off. Sync now still works.',
+                      ),
+            )
+          else
+            const ListTile(
+              key: Key('stays-import-first-note'),
+              title: Text('Check calendars every 30 minutes'),
+              subtitle: Text('Turns on when you connect your first calendar.'),
+            ),
           const Divider(height: 1),
-          SwitchListTile(
-            key: const Key('stays-switch-export'),
-            title: const Text('Send your SFC calendar to other sites'),
-            subtitle: Text(c.icalExportEnabled
-                ? 'On. Your SFC links answer with the dates they cover.'
-                : 'Off. Your SFC links answer "try again later", and sites keep the dates they already have.'),
-            value: c.icalExportEnabled,
-            onChanged: _saving ? null : _toggleExport,
-          ),
+          if (exportAllowed || c.icalExportEnabled)
+            SwitchListTile(
+              key: const Key('stays-switch-export'),
+              title: const Text('Send your SFC calendar to other sites'),
+              subtitle: Text(c.icalExportEnabled
+                  ? 'On. Your SFC links answer with the dates they cover.'
+                  : 'Off. Your SFC links answer "try again later", and sites keep the dates they already have.'),
+              value: c.icalExportEnabled,
+              // Turning it off is always allowed; on needs support's say-so.
+              onChanged: _saving || (!exportAllowed && !c.icalExportEnabled) ? null : _toggleExport,
+            )
+          else
+            const SwitchListTile(
+              key: Key('stays-switch-export-locked'),
+              title: Text('Send your SFC calendar to other sites'),
+              subtitle: Text('Contact support to turn on calendar sending. $staysExportLaterNote'),
+              value: false,
+              onChanged: null,
+            ),
         ],
       ),
     );
@@ -124,11 +170,17 @@ class StayListingChannelsCard extends ConsumerStatefulWidget {
     required this.controls,
     this.channels = const [],
     this.exportLinks = const [],
+    this.hasAnyCalendar = true,
   });
 
   final String facilityId;
   final StayListing listing;
   final StayControls controls;
+
+  /// Any calendar was ever connected at this facility (removed ones too).
+  /// Only the very first one turns the 30-minute checks on by itself;
+  /// after that, checks the owner turned off stay off unless she says so.
+  final bool hasAnyCalendar;
 
   /// This listing's channels (inactive ones are left out here).
   final List<StayChannel> channels;
@@ -172,9 +224,31 @@ class _StayListingChannelsCardState extends ConsumerState<StayListingChannelsCar
         ? 'Connected. First sync: ${first.created} new booking(s), ${first.blocks} blocked range(s).'
         : 'Connected, but the first sync did not finish: ${channelStatusProblem(first.status, httpStatus: first.httpStatus)}';
     showStaysSnack(context, summary, error: !first.status.isHealthy);
-    // Pasting a calendar turns on the 30-minute checks (spec §11.4); without
-    // them the calendar would only ever be read on Sync now.
-    if (!widget.controls.icalSyncEnabled) {
+    if (widget.controls.icalSyncEnabled) return;
+    // The first calendar ever turns on the 30-minute checks (spec §11.4): the
+    // switch is not offered before it, so the owner has never set it. After
+    // that, checks that are off were turned off by someone: ask.
+    if (widget.hasAnyCalendar) {
+      final turnOn = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Automatic checks are off'),
+          content: const Text(
+            'Stays reads this calendar only when you press Sync now. Turn on checks every 30 minutes for all calendars?',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Leave off')),
+            FilledButton(
+              key: const Key('stays-turn-on-checks'),
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Turn on'),
+            ),
+          ],
+        ),
+      );
+      if (turnOn != true || !mounted) return;
+    }
+    {
       try {
         await ref.read(staysCallablesProvider).setControls(StaysSetControlsRequest(
               facilityId: widget.facilityId,
@@ -242,20 +316,35 @@ class _StayListingChannelsCardState extends ConsumerState<StayListingChannelsCar
               requestId: requestId,
             );
         _pendingExport.remove(target);
-        await Clipboard.setData(ClipboardData(text: link.url));
         if (!mounted) return;
+        // Shown first, so a refused clipboard still leaves the link on screen.
         setState(() => _shownUrls[link.linkId] = link.url);
-        showStaysSnack(context, 'Link made and copied. Paste it into ${exportTargetLabel(target)}’s Import calendar.');
+        if (await _copyShown(link.url)) {
+          if (mounted) showStaysSnack(context, 'Link made and copied. Paste it into ${exportTargetLabel(target)}’s Import calendar.');
+        }
       });
 
   Future<void> _copyExport(StayExportLink link) => _run('copy:${link.id}', () async {
         final url = _shownUrls[link.id] ??
             (await ref.read(staysCallablesProvider).getExportUrl(facilityId: widget.facilityId, linkId: link.id)).url;
-        await Clipboard.setData(ClipboardData(text: url));
         if (!mounted) return;
         setState(() => _shownUrls[link.id] = url);
-        showStaysSnack(context, 'Link copied.');
+        if (await _copyShown(url)) {
+          if (mounted) showStaysSnack(context, 'Link copied.');
+        }
       });
+
+  /// Copies a link already on screen. A browser can refuse the clipboard; the
+  /// link stays visible and selectable, and the owner is told to copy it.
+  Future<bool> _copyShown(String url) async {
+    try {
+      await Clipboard.setData(ClipboardData(text: url));
+      return true;
+    } catch (_) {
+      if (mounted) showStaysSnack(context, 'Copy failed — select and copy the link above.', error: true);
+      return false;
+    }
+  }
 
   Future<void> _revokeExport(StayExportLink link) async {
     final site = exportTargetLabel(link.targetProvider);
@@ -290,6 +379,7 @@ class _StayListingChannelsCardState extends ConsumerState<StayListingChannelsCar
       ..sort((a, b) => (a.createdAt ?? DateTime(0)).compareTo(b.createdAt ?? DateTime(0)));
     final links = widget.exportLinks.where((l) => l.active && l.listingId == widget.listing.id).toList();
     final usedTargets = links.map((l) => l.targetProvider).toSet();
+    final exportOn = widget.controls.icalExportEnabled;
 
     return Card(
       key: Key('stays-channels-${widget.listing.id}'),
@@ -304,8 +394,9 @@ class _StayListingChannelsCardState extends ConsumerState<StayListingChannelsCar
             Text('Calendars coming in', style: theme.textTheme.titleSmall),
             const SizedBox(height: 4),
             Text(
-              'Paste the Export calendar link from Airbnb (or VRBO, Booking.com). Stays reads it every 30 minutes; '
-              'a change on Airbnb shows here within about half an hour.',
+              'Paste the Export calendar link from Airbnb (or VRBO, Booking.com). '
+              '${staysImportTimingNote(syncEnabled: widget.controls.icalSyncEnabled)}',
+              key: Key('stays-import-timing-${widget.listing.id}'),
               style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13),
             ),
             if (channels.isEmpty)
@@ -334,17 +425,31 @@ class _StayListingChannelsCardState extends ConsumerState<StayListingChannelsCar
             const Divider(height: 24),
             Text('Your SFC calendar for other sites', style: theme.textTheme.titleSmall),
             const SizedBox(height: 4),
-            Text(staysExportTimingNote, style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13)),
-            if (!widget.controls.icalExportEnabled)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  'Sending is off for now, so these links answer "try again later". Turn it on after you have '
-                  'checked for about a week that Stays matches the Airbnb app.',
-                  key: const Key('stays-export-off-note'),
-                  style: const TextStyle(color: AppTheme.warning, fontSize: 13),
-                ),
-              ),
+            // Links are made and copied only once sending is on (spec §11.4
+            // Stage B); before that there is nothing to paste anywhere.
+            if (!exportOn)
+              Text(
+                staysExportLaterNote,
+                key: const Key('stays-export-off-note'),
+                style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13),
+              )
+            else ...[
+              Text(staysExportTimingNote, style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13)),
+              ..._exportSection(links, usedTargets, now, scheme),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _exportSection(
+    List<StayExportLink> links,
+    Set<ExportTargetProvider> usedTargets,
+    DateTime now,
+    ColorScheme scheme,
+  ) =>
+      [
             for (final link in links)
               _ExportLinkTile(
                 link: link,
@@ -381,11 +486,7 @@ class _StayListingChannelsCardState extends ConsumerState<StayListingChannelsCar
                 ),
               ),
             ),
-          ],
-        ),
-      ),
-    );
-  }
+      ];
 }
 
 class _ChannelTile extends StatelessWidget {

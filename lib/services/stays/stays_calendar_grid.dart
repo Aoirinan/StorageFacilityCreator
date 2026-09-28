@@ -237,6 +237,26 @@ class StayConflictSummary {
   bool get acknowledged => stay.conflict?.isAcknowledged == true;
 }
 
+/// The conflict stays still worth a banner: not acknowledged by the owner,
+/// and with at least one lost night today or later ([today] is the
+/// facility's date, never the browser's). With [today] unknown (no
+/// confirmed zone) only acknowledged ones are dropped.
+List<Stay> openConflictStays(Iterable<Stay> stays, {LocalDate? today}) {
+  final todayYmd = today?.toYmd();
+  return [
+    for (final s in stays)
+      if (s.status == StayStatus.conflict && s.conflict?.isAcknowledged != true)
+        if (todayYmd == null || _hasNightFrom(s, todayYmd)) s,
+  ];
+}
+
+bool _hasNightFrom(Stay stay, String todayYmd) {
+  final nights = stay.conflict?.nights ?? const <String>[];
+  // No nights listed: the stay's own last night (checkOut is exclusive).
+  if (nights.isEmpty) return stay.checkOut.compareTo(todayYmd) > 0;
+  return nights.any((n) => n.compareTo(todayYmd) >= 0);
+}
+
 /// One summary per stay in conflict, soonest first. [others] is where the
 /// winners are looked up (any stays; their ids come from conflict.stayIds).
 List<StayConflictSummary> summarizeConflicts(Iterable<Stay> stays, {Iterable<Stay> others = const []}) {

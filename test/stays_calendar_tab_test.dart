@@ -183,6 +183,29 @@ void main() {
     expect(last.overrideSoftBlocks, isTrue);
   });
 
+  testWidgets('a changed block is a new request: a new id once the choices change', (tester) async {
+    final h = _harness();
+    h.callables.failures[StaysCallableNames.createStay] = const StaysCallableException(StaysErrorReason.hardConflict);
+    await h.pump(tester, StaysCalendarTab(facilityId: h.facilityId));
+    await tester.tap(find.byKey(const Key('stay-night-2026-10-16')));
+    await settle(tester);
+    await tester.tap(find.byKey(const Key('stay-night-block')));
+    await settle(tester);
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.byKey(const Key('stay-block-save')));
+    await settle(tester);
+    await tester.tap(find.byKey(const Key('stay-block-save')));
+    await settle(tester);
+    await tester.tap(find.text('Maintenance'));
+    await settle(tester);
+    await tester.tap(find.byKey(const Key('stay-block-save')));
+    await settle(tester);
+    final ids = h.callables.requestsOf<StaysCreateStayRequest>(StaysCallableNames.createStay).map((r) => r.requestId).toList();
+    expect(ids, hasLength(3));
+    expect(ids[0], ids[1], reason: 'a retry of the same block keeps its id');
+    expect(ids[2], isNot(ids[1]));
+  });
+
   testWidgets('fits a phone: the month renders at 375 px without overflow', (tester) async {
     final h = _harness();
     await h.pump(tester, StaysCalendarTab(facilityId: h.facilityId), surface: const Size(375, 812));

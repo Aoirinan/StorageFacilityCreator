@@ -36,6 +36,9 @@ class StaysWidgetHarness {
   /// Text put on the clipboard.
   final List<String> clipboard = [];
 
+  /// Make the clipboard refuse writes, as a browser can.
+  bool clipboardFails = false;
+
   /// stayControls/current. [confirmedZone] stamps the zone as confirmed.
   void seedControls({bool moduleEnabled = true, String? confirmedZone = 'America/Denver', Map<String, dynamic> extra = const {}}) {
     repository.seed(facilityId, StaysCollections.controls, StaysCollections.currentDocId, {
@@ -66,6 +69,7 @@ class StaysWidgetHarness {
     addTearDown(tester.view.resetDevicePixelRatio);
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
       if (call.method == 'Clipboard.setData') {
+        if (clipboardFails) throw PlatformException(code: 'denied', message: 'Clipboard write refused');
         clipboard.add((call.arguments as Map)['text'] as String);
       }
       return null;
@@ -75,6 +79,8 @@ class StaysWidgetHarness {
     await tester.pumpWidget(ProviderScope(
       retry: (_, __) => null,
       overrides: [
+        // These screens sit behind the route's flag check; the flag is on here.
+        staysUiStateProvider.overrideWithValue(StaysUiState.on),
         staysRepositoryProvider.overrideWithValue(repository),
         staysCallablesProvider.overrideWithValue(callables),
         facilityClockProvider.overrideWithValue(FixedFacilityClock(todayValue: today, nowUtcValue: nowUtc)),

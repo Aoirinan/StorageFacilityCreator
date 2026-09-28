@@ -47,6 +47,7 @@ class StaysListingsTab extends ConsumerWidget {
         if (conflicts.isNotEmpty) ...[
           StayConflictBanner(
             conflicts: conflicts,
+            syncEnabled: ref.watch(stayControlsProvider(facilityId)).value?.icalSyncEnabled ?? false,
             showListing: true,
             onOpen: (stay) => showStayPeekSheet(context, facilityId: facilityId, stay: stay, canManage: canManage),
           ),

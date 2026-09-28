@@ -447,7 +447,8 @@ class _StaysSetupWizardScreenState extends ConsumerState<StaysSetupWizardScreen>
       children: [
         Text(
           'For each listing on Airbnb, VRBO or Booking.com, paste its Export calendar link. Stays shows what it '
-          'found before connecting, then checks it every 30 minutes. You can skip this and add calendars later.',
+          'found before connecting. You can skip this and add calendars later. '
+          '${staysImportTimingNote(syncEnabled: controls.icalSyncEnabled || channels.isEmpty)}',
           style: TextStyle(color: scheme.onSurfaceVariant),
         ),
         const SizedBox(height: 12),
@@ -458,6 +459,7 @@ class _StaysSetupWizardScreenState extends ConsumerState<StaysSetupWizardScreen>
             controls: controls,
             channels: channels.where((c) => c.listingId == listing.id).toList(),
             exportLinks: links.where((l) => l.listingId == listing.id).toList(),
+            hasAnyCalendar: channels.isNotEmpty,
           ),
           const SizedBox(height: 12),
         ],
@@ -487,8 +489,8 @@ class _StaysSetupWizardScreenState extends ConsumerState<StaysSetupWizardScreen>
         Text('Calendars connected: $active'),
         const SizedBox(height: 12),
         const Text(
-          'For the first week, compare the Stays calendar with the Airbnb app each day before you turn on '
-          'sending your SFC calendar to other sites.',
+          'For the first week, compare the Stays calendar with the Airbnb app each day. '
+          '$staysExportLaterNote',
         ),
         const SizedBox(height: 16),
         FilledButton.icon(

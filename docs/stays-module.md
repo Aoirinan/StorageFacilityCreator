@@ -32,8 +32,8 @@ Built so far on the app side: setup, channel management and a month calendar. Th
    5. **Done.** A summary, with a link to the calendar.
 2. **Calendars** (`/stays/channels`, owner/manager) has two parts.
    - **Two switches:**
-     - "Check calendars every 30 minutes" (`icalSyncEnabled`). Saving the first calendar turns it on, as the rollout plan says.
-     - "Send your SFC calendar to other sites" (`icalExportEnabled`). It asks for confirmation and recommends a week of comparing with Airbnb first.
+     - "Check calendars every 30 minutes" (`icalSyncEnabled`). It is offered only once a calendar has been connected. The very first calendar turns it on, as the rollout plan says; after that, if checks are off, adding a calendar asks instead of turning them back on.
+     - "Send your SFC calendar to other sites" (`icalExportEnabled`). `staysSetControls` turns it on only for a facility listed in `staysServerConfig/current.exportAllowlist` (a super admin adds it after the shadow week; a missing field allows nobody), and `staysGetAvailability` reports `exportAllowed`. Elsewhere the switch is locked with "Contact support to turn on calendar sending". Turning it off is always allowed.
    - **Per listing:**
      - Imported calendars show when they were last checked and synced, the last problem in words, and when the channel last fetched our export link. Each has **Sync now** and **Remove**.
      - **Add a calendar** previews the feed (`dryRun`) before connecting it.

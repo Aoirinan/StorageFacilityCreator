@@ -47,7 +47,7 @@ class StaysChannelsScreen extends ConsumerWidget {
       children: [
         Text('Calendars', style: Theme.of(context).textTheme.headlineSmall),
         const SizedBox(height: 8),
-        StaysSyncSwitchesCard(facilityId: facilityId, controls: controls),
+        StaysSyncSwitchesCard(facilityId: facilityId, controls: controls, hasAnyCalendar: channels.isNotEmpty),
         const SizedBox(height: 12),
         if (shown.isEmpty)
           const Padding(
@@ -61,6 +61,7 @@ class StaysChannelsScreen extends ConsumerWidget {
             controls: controls,
             channels: channels.where((c) => c.listingId == listing.id).toList(),
             exportLinks: links.where((l) => l.listingId == listing.id).toList(),
+            hasAnyCalendar: channels.isNotEmpty,
           ),
           const SizedBox(height: 12),
         ],

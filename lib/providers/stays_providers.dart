@@ -143,7 +143,9 @@ final stayListingsProvider = StreamProvider.family<List<StayListing>, String>(
   (ref, facilityId) => ref.watch(staysRepositoryProvider).watchListings(facilityId),
 );
 
-final staysInRangeProvider = StreamProvider.family<List<Stay>, StayRangeKey>(
+/// Stays overlapping a window. Auto-disposed: the calendar asks for a new
+/// window each month it shows, and a month left behind stops listening.
+final staysInRangeProvider = StreamProvider.autoDispose.family<List<Stay>, StayRangeKey>(
   (ref, key) => ref.watch(staysRepositoryProvider).watchStaysInRange(key.facilityId, key.from, key.to),
 );
 
@@ -197,16 +199,21 @@ final stayConflictStaysProvider = StreamProvider.family<List<Stay>, String>(
   (ref, facilityId) => ref.watch(staysRepositoryProvider).watchConflictStays(facilityId),
 );
 
-/// Every double booking with the stays that hold the lost nights, soonest
-/// first. The winners are looked up over the span of the lost nights.
-final stayConflictSummariesProvider = Provider.family<AsyncValue<List<StayConflictSummary>>, String>((ref, facilityId) {
+/// Every open double booking with the stays that hold the lost nights,
+/// soonest first. Acknowledged ones, and ones whose nights are all past in
+/// the facility's zone, are left out (see openConflictStays). The winners
+/// are looked up over the span of the lost nights.
+final stayConflictSummariesProvider = Provider.autoDispose.family<AsyncValue<List<StayConflictSummary>>, String>((ref, facilityId) {
+  final controls = ref.watch(stayControlsProvider(facilityId)).value;
+  final today = controls == null ? null : staysTodayFor(controls, ref.watch(facilityClockProvider));
   final conflictsAsync = ref.watch(stayConflictStaysProvider(facilityId));
-  final conflicts = conflictsAsync.value;
-  if (conflicts == null) {
+  final loaded = conflictsAsync.value;
+  if (loaded == null) {
     return conflictsAsync.hasError
         ? AsyncError(conflictsAsync.error!, conflictsAsync.stackTrace ?? StackTrace.current)
         : const AsyncLoading();
   }
+  final conflicts = openConflictStays(loaded, today: today);
   if (conflicts.isEmpty) return const AsyncData([]);
   final nights = <LocalDate>[
     for (final s in conflicts) ...[

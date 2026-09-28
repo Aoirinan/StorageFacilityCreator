@@ -9,9 +9,27 @@ import 'package:sfcapp/theme/app_theme.dart';
 /// engine marked `conflict`, the nights it lost, and who holds them. Nothing
 /// when there are none. [onOpen] opens a stay (e.g. its peek sheet).
 class StayConflictBanner extends StatelessWidget {
-  const StayConflictBanner({super.key, required this.conflicts, this.showListing = false, this.onOpen});
+  const StayConflictBanner({
+    super.key,
+    required this.conflicts,
+    required this.syncEnabled,
+    this.showListing = false,
+    this.onOpen,
+  });
 
   final List<StayConflictSummary> conflicts;
+
+  /// stayControls.icalSyncEnabled: whether Stays checks the channels on its own.
+  final bool syncEnabled;
+
+  /// How the banner goes away, without promising what Stays cannot do.
+  static String clearingNote({required bool syncEnabled}) => syncEnabled
+      ? 'The earlier booking keeps the nights. Cancel one of them on the site it was booked on. '
+          'Stays checks the channels every 30 minutes, but Airbnb itself can take a few hours to update '
+          'its calendar export, so this can stay up for a while after you cancel.'
+      : 'The earlier booking keeps the nights. Cancel one of them on the site it was booked on. '
+          'Automatic calendar checks are off, so press Sync now on the Calendars page afterwards. '
+          'Airbnb itself can take a few hours to update its calendar export.';
 
   /// Name the listing in each line (the facility-wide banner).
   final bool showListing;
@@ -59,15 +77,13 @@ class StayConflictBanner extends StatelessWidget {
               onTap: open == null ? null : () => open(c.stay),
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 3),
-                child: Text(
-                  '${lineFor(c, showListing: showListing)}${c.acknowledged ? ' (seen)' : ''}',
-                ),
+                child: Text(lineFor(c, showListing: showListing)),
               ),
             ),
           const SizedBox(height: 4),
           Text(
-            'The earlier booking keeps the nights. Cancel one of them on the site it was booked on; '
-            'Stays clears this within about 30 minutes of the channel dropping it.',
+            clearingNote(syncEnabled: syncEnabled),
+            key: const Key('stay-conflict-banner-note'),
             style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
         ],

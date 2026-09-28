@@ -112,7 +112,15 @@ class _StayPeekSheetState extends ConsumerState<StayPeekSheet> {
       note('Stays could not tell whether this booking was cancelled. Check it on the channel.', color: AppTheme.warning);
     }
     if (stay.isFeedOwned && stay.sync?.detached != true && stay.isActive) {
-      note('Its dates come from the channel: change them there, and Stays updates within about 30 minutes.');
+      final syncOn = ref.watch(stayControlsProvider(widget.facilityId)).value?.icalSyncEnabled ?? false;
+      note(
+        syncOn
+            ? 'Its dates come from the channel: change them there. Stays checks every 30 minutes, but Airbnb '
+                'itself can take a few hours to update its calendar export, so a change may take that long to show.'
+            : 'Its dates come from the channel: change them there. Automatic calendar checks are off, so press '
+                'Sync now on the Calendars page afterwards. Airbnb itself can take a few hours to update its calendar export.',
+        key: const Key('stay-peek-feed-timing'),
+      );
     }
     if (stay.sync?.detached == true) note('Its calendar was removed, so this booking is no longer synced.');
     if (stay.staffNotes.trim().isNotEmpty) note('Notes: ${stay.staffNotes.trim()}');

@@ -134,6 +134,22 @@ void main() {
     expect(grid.cellFor('2026-10-06')!.holder!.id, 'man_z');
   });
 
+  test('open conflicts: acknowledged ones and all-past ones are left out, in the facility date', () {
+    StayConflict lost(List<String> nights, {DateTime? ack}) =>
+        StayConflict(stayIds: const ['w'], nights: nights, acknowledgedAt: ack);
+    final stays = [
+      _stay('past', '2026-10-01', '2026-10-03', status: StayStatus.conflict, conflict: lost(['2026-10-01', '2026-10-02'])),
+      _stay('today', '2026-10-09', '2026-10-12', status: StayStatus.conflict, conflict: lost(['2026-10-09', '2026-10-10'])),
+      _stay('seen', '2026-10-20', '2026-10-22', status: StayStatus.conflict, conflict: lost(['2026-10-20'], ack: DateTime.utc(2026))),
+      _stay('nonights', '2026-10-08', '2026-10-11', status: StayStatus.conflict),
+      _stay('ended', '2026-10-08', '2026-10-10', status: StayStatus.conflict),
+      _stay('fine', '2026-10-20', '2026-10-22'),
+    ];
+    expect(openConflictStays(stays, today: _today).map((s) => s.id), ['today', 'nonights']);
+    // No confirmed zone: nothing is judged past, but acknowledged ones still go.
+    expect(openConflictStays(stays).map((s) => s.id), ['past', 'today', 'nonights', 'ended']);
+  });
+
   test('summarizeConflicts names who holds the lost nights, soonest first', () {
     final winner = _stay('airbnb_HMFAKE04', '2026-11-01', '2026-11-03', guest: 'Jane D.');
     final early = _stay(

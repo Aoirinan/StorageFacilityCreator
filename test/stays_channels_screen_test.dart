@@ -9,11 +9,12 @@ import 'support/stays_widget_harness.dart';
 
 // Made-up listing, hosts and links only.
 
-StaysWidgetHarness _harness({bool icalSyncEnabled = false}) {
+StaysWidgetHarness _harness({bool icalSyncEnabled = false, bool icalExportEnabled = false, bool withChannels = true}) {
   final h = StaysWidgetHarness(nowUtc: DateTime.utc(2026, 10, 10, 18));
-  h.seedControls(extra: {'icalSyncEnabled': icalSyncEnabled});
+  h.seedControls(extra: {'icalSyncEnabled': icalSyncEnabled, 'icalExportEnabled': icalExportEnabled});
   h.seedListing('l1', 'Blue House', shortCode: 'BH');
   final now = h.nowUtc;
+  if (!withChannels) return h;
   h.repository.seed(h.facilityId, StaysCollections.channels, 'ch_ok', {
     'listingId': 'l1',
     'provider': 'airbnb',
@@ -67,6 +68,17 @@ StaysWidgetHarness _harness({bool icalSyncEnabled = false}) {
   return h;
 }
 
+/// Paste a link, preview it, connect it.
+Future<void> _connect(WidgetTester tester) async {
+  await tester.tap(find.byKey(const Key('stays-add-channel-l1')));
+  await settle(tester);
+  await tester.enterText(find.byKey(const Key('stays-channel-url')), 'https://www.airbnb.com/calendar/ical/9.ics?s=fake');
+  await tester.tap(find.byKey(const Key('stays-channel-check')));
+  await settle(tester);
+  await tester.tap(find.byKey(const Key('stays-channel-connect')));
+  await settle(tester);
+}
+
 void main() {
   testWidgets('each calendar shows its state: healthy, failing, not synced yet; removed ones are gone', (tester) async {
     final h = _harness();
@@ -74,8 +86,8 @@ void main() {
 
     expect(find.byKey(const Key('stays-channel-ch_ok')), findsOneWidget);
     expect(find.text('Checked 6 min ago · Last synced 6 min ago'), findsOneWidget);
-    // Airbnb's fetch of our link, on the Airbnb calendar and on the link itself.
-    expect(find.text('Airbnb last fetched your SFC calendar 2 h ago'), findsNWidgets(2));
+    // Airbnb's fetch of our link, shown on the Airbnb calendar.
+    expect(find.text('Airbnb last fetched your SFC calendar 2 h ago'), findsOneWidget);
 
     expect(find.byKey(const Key('stays-channel-ch_bad')), findsOneWidget);
     expect(find.textContaining('no longer works'), findsOneWidget);
@@ -85,11 +97,58 @@ void main() {
     expect(find.text('Not checked yet · Not synced yet'), findsOneWidget);
     expect(find.byKey(const Key('stays-channel-ch_removed')), findsNothing);
 
-    // Export: the link, what it sends, and the honest timing; sending is off.
+    // Checks are off: no promise of 30 minutes, and Airbnb's own delay is said.
+    final timing = tester.widget<Text>(find.byKey(const Key('stays-import-timing-l1'))).data!;
+    expect(timing, contains('Automatic checks are off'));
+    expect(timing, contains('Airbnb itself can take a few hours'));
+    expect(timing, isNot(contains('every 30 minutes')));
+  });
+
+  testWidgets('before sending is on: no export links to make or copy, just the one-week note', (tester) async {
+    final h = _harness();
+    await h.pump(tester, StaysChannelsScreen(facilityId: h.facilityId));
+    expect(
+      tester.widget<Text>(find.byKey(const Key('stays-export-off-note'))).data,
+      "Sending your calendar to Airbnb comes after a one-week check; we'll turn it on.",
+    );
+    expect(find.byKey(const Key('stays-export-xl1')), findsNothing);
+    expect(find.byKey(const Key('stays-export-copy-xl1')), findsNothing);
+    expect(find.byKey(const Key('stays-add-export-l1')), findsNothing);
+    expect(find.textContaining('Paste it into'), findsNothing);
+    // Not cleared by support: the switch is locked, with who to ask.
+    expect(find.byKey(const Key('stays-switch-export')), findsNothing);
+    expect(find.byKey(const Key('stays-switch-export-locked')), findsOneWidget);
+    expect(find.textContaining('Contact support to turn on calendar sending'), findsOneWidget);
+    expect(h.callables.countOf(StaysCallableNames.getExportUrl), 0);
+  });
+
+  testWidgets('cleared by support: the export switch works and asks first', (tester) async {
+    final h = _harness(icalSyncEnabled: true);
+    h.callables.availability = const StaysAvailability(allowed: true, paused: false, exportAllowed: true);
+    await h.pump(tester, StaysChannelsScreen(facilityId: h.facilityId));
+    expect(find.byKey(const Key('stays-switch-export-locked')), findsNothing);
+    await tester.tap(find.byKey(const Key('stays-switch-export')));
+    await settle(tester);
+    await tester.tap(find.text('Start sending'));
+    await settle(tester);
+    final controls = h.callables.requestsOf<StaysSetControlsRequest>(StaysCallableNames.setControls);
+    expect(controls.single.changes.toJson(), {'icalExportEnabled': true});
+    // Checks are on: now the 30-minute promise is made, still with Airbnb's delay.
+    final timing = tester.widget<Text>(find.byKey(const Key('stays-import-timing-l1'))).data!;
+    expect(timing, contains('every 30 minutes'));
+    expect(timing, contains('Airbnb itself can take a few hours'));
+  });
+
+  testWidgets('once sending is on: the link, what it sends, and honest timing', (tester) async {
+    final h = _harness(icalExportEnabled: true);
+    await h.pump(tester, StaysChannelsScreen(facilityId: h.facilityId));
     expect(find.byKey(const Key('stays-export-xl1')), findsOneWidget);
     expect(find.text('Sends: Owner and maintenance blocks only'), findsOneWidget);
     expect(find.textContaining('on their own schedule, often only every few hours'), findsWidgets);
-    expect(find.byKey(const Key('stays-export-off-note')), findsOneWidget);
+    expect(find.byKey(const Key('stays-export-off-note')), findsNothing);
+    // Turning it off stays possible even without the allowlist.
+    final exportSwitch = tester.widget<SwitchListTile>(find.byKey(const Key('stays-switch-export')));
+    expect(exportSwitch.onChanged, isNotNull);
   });
 
   testWidgets('fits a phone at 375 px without overflow', (tester) async {
@@ -117,7 +176,43 @@ void main() {
     expect(removes.single.request, {'facilityId': h.facilityId, 'channelId': 'ch_bad'});
   });
 
-  testWidgets('adding a calendar previews it first, then connects it and turns on the 30-minute checks', (tester) async {
+  testWidgets('the very first calendar turns the 30-minute checks on by itself', (tester) async {
+    final h = _harness(withChannels: false);
+    await h.pump(tester, StaysChannelsScreen(facilityId: h.facilityId));
+    // Never offered before a first calendar, so never set by the owner.
+    expect(find.byKey(const Key('stays-switch-import')), findsNothing);
+    expect(find.byKey(const Key('stays-import-first-note')), findsOneWidget);
+    await _connect(tester);
+    expect(find.byKey(const Key('stays-turn-on-checks')), findsNothing, reason: 'no question on the first one');
+    final controls = h.callables.requestsOf<StaysSetControlsRequest>(StaysCallableNames.setControls);
+    expect(controls.single.changes.toJson(), {'icalSyncEnabled': true});
+  });
+
+  testWidgets('checks the owner turned off stay off unless she says so', (tester) async {
+    final h = _harness();
+    await h.pump(tester, StaysChannelsScreen(facilityId: h.facilityId));
+    await _connect(tester);
+    await tester.tap(find.text('Leave off'));
+    await settle(tester);
+    expect(h.callables.countOf(StaysCallableNames.setControls), 0);
+  });
+
+  testWidgets('a clipboard that refuses still leaves the link on screen to select', (tester) async {
+    final h = _harness(icalExportEnabled: true);
+    h.clipboardFails = true;
+    await h.pump(tester, StaysChannelsScreen(facilityId: h.facilityId));
+    await tester.tap(find.byKey(const Key('stays-export-copy-xl1')));
+    await settle(tester);
+    expect(find.text('Copy failed — select and copy the link above.'), findsOneWidget);
+    final shown = tester.widget<SelectableText>(find.descendant(
+      of: find.byKey(const Key('stays-export-xl1')),
+      matching: find.byType(SelectableText),
+    ));
+    expect(shown.data, startsWith('https://app.example/api/ical/'));
+    expect(find.text('Link copied.'), findsNothing);
+  });
+
+  testWidgets('adding a calendar previews it first, then connects it; off checks are offered, not forced', (tester) async {
     final h = _harness();
     h.callables.onUpsertChannel = (req) => req.dryRun
         ? const StaysChannelPreview(status: ChannelSyncStatus.ok, reservations: 2, blocks: 1, nextArrival: '2026-10-14')
@@ -144,6 +239,9 @@ void main() {
     expect(upserts.map((r) => r.dryRun), [true, false]);
     expect(upserts.every((r) => r.listingId == 'l1' && r.provider == ChannelProvider.airbnb), isTrue);
     expect(upserts.last.url, 'https://www.airbnb.com/calendar/ical/000.ics?s=fake');
+    expect(h.callables.countOf(StaysCallableNames.setControls), 0, reason: 'asked first');
+    await tester.tap(find.byKey(const Key('stays-turn-on-checks')));
+    await settle(tester);
     final controls = h.callables.requestsOf<StaysSetControlsRequest>(StaysCallableNames.setControls);
     expect(controls.single.changes.toJson(), {'icalSyncEnabled': true});
   });
@@ -179,7 +277,7 @@ void main() {
   });
 
   testWidgets('Copy fetches the export URL through the audited callable and copies it', (tester) async {
-    final h = _harness();
+    final h = _harness(icalExportEnabled: true);
     await h.pump(tester, StaysChannelsScreen(facilityId: h.facilityId));
     await tester.tap(find.byKey(const Key('stays-export-copy-xl1')));
     await settle(tester);
@@ -189,7 +287,7 @@ void main() {
   });
 
   testWidgets('making a link sends a request id, so a retry cannot make a second one', (tester) async {
-    final h = _harness();
+    final h = _harness(icalExportEnabled: true);
     await h.pump(tester, StaysChannelsScreen(facilityId: h.facilityId));
     await tester.tap(find.byKey(const Key('stays-add-export-l1')));
     await settle(tester);
