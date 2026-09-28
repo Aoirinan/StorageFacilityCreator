@@ -12,6 +12,8 @@
  * dates it happened on, and paidThrough worked out from the whole picture.
  */
 
+import { createHash } from 'crypto';
+
 /** Tag on every ledger entry and payment doc this tool writes. */
 export const PAST_HISTORY_SOURCE = 'past_history';
 
@@ -100,7 +102,22 @@ export interface PastHistoryRequest {
   voidLedgerEntryIds: string[];
   /** The move-in date the owner gave; saved on the tenant if it has none. */
   moveInDate: CalendarDay | null;
+  /**
+   * Months the owner unticked (free rent). Not charged; one right after a
+   * paid month counts as paid for paidThrough.
+   */
+  freeMonths: Array<{ year: number; month: number }>;
+  /**
+   * 'computed': set paidThrough to what the ledger works out to after the
+   * save, even if earlier (the owner's choice when the save voids payments
+   * that had pushed it forward). 'keepLater': only ever move it later.
+   * Null: the default (computed when the save voids a payment, else
+   * keepLater).
+   */
+  paidThroughChoice: PaidThroughChoice | null;
 }
+
+export type PaidThroughChoice = 'computed' | 'keepLater';
 
 /** A request problem, reported to the app as invalid-argument. */
 export class PastHistoryInputError extends Error {}
@@ -304,7 +321,66 @@ export function parsePastHistoryRequest(data: unknown, now: Date): PastHistoryRe
     };
   });
 
-  return { facilityId, tenantId, requestId, charges, payments, voidLedgerEntryIds, moveInDate };
+  const rawFree = d.freeMonths ?? [];
+  if (!Array.isArray(rawFree) || rawFree.length > MAX_HISTORY_CHARGES) {
+    throw new PastHistoryInputError('freeMonths must be a list of at most 120 months');
+  }
+  const freeMonths: Array<{ year: number; month: number }> = [];
+  for (const raw of rawFree) {
+    const f = (raw ?? {}) as Record<string, unknown>;
+    const { year, month } = f;
+    if (typeof year !== 'number' || !Number.isInteger(year) || typeof month !== 'number' || !Number.isInteger(month) || month < 1 || month > 12) {
+      throw new PastHistoryInputError('A free month is not valid');
+    }
+    checkDayInRange({ year, month, day: 1 }, now, `Free month ${monthLabel(year, month)}`);
+    if (seenMonths.has(monthKey(year, month))) {
+      throw new PastHistoryInputError(`${monthLabel(year, month)} is both charged and free`);
+    }
+    if (!freeMonths.some((m) => m.year === year && m.month === month)) freeMonths.push({ year, month });
+  }
+
+  let paidThroughChoice: PaidThroughChoice | null = null;
+  if (d.paidThroughChoice !== undefined && d.paidThroughChoice !== null) {
+    if (d.paidThroughChoice !== 'computed' && d.paidThroughChoice !== 'keepLater') {
+      throw new PastHistoryInputError('paidThroughChoice must be computed or keepLater');
+    }
+    paidThroughChoice = d.paidThroughChoice;
+  }
+
+  return {
+    facilityId,
+    tenantId,
+    requestId,
+    charges,
+    payments,
+    voidLedgerEntryIds,
+    moveInDate,
+    freeMonths,
+    paidThroughChoice,
+  };
+}
+
+/**
+ * A fingerprint of what a request asks for, stored with its requestId. A
+ * repeat of the same requestId with a different fingerprint is a different
+ * save under an old id (an edit after a timed-out save), refused rather than
+ * answered with the first save's result.
+ */
+export function historyPayloadHash(r: PastHistoryRequest): string {
+  const day = (d: CalendarDay | null) => (d ? `${d.year}-${d.month}-${d.day}` : null);
+  const byMonth = (a: { year: number; month: number }, b: { year: number; month: number }) =>
+    monthKey(a.year, a.month) - monthKey(b.year, b.month);
+  const normal = {
+    facilityId: r.facilityId,
+    tenantId: r.tenantId,
+    charges: [...r.charges].sort(byMonth).map((c) => [c.year, c.month, c.day, c.amount]),
+    payments: r.payments.map((p) => [day(p.date), p.monthOnly, p.amount, p.method, p.reference, p.note]),
+    voids: [...r.voidLedgerEntryIds].sort(),
+    moveIn: day(r.moveInDate),
+    free: [...r.freeMonths].sort(byMonth).map((m) => [m.year, m.month]),
+    choice: r.paidThroughChoice,
+  };
+  return createHash('sha256').update(JSON.stringify(normal)).digest('hex');
 }
 
 /** A ledger row as stored, the fields these rules read. */
@@ -367,47 +443,47 @@ export function monthsAlreadyCharged(
     .map((c) => ({ year: c.year, month: c.month }));
 }
 
-/** A charge or payment in the order-of-events walk. */
-interface Movement {
-  at: number;
-  amount: number; // + charge, - payment/credit
-  rentMonth: { year: number; month: number } | null;
-}
-
 export interface HistoryOutcome {
   /** This entry's charges and payments. */
   totalCharges: number;
   totalPayments: number;
   /** Sum of every posted entry after saving (the Ledger screen's Current Balance). */
   balance: number;
-  /** End of the last rent month fully paid, or null when none is. */
+  /** End of the last rent month paid, or null when none is. */
   computedPaidThrough: Date | null;
   /**
-   * Money paid beyond the fully covered charges: part of the next charge,
-   * or a credit when every charge is covered.
+   * Money paid beyond the rent months it covers: part of the next month's
+   * rent, or less than a month ahead when nothing is owed.
    */
   unappliedCredit: number;
-  /** The first charge not fully paid, when there is one. */
+  /** The first rent month not fully paid, when there is one. */
   firstUnpaidMonth: { year: number; month: number } | null;
+  /** Whole months past the last charged month that a credit pays for. */
+  prepaidMonths: number;
 }
 
 /**
- * Balance and paidThrough once `charges` and `payments` join `existing`.
+ * Balance and paidThrough for a tenant's ledger as it will stand after the
+ * save: `existing` (the posted rows kept, without any being voided), plus
+ * `charges` and `payments`.
  *
- * Payments are applied oldest charge first, as a pool: a tenant who paid
- * $160 in June for June and July has both months covered. paidThrough is
- * the end of the last rent month in the run of charges fully covered from
- * the start; any money left over is a credit (toward the next charge, or
- * ahead of the account when nothing is owed). A month with no charge (a
- * free month the owner unticked) is simply not in the walk.
+ * Only rent decides paidThrough. All money paid is applied to the rent
+ * months in month order; fees (late, admin, move-in, insurance) count in the
+ * balance but do not hold paidThrough back. A free month right after a paid
+ * month counts as paid. Money left once every charged month is paid buys
+ * whole months at `monthlyRate`, as advancePaidThrough does for a payment;
+ * less than a month is a credit.
  */
 export function computeHistoryOutcome(params: {
   existing: ReadonlyArray<LedgerRow>;
   charges: ReadonlyArray<HistoryCharge>;
   payments: ReadonlyArray<HistoryPayment>;
+  freeMonths?: ReadonlyArray<{ year: number; month: number }>;
+  monthlyRate?: number;
 }): HistoryOutcome {
   const { existing, charges, payments } = params;
-  const movements: Movement[] = [];
+  const rentByMonth = new Map<number, number>();
+  let pool = 0;
   let balance = 0;
 
   for (const row of existing) {
@@ -415,85 +491,111 @@ export function computeHistoryOutcome(params: {
     const amount = typeof row.amount === 'number' && Number.isFinite(row.amount) ? row.amount : 0;
     if (amount === 0) continue;
     balance += amount;
-    const at = rowDate(row);
-    movements.push({
-      at: at ? at.getTime() : 0,
-      amount,
-      rentMonth: amount > 0 ? rentChargeMonthOf(row) : null,
-    });
+    if (amount < 0) {
+      pool += -amount;
+      continue;
+    }
+    const m = rentChargeMonthOf(row);
+    if (m) {
+      const key = monthKey(m.year, m.month);
+      rentByMonth.set(key, (rentByMonth.get(key) ?? 0) + amount);
+    }
   }
 
   let totalCharges = 0;
   for (const c of charges) {
     totalCharges += c.amount;
     balance += c.amount;
-    movements.push({
-      at: historyInstant({ year: c.year, month: c.month, day: c.day }).getTime(),
-      amount: c.amount,
-      rentMonth: { year: c.year, month: c.month },
-    });
+    const key = monthKey(c.year, c.month);
+    rentByMonth.set(key, (rentByMonth.get(key) ?? 0) + c.amount);
   }
 
   let totalPayments = 0;
   for (const p of payments) {
     totalPayments += p.amount;
     balance -= p.amount;
-    movements.push({ at: historyInstant(p.date).getTime(), amount: -p.amount, rentMonth: null });
+    pool += p.amount;
   }
 
-  // Oldest charge first; the pool of money paid is applied down that list.
-  const chargeList = movements.filter((m) => m.amount > 0).sort((a, b) => a.at - b.at);
-  let pool = roundCents(movements.filter((m) => m.amount < 0).reduce((s, m) => s - m.amount, 0));
-
-  let lastCovered: { year: number; month: number } | null = null;
-  let firstUnpaidMonth: { year: number; month: number } | null = null;
-  for (const charge of chargeList) {
-    if (pool + 0.005 >= charge.amount) {
-      pool = roundCents(pool - charge.amount);
-      if (charge.rentMonth) {
-        if (!lastCovered || monthKey(charge.rentMonth.year, charge.rentMonth.month) > monthKey(lastCovered.year, lastCovered.month)) {
-          lastCovered = charge.rentMonth;
-        }
-      }
+  pool = roundCents(pool);
+  const months = [...rentByMonth.keys()].sort((a, b) => a - b);
+  let lastCovered: number | null = null;
+  let firstUnpaid: number | null = null;
+  for (const key of months) {
+    const need = roundCents(rentByMonth.get(key)!);
+    if (pool + 0.005 >= need) {
+      pool = roundCents(pool - need);
+      lastCovered = key;
       continue;
     }
-    firstUnpaidMonth = charge.rentMonth ?? monthOfInstant(charge.at);
+    firstUnpaid = key;
     break;
   }
 
+  const free = new Set((params.freeMonths ?? []).map((m) => monthKey(m.year, m.month)));
+  const extendThroughFree = () => {
+    while (
+      lastCovered !== null &&
+      free.has(lastCovered + 1) &&
+      !rentByMonth.has(lastCovered + 1) &&
+      (firstUnpaid === null || lastCovered + 1 < firstUnpaid)
+    ) {
+      lastCovered += 1;
+    }
+  };
+  extendThroughFree();
+
+  let prepaidMonths = 0;
+  const rate = params.monthlyRate ?? 0;
+  if (firstUnpaid === null && lastCovered !== null && rate > 0 && pool + 0.005 >= rate) {
+    prepaidMonths = Math.floor((pool + 0.005) / rate);
+    pool = roundCents(pool - prepaidMonths * rate);
+    lastCovered += prepaidMonths;
+  }
+
+  const monthOf = (key: number) => ({ year: Math.floor(key / 12), month: (key % 12) + 1 });
   return {
     totalCharges: roundCents(totalCharges),
     totalPayments: roundCents(totalPayments),
     balance: roundCents(balance),
-    computedPaidThrough: lastCovered ? endOfMonthInstant(lastCovered.year, lastCovered.month) : null,
+    computedPaidThrough:
+      lastCovered === null ? null : endOfMonthInstant(monthOf(lastCovered).year, monthOf(lastCovered).month),
     unappliedCredit: roundCents(pool),
-    firstUnpaidMonth,
+    firstUnpaidMonth: firstUnpaid === null ? null : monthOf(firstUnpaid),
+    prepaidMonths,
   };
 }
 
-function monthOfInstant(ms: number): { year: number; month: number } {
-  const d = new Date(ms);
-  return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1 };
+function sameDay(a: Date | null, b: Date | null): boolean {
+  if (!a || !b) return a === b;
+  // The app stores local midnight, this stores noon UTC: within a day either
+  // way is the same date.
+  const da = Date.UTC(a.getUTCFullYear(), a.getUTCMonth(), a.getUTCDate());
+  const db = Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCDate());
+  return Math.abs(da - db) <= DAY_MS;
 }
 
 /**
- * What to do with the tenant's paidThrough. Only ever moves it later: an
- * existing paidThrough past the computed one (set by hand, or by payments
- * already recorded) is kept, with a warning for the owner to check.
+ * What to do with the tenant's paidThrough.
+ *
+ * `computed` sets it to what the ledger works out to after the save, even
+ * when that is earlier: the owner's choice when payments that had pushed it
+ * forward are being voided. `keepLater` only moves it later and keeps a
+ * later date with a warning. With no choice, the default is `computed` when
+ * the save voids a payment and `keepLater` otherwise.
  */
 export function decidePaidThrough(
   existing: Date | null,
   computed: Date | null,
-): { write: Date | null; warning: string | null } {
-  if (!computed) return { write: null, warning: null };
-  if (!existing) return { write: computed, warning: null };
-  // Compare calendar days: the app stores local midnight, this stores noon UTC.
-  const existingDay = Date.UTC(existing.getUTCFullYear(), existing.getUTCMonth(), existing.getUTCDate());
-  const computedDay = Date.UTC(computed.getUTCFullYear(), computed.getUTCMonth(), computed.getUTCDate());
-  if (computedDay > existingDay + DAY_MS) return { write: computed, warning: null };
-  if (computedDay >= existingDay - DAY_MS) return { write: null, warning: null };
+  choice: PaidThroughChoice,
+): { change: boolean; value: Date | null; warning: string | null } {
+  if (sameDay(existing, computed)) return { change: false, value: existing, warning: null };
+  if (choice === 'computed') return { change: true, value: computed, warning: null };
+  if (!computed) return { change: false, value: existing, warning: null };
+  if (!existing || computed.getTime() > existing.getTime()) return { change: true, value: computed, warning: null };
   return {
-    write: null,
+    change: false,
+    value: existing,
     warning:
       `Paid through was left at ${formatDay(existing)}, which is later than the ` +
       `${formatDay(computed)} this history works out to. Check it on the tenant's page.`,

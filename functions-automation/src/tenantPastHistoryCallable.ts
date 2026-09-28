@@ -39,10 +39,14 @@ function callerOf(context: functions.https.CallableContext): Caller {
 function applyWrites(
   tx: admin.firestore.Transaction,
   facilityRef: admin.firestore.DocumentReference,
+  tenantId: string,
   writes: PlannedWrite[],
 ): void {
   for (const w of writes) {
-    const ref = facilityRef.collection(w.collection).doc(w.id);
+    const ref =
+      w.collection === 'tenantPayments'
+        ? facilityRef.collection('tenants').doc(tenantId).collection('payments').doc(w.id)
+        : facilityRef.collection(w.collection).doc(w.id);
     if (w.kind === 'set') tx.set(ref, w.data);
     else tx.update(ref, w.data);
   }
@@ -93,6 +97,22 @@ export const recordTenantPastHistory = functions
         const linkedSnaps = linkedIds.length
           ? await tx.getAll(...linkedIds.map((id) => facilityRef.collection('payments').doc(id)))
           : [];
+        // The tenant's own copies of those payments, and the invoices the
+        // voided entries were on.
+        const tenantRowsSnap = linkedIds.length
+          ? await tx.get(tenantRef.collection('payments').where('type', '==', 'manual'))
+          : null;
+        const invoiceIds = [
+          ...new Set(
+            existingLedger
+              .filter((row) => voiding.has(row.id))
+              .map((row) => (row as { metadata?: { invoiceId?: unknown } }).metadata?.invoiceId)
+              .filter((v): v is string => typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v)),
+          ),
+        ];
+        const invoiceSnaps = invoiceIds.length
+          ? await tx.getAll(...invoiceIds.map((id) => facilityRef.collection('invoices').doc(id)))
+          : [];
         const plan = planRecordPastHistory({
           request,
           caller,
@@ -103,11 +123,16 @@ export const recordTenantPastHistory = functions
             id: snap.id,
             data: snap.exists ? (snap.data() as Record<string, unknown>) : null,
           })),
+          tenantPaymentRows: (tenantRowsSnap?.docs ?? []).map((d) => ({ id: d.id, data: d.data() })),
+          invoices: invoiceSnaps.map((snap) => ({
+            id: snap.id,
+            data: snap.exists ? (snap.data() as Record<string, unknown>) : null,
+          })),
           existingBatch: batchSnap.exists ? (batchSnap.data() as Record<string, unknown>) : null,
           newId: () => facilityRef.collection('ledgers').doc().id,
           serverTime: admin.firestore.FieldValue.serverTimestamp(),
         });
-        applyWrites(tx, facilityRef, plan.writes);
+        applyWrites(tx, facilityRef, request.tenantId, plan.writes);
         return plan.result;
       });
 
@@ -165,6 +190,12 @@ export const undoTenantPastHistory = functions
         const replacedPaymentSnaps = replacedPaymentIds.length
           ? await tx.getAll(...replacedPaymentIds.map((id) => facilityRef.collection('payments').doc(id)))
           : [];
+        const replacedTenantRowIds = Array.isArray(batch?.voidedTenantPayments)
+          ? (batch!.voidedTenantPayments as Array<{ id: string }>).map((r) => r.id)
+          : [];
+        const replacedTenantRowSnaps = replacedTenantRowIds.length
+          ? await tx.getAll(...replacedTenantRowIds.map((id) => tenantRef.collection('payments').doc(id)))
+          : [];
         const plan = planUndoPastHistory({
           facilityId,
           tenantId,
@@ -180,10 +211,14 @@ export const undoTenantPastHistory = functions
             id: s.id,
             data: s.exists ? (s.data() as Record<string, unknown>) : null,
           })),
+          replacedTenantPayments: replacedTenantRowSnaps.map((s) => ({
+            id: s.id,
+            data: s.exists ? (s.data() as Record<string, unknown>) : null,
+          })),
           newId: () => facilityRef.collection('auditLogs').doc().id,
           serverTime: admin.firestore.FieldValue.serverTimestamp(),
         });
-        applyWrites(tx, facilityRef, plan.writes);
+        applyWrites(tx, facilityRef, tenantId, plan.writes);
         return plan.result;
       });
 

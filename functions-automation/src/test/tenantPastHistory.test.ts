@@ -344,9 +344,18 @@ test('a later paidThrough already on the tenant is kept, with a warning', () => 
 
 test('decidePaidThrough treats the same day stored at local midnight as the same', () => {
   const computed = new Date('2026-07-31T12:00:00Z');
-  assert.deepEqual(decidePaidThrough(new Date('2026-07-31T05:00:00Z'), computed), { write: null, warning: null });
-  assert.equal(decidePaidThrough(new Date('2026-06-30T05:00:00Z'), computed).write, computed);
-  assert.equal(decidePaidThrough(null, null).write, null);
+  const sameDay = new Date('2026-07-31T05:00:00Z');
+  for (const choice of ['computed', 'keepLater'] as const) {
+    assert.equal(decidePaidThrough(sameDay, computed, choice).change, false);
+    assert.equal(decidePaidThrough(new Date('2026-06-30T05:00:00Z'), computed, choice).value, computed);
+    assert.equal(decidePaidThrough(null, null, choice).change, false);
+  }
+  // Earlier: only the recomputed choice moves it back.
+  const later = new Date('2027-01-31T06:00:00Z');
+  assert.deepEqual(decidePaidThrough(later, computed, 'computed'), { change: true, value: computed, warning: null });
+  const kept = decidePaidThrough(later, computed, 'keepLater');
+  assert.equal(kept.change, false);
+  assert.match(kept.warning!, /1\/31\/2027/);
 });
 
 test('payment reference goes into the payment and the ledger line', () => {
@@ -544,4 +553,218 @@ test('a payment known only by its month is dated the 1st and says so', () => {
   assert.equal((sept.entryDate as Date).toISOString(), '2026-09-01T12:00:00.000Z');
   assert.equal(sept.description, 'Payment - Check #2201 (September 2026)');
   assert.equal((sept.metadata as any).dateIsMonthOnly, true);
+});
+
+// --- Review round: paidThrough from the whole ledger ------------------------
+
+/**
+ * The same hand history, but the payments went through Record payment:
+ * each has a facility payment doc, the tenant's own copy, and a ledger line
+ * linked by paymentId. Each advanced paidThrough, which now reads 1/31/2027.
+ */
+function seedRecordedByHand(store: Store): string[] {
+  const typed = new Date('2026-09-28T02:00:00Z');
+  const ids: string[] = [];
+  for (let i = 0; i < 8; i += 1) {
+    const id = `hand-charge-${i}`;
+    store.ledgers[id] = {
+      tenantId: TENANT_ID,
+      type: 'rentCharge',
+      status: 'posted',
+      amount: 80,
+      entryDate: typed,
+      metadata: { invoiceId: 'inv-demo-1' },
+    };
+    ids.push(id);
+  }
+  [160, 80, 80, 80].forEach((amount, i) => {
+    const at = new Date(typed.getTime() + i * 60_000);
+    store.payments[`pay-${i}`] = { tenantId: TENANT_ID, amount, status: 'completed', isActive: true, method: 'venmo', createdAt: at };
+    store.tenantPayments[`row-${i}`] = { type: 'manual', status: 'succeeded', amountCents: amount * 100, createdAt: new Date(at.getTime() + 500) };
+    store.ledgers[`hand-payment-${i}`] = {
+      tenantId: TENANT_ID,
+      type: 'payment',
+      status: 'posted',
+      amount: -amount,
+      entryDate: at,
+      metadata: { paymentId: `pay-${i}`, paymentMethod: 'venmo' },
+    };
+    ids.push(`hand-payment-${i}`);
+  });
+  store.invoices['inv-demo-1'] = { invoiceNumber: 'INV-0042' };
+  store.tenants[TENANT_ID].paidThrough = new Date('2027-01-31T06:00:00Z');
+  return ids;
+}
+
+function recordFull(store: Store, data: Record<string, unknown>, requestId = 'req-00000001') {
+  const request = parsePastHistoryRequest({ facilityId: FACILITY_ID, tenantId: TENANT_ID, requestId, ...data }, NOW);
+  const plan = planRecordPastHistory({
+    request,
+    caller: OWNER,
+    facility: store.facility[FACILITY_ID],
+    tenant: store.tenants[TENANT_ID],
+    existingLedger: ledgerOf(store),
+    existingBatch: store.tenantPastHistory[requestId] ?? null,
+    linkedPayments: Object.entries(store.payments).map(([id, d]) => ({ id, data: d })),
+    tenantPaymentRows: Object.entries(store.tenantPayments).map(([id, d]) => ({ id, data: d })),
+    invoices: Object.entries(store.invoices).map(([id, d]) => ({ id, data: d })),
+    newId,
+    serverTime: NOW,
+  });
+  apply(store, plan.writes);
+  return plan;
+}
+
+function undoFull(store: Store, requestId = 'req-00000001') {
+  const batch = store.tenantPastHistory[requestId];
+  const read = (col: string, ids: string[]) => ids.map((id) => ({ id, data: store[col][id] ?? null }));
+  const plan = planUndoPastHistory({
+    facilityId: FACILITY_ID,
+    tenantId: TENANT_ID,
+    requestId,
+    caller: OWNER,
+    facility: store.facility[FACILITY_ID],
+    tenant: store.tenants[TENANT_ID],
+    batch,
+    ledgerEntries: read('ledgers', batch.ledgerEntryIds as string[]),
+    payments: read('payments', batch.paymentIds as string[]),
+    replacedEntries: read('ledgers', batch.voidedExistingLedgerIds as string[]),
+    replacedPayments: read('payments', (batch.voidedExistingPayments as Array<{ id: string }>).map((p) => p.id)),
+    replacedTenantPayments: read('tenantPayments', (batch.voidedTenantPayments as Array<{ id: string }>).map((p) => p.id)),
+    newId,
+    serverTime: NOW,
+  });
+  apply(store, plan.writes);
+  return plan;
+}
+
+function fullStore(tenant: Record<string, unknown> = {}): Store {
+  return { ...newStore(tenant), tenantPayments: {}, invoices: {} };
+}
+
+test('owner example over hand payments that pushed paidThrough to 1/31/2027: voiding them brings it back to 7/31', () => {
+  const store = fullStore();
+  const handIds = seedRecordedByHand(store);
+  const { result } = recordFull(store, { charges: exampleCharges(), payments: examplePayments, voidLedgerEntryIds: handIds });
+  assert.equal(result.balance, 160);
+  assert.equal(result.paidThroughBefore, '2027-01-31');
+  assert.equal(result.paidThrough, '2026-07-31');
+  assert.equal(result.paidThroughChanged, true);
+  assert.equal((store.tenants[TENANT_ID].paidThrough as Date).toISOString(), '2026-07-31T12:00:00.000Z');
+  // The tenant's own payment rows go with them, and the invoice is named.
+  for (let i = 0; i < 4; i += 1) {
+    assert.equal(store.tenantPayments[`row-${i}`].status, 'voided');
+    assert.equal(store.payments[`pay-${i}`].status, 'voided');
+  }
+  assert.deepEqual(result.invoicesToReview, [{ id: 'inv-demo-1', number: 'INV-0042' }]);
+  assert.ok(result.warnings.some((w) => /INV-0042/.test(w) && /open Invoices and void them/.test(w)));
+
+  const undone = undoFull(store);
+  assert.equal(undone.result.paidThroughRestored, true);
+  assert.equal((store.tenants[TENANT_ID].paidThrough as Date).toISOString(), '2027-01-31T06:00:00.000Z');
+  for (let i = 0; i < 4; i += 1) {
+    assert.equal(store.tenantPayments[`row-${i}`].status, 'succeeded');
+    assert.equal(store.tenantPayments[`row-${i}`].voidedByHistoryRequestId, null);
+    assert.equal(store.payments[`pay-${i}`].status, 'completed');
+  }
+});
+
+test('the owner can choose to keep the later paidThrough even while voiding payments', () => {
+  const store = fullStore();
+  const handIds = seedRecordedByHand(store);
+  const { result } = recordFull(store, {
+    charges: exampleCharges(),
+    payments: examplePayments,
+    voidLedgerEntryIds: handIds,
+    paidThroughChoice: 'keepLater',
+  });
+  assert.equal(result.paidThrough, '2027-01-31');
+  assert.equal(result.paidThroughChanged, false);
+  assert.equal(result.warnings.filter((w) => /later than/.test(w)).length, 1);
+});
+
+test('a tenant row linked by facilityPaymentId is matched by the link, not the amount', () => {
+  const store = fullStore();
+  store.payments['pay-x'] = { tenantId: TENANT_ID, amount: 80, status: 'completed', isActive: true, createdAt: new Date('2026-09-01T12:00:00Z') };
+  store.tenantPayments['row-other'] = { type: 'manual', status: 'succeeded', amountCents: 8000, createdAt: new Date('2026-09-01T12:00:01Z') };
+  store.tenantPayments['row-linked'] = { type: 'manual', status: 'succeeded', amountCents: 8000, facilityPaymentId: 'pay-x', createdAt: new Date('2026-09-01T12:00:02Z') };
+  store.ledgers['led-x'] = { tenantId: TENANT_ID, type: 'payment', status: 'posted', amount: -80, entryDate: new Date('2026-09-01T12:00:00Z'), metadata: { paymentId: 'pay-x' } };
+  recordFull(store, { charges: throughAugust(), voidLedgerEntryIds: ['led-x'] });
+  assert.equal(store.tenantPayments['row-linked'].status, 'voided');
+  assert.equal(store.tenantPayments['row-other'].status, 'succeeded');
+});
+
+test('a $15 fee counts in the balance but does not hold paidThrough back', () => {
+  const store = fullStore();
+  store.ledgers['fee-1'] = { tenantId: TENANT_ID, type: 'lateFee', status: 'posted', amount: 15, entryDate: new Date('2026-03-06T12:00:00Z') };
+  const { result } = recordFull(store, { charges: exampleCharges(), payments: examplePayments });
+  assert.equal(result.balance, 175);
+  assert.equal(result.paidThrough, '2026-07-31');
+});
+
+test('credit left after the charged months buys whole months, and less than a month shows as credit', () => {
+  const charges = [
+    { year: 2026, month: 8, day: 1, amount: 80 },
+    { year: 2026, month: 9, day: 1, amount: 80 },
+  ];
+  const store = fullStore();
+  const { result } = recordFull(store, { charges, payments: [venmo('2026-08-01', 240)] });
+  assert.equal(result.paidThrough, '2026-10-31');
+  assert.equal(result.prepaidMonths, 1);
+  assert.equal(result.credit, 0);
+
+  const store2 = fullStore();
+  const r2 = recordFull(store2, { charges, payments: [venmo('2026-08-01', 270)] }).result;
+  assert.equal(r2.paidThrough, '2026-10-31');
+  assert.equal(r2.credit, 30);
+});
+
+test('a free month right after a paid month counts as paid', () => {
+  const store = fullStore();
+  const { result } = recordFull(store, {
+    charges: [
+      { year: 2026, month: 7, day: 1, amount: 80 },
+      { year: 2026, month: 8, day: 1, amount: 80 },
+    ],
+    freeMonths: [{ year: 2026, month: 9 }],
+    payments: [venmo('2026-07-01', 80), venmo('2026-08-01', 80)],
+  });
+  assert.equal(result.paidThrough, '2026-09-30');
+  // Unpaid rent before it stops it there.
+  const store2 = fullStore();
+  const r2 = recordFull(store2, {
+    charges: [
+      { year: 2026, month: 7, day: 1, amount: 80 },
+      { year: 2026, month: 8, day: 1, amount: 80 },
+    ],
+    freeMonths: [{ year: 2026, month: 9 }],
+    payments: [venmo('2026-07-01', 80)],
+  }).result;
+  assert.equal(r2.paidThrough, '2026-07-31');
+});
+
+test('the same requestId with different details is refused, not answered with the first result', () => {
+  const store = fullStore();
+  recordFull(store, { charges: exampleCharges(), payments: examplePayments });
+  assert.equal(recordFull(store, { charges: exampleCharges(), payments: examplePayments }).result.alreadyApplied, true);
+  assert.throws(
+    () => recordFull(store, { charges: exampleCharges(), payments: [...examplePayments, venmo('2026-09-02', 80)] }),
+    (e: unknown) => e instanceof PastHistoryRefusal && e.code === 'already-exists' && /different details/.test(e.message),
+  );
+});
+
+test('free months are validated', () => {
+  const base = { facilityId: 'f', tenantId: 't', requestId: 'req-00000003' };
+  assert.throws(
+    () => parsePastHistoryRequest({ ...base, charges: [{ year: 2026, month: 3, day: 1, amount: 80 }], freeMonths: [{ year: 2026, month: 3 }] }, NOW),
+    (e: unknown) => e instanceof PastHistoryInputError && /both charged and free/.test(e.message),
+  );
+  assert.throws(
+    () => parsePastHistoryRequest({ ...base, charges: [{ year: 2026, month: 3, day: 1, amount: 80 }], freeMonths: [{ year: 2026, month: 11 }] }, NOW),
+    (e: unknown) => e instanceof PastHistoryInputError && /future/.test(e.message),
+  );
+  assert.throws(
+    () => parsePastHistoryRequest({ ...base, charges: [{ year: 2026, month: 3, day: 1, amount: 80 }], paidThroughChoice: 'always' }, NOW),
+    (e: unknown) => e instanceof PastHistoryInputError,
+  );
 });
