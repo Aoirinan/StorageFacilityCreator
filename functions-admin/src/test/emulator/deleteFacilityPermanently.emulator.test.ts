@@ -12,6 +12,7 @@ import {
   facilityHasActiveTenantsMessage,
   facilityHasAutopayTenantsMessage,
 } from '../../deleteFacilityPermanently';
+import { superAdminDeleteFacilityCreatorAccountHandler } from '../../deleteFacilityCreatorAccount';
 import { FacilityPurgeDeps } from '../../facilityPurge';
 import { TWO_FACTOR_REQUIRED_MESSAGE } from '../../recentTwoFactor';
 import { clearEmulator, emulatorDb, skipWithoutEmulator } from './firestoreEmulator';
@@ -485,4 +486,47 @@ test('the deployed callable, production deps and all, deletes an unbilled facili
   assert.deepEqual(await callable.run({ facilityId: FACILITY }, context(OWNER)), { success: true });
   assert.deepEqual(await docsUnder(`facilities/${FACILITY}`), []);
   assert.deepEqual(await keyedRowsLeft(), THEIR_KEYED_ROWS);
+});
+
+test("a super admin deleting the owner's whole account deletes each facility's keyed rows too", { skip: skipWithoutEmulator }, async () => {
+  // superAdminDeleteFacilityCreatorAccount deleted each facility's tree but
+  // not the rows keyed by it outside the tree: payment links, reservations,
+  // staff roles, domain claims, link exceptions and Stripe refusals (tenant
+  // names, ids and amounts) outlived the account.
+  await seedFacility();
+  const db = emulatorDb();
+  await db.collection('facilityCreatorAccounts').doc('acct-1').update({ ownerEmail: 'owner@example.test' });
+  await db.collection('users').doc(OWNER).set({ email: 'owner@example.test' });
+  const saved = process.env.SUPER_ADMIN_EMAILS;
+  process.env.SUPER_ADMIN_EMAILS = 'admin@example.test';
+  const cancelled: string[] = [];
+  const authDeleted: string[] = [];
+  try {
+    const result = await superAdminDeleteFacilityCreatorAccountHandler(
+      { accountId: 'acct-1', ownerEmailConfirmation: 'Owner@Example.test' },
+      { auth: { uid: 'admin-1', token: { email: 'admin@example.test' } }, rawRequest: {} } as unknown as functions.https.CallableContext,
+      {
+        db,
+        cancelSubscriptions: async (subs) => {
+          cancelled.push(...subs.map((sub) => sub.id));
+          return subs.map((sub): CancelOutcome => ({ id: sub.id, label: sub.label, status: 'canceled' }));
+        },
+        deleteAuthUser: async (uid) => {
+          authDeleted.push(uid);
+        },
+      },
+    );
+    assert.deepEqual(result, { success: true, facilitiesDeleted: 1 });
+  } finally {
+    if (saved === undefined) delete process.env.SUPER_ADMIN_EMAILS;
+    else process.env.SUPER_ADMIN_EMAILS = saved;
+  }
+
+  assert.deepEqual(await docsUnder(`facilities/${FACILITY}`), []);
+  // Only fac-2's rows stay: that facility is not this owner's.
+  assert.deepEqual(await keyedRowsLeft(), THEIR_KEYED_ROWS);
+  assert.equal((await db.collection('facilityCreatorAccounts').doc('acct-1').get()).exists, false);
+  assert.equal((await db.collection('users').doc(OWNER).get()).exists, false);
+  assert.deepEqual(cancelled.sort(), ['sub_account', 'sub_platform', 'sub_website']);
+  assert.deepEqual(authDeleted, [OWNER]);
 });
