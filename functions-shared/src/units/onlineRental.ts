@@ -16,6 +16,8 @@
  * listed). None of them look at status; callers keep their status check.
  */
 
+import type * as admin from 'firebase-admin';
+
 type UnitData = Record<string, unknown>;
 
 /** Archived: anything but a missing or false `archived`, as the app's unit read drops it. */
@@ -79,4 +81,61 @@ export function unitTypeOf(unit: UnitData): string {
  */
 export function isUnitTypeOfferedOnline(unit: UnitData, enabledTypes: string[]): boolean {
   return enabledTypes.length === 0 || enabledTypes.includes(unitTypeOf(unit));
+}
+
+/**
+ * Linked to a tenant: a `tenantId` that is text and not blank. Anything else,
+ * a number included, is no link, as the public map reads it.
+ */
+export function hasTenantLink(unit: UnitData): boolean {
+  return typeof unit.tenantId === 'string' && unit.tenantId.trim() !== '';
+}
+
+/**
+ * The unit numbers active tenants claim, as both writers of the public map
+ * read them: a tenant whose `isActive` is exactly true claims its
+ * `unitNumber`, trimmed and lower-cased; a blank one claims nothing.
+ *
+ * A tenant can be added with a unit number and no link from the unit (the
+ * owner typing it in, an import, a shared parking space). The map shows such
+ * a unit as rented; the online rental callables looked only at the unit and
+ * rented it again.
+ */
+export function unitNumbersClaimedByActiveTenants(tenants: Iterable<UnitData>): Set<string> {
+  const claimed = new Set<string>();
+  for (const tenant of tenants) {
+    if (tenant.isActive !== true) continue;
+    const n = String(tenant.unitNumber || '').trim().toLowerCase();
+    if (n.length > 0) claimed.add(n);
+  }
+  return claimed;
+}
+
+/** Whether [unit]'s number is one of [claimed] (from unitNumbersClaimedByActiveTenants). */
+export function isUnitClaimedByActiveTenant(unit: UnitData, claimed: ReadonlySet<string>): boolean {
+  return claimed.has(String(unit.unitNumber ?? '').trim().toLowerCase());
+}
+
+/**
+ * Whether a tenant has [unit]: it is linked to one, or an active tenant
+ * claims its number. The public map shows either as rented. Status is not
+ * looked at; callers keep their status check.
+ */
+export function isUnitHeldByTenant(unit: UnitData, claimed: ReadonlySet<string>): boolean {
+  return hasTenantLink(unit) || isUnitClaimedByActiveTenant(unit, claimed);
+}
+
+/**
+ * Reads the unit numbers the active tenants in [tenants] (a facility's
+ * tenants collection) claim. Pass [tx] to read them in a transaction, so an
+ * active tenant added meanwhile makes it retry. The caller's own collection,
+ * so the caller's Firestore is the one read.
+ */
+export async function readUnitNumbersClaimedByActiveTenants(
+  tenants: admin.firestore.CollectionReference,
+  tx?: admin.firestore.Transaction,
+): Promise<Set<string>> {
+  const active = tenants.where('isActive', '==', true);
+  const snap = tx ? await tx.get(active) : await active.get();
+  return unitNumbersClaimedByActiveTenants(snap.docs.map((doc) => doc.data() as UnitData));
 }

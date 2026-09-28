@@ -6,8 +6,10 @@ import {
   authenticatePortalTenantForFacility,
   extractCallableClientIp,
   enabledOnlineUnitTypes,
+  isUnitHeldByTenant,
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
+  readUnitNumbersClaimedByActiveTenants,
   unitTypeOf,
 } from '@sfc/functions-shared';
 import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './secrets';
@@ -390,7 +392,8 @@ function isOfferedToPortalTenant(unit: Record<string, unknown>, enabledTypes: st
  * Only units the owner offers online (isOfferedToPortalTenant): the portal
  * rents through the same online move-in and checkout as the public rental
  * page, so a unit left off the public website, archived or kept for internal
- * use is not offered here either.
+ * use is not offered here either. Nor is a unit a tenant has, which the hold
+ * refuses.
  */
 export const tenantPortalListAvailableUnits = functions.https.onCall(async (data: any, context) => {
   const email = (data?.email || '').toString().trim().toLowerCase();
@@ -408,12 +411,11 @@ export const tenantPortalListAvailableUnits = functions.https.onCall(async (data
   await authenticatePortalTenantForFacility(email, accessCode, facilityId, clientIp);
 
   const enabledTypes = await readEnabledOnlineUnitTypes(facilityId);
-  const unitsSnap = await admin
-    .firestore()
-    .collection('facilities')
-    .doc(facilityId)
-    .collection('units')
-    .get();
+  const facilityRef = admin.firestore().collection('facilities').doc(facilityId);
+  const [unitsSnap, claimedUnitNumbers] = await Promise.all([
+    facilityRef.collection('units').get(),
+    readUnitNumbersClaimedByActiveTenants(facilityRef.collection('tenants')),
+  ]);
 
   const units: Array<{
     id: string;
@@ -424,7 +426,7 @@ export const tenantPortalListAvailableUnits = functions.https.onCall(async (data
 
   unitsSnap.forEach((doc) => {
     const d = doc.data() as Record<string, any>;
-    if (!isOfferedToPortalTenant(d, enabledTypes)) {
+    if (!isOfferedToPortalTenant(d, enabledTypes) || isUnitHeldByTenant(d, claimedUnitNumbers)) {
       return;
     }
     const st = String(d.status || '').toLowerCase();
@@ -502,6 +504,10 @@ export const createTenantPortalAdditionalUnitHold = functions.https.onCall(async
     .doc('activeHolds')
     .collection('items')
     .doc(unitId);
+  const tenantsRef = admin.firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('tenants');
   const reservationRef = admin.firestore().collection('publicReservations').doc();
 
   await admin.firestore().runTransaction(async (tx) => {
@@ -514,8 +520,16 @@ export const createTenantPortalAdditionalUnitHold = functions.https.onCall(async
     // The list above leaves these units out, but a unit id can be sent
     // directly: every unit's id is in the public map doc. Same test as the
     // list, which the hold did not share: it took deactivated units and
-    // unit types the owner had not opened to online rental.
-    if ((unitStatus !== 'available' && unitStatus !== 'reserved') || !isOfferedToPortalTenant(unitData, enabledTypes)) {
+    // unit types the owner had not opened to online rental. And a unit a
+    // tenant has, by link or by an active tenant's unit number, as the
+    // public map and the public hold read it: it was held, and the move-in
+    // put a second tenant in it. The tenants are read only for a unit that
+    // passes the rest.
+    if (
+      (unitStatus !== 'available' && unitStatus !== 'reserved') ||
+      !isOfferedToPortalTenant(unitData, enabledTypes) ||
+      isUnitHeldByTenant(unitData, await readUnitNumbersClaimedByActiveTenants(tenantsRef, tx))
+    ) {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
     }
 

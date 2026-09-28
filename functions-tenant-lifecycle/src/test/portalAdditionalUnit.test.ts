@@ -206,3 +206,69 @@ test('a unit with no type, or a type that is not text, is a standard unit to the
   );
   assert.equal((await hold('none')).success, true);
 });
+
+/**
+ * A unit a tenant already has, as the public map reads it: linked to a
+ * tenant, or named by an active tenant's unit number (trimmed and
+ * lower-cased). The map shows it rented; the portal listed it if its status
+ * said available, and the hold took it, so the move-in put a second tenant
+ * in it.
+ */
+const HAD_BY_A_TENANT: Array<[string, (inMemory: InMemoryFirestore) => void]> = [
+  ['linked to a tenant, with status available', (inMemory) => seedUnit(inMemory, 'had', { tenantId: 'tenant-other' })],
+  ...['HAD', 'had', '  had ', '\tHaD'].map((spelling): [string, (inMemory: InMemoryFirestore) => void] => [
+    `named by an active tenant's unit number ${JSON.stringify(spelling)}`,
+    (inMemory) => {
+      seedUnit(inMemory, 'had');
+      inMemory.seed(`facilities/${FACILITY}/tenants/tenant-typed-in`, { isActive: true, unitNumber: spelling });
+    },
+  ]),
+];
+
+for (const [why, setUp] of HAD_BY_A_TENANT) {
+  test(`the portal does not list, or hold, a unit ${why}`, async () => {
+    const inMemory = new InMemoryFirestore();
+    seedPortalTenant(inMemory);
+    seedUnit(inMemory, 'free');
+    setUp(inMemory);
+    const { list, hold } = loadPortal(inMemory);
+
+    const { units } = await list();
+
+    assert.deepEqual(units.map((u) => u.id), ['free']);
+    await assert.rejects(() => hold('had'), refusedAsUnavailable);
+    assertNothingHeld(inMemory, 'had');
+  });
+}
+
+test('a tenant who is not active does not keep their old unit from the portal', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedPortalTenant(inMemory);
+  seedUnit(inMemory, 'u7', { unitNumber: 'U7' });
+  inMemory.seed(`facilities/${FACILITY}/tenants/moved-out`, { isActive: false, unitNumber: 'U7' });
+  inMemory.seed(`facilities/${FACILITY}/tenants/no-flag`, { unitNumber: 'U7' });
+  inMemory.seed(`facilities/${FACILITY}/tenants/text-flag`, { isActive: 'true', unitNumber: 'U7' });
+  const { list, hold } = loadPortal(inMemory);
+
+  const { units } = await list();
+
+  assert.deepEqual(units.map((u) => u.id), ['u7']);
+  assert.equal((await hold('u7')).success, true);
+});
+
+test("the portal tenant's own unit is not offered back to them", async () => {
+  const inMemory = new InMemoryFirestore();
+  seedPortalTenant(inMemory);
+  inMemory.seed(`facilities/${FACILITY}/tenants/${TENANT}`, {
+    ...inMemory.read(`facilities/${FACILITY}/tenants/${TENANT}`),
+    unitNumber: 'A1',
+  });
+  seedUnit(inMemory, 'a1');
+  seedUnit(inMemory, 'a2');
+  const { list, hold } = loadPortal(inMemory);
+
+  const { units } = await list();
+
+  assert.deepEqual(units.map((u) => u.id), ['a2']);
+  await assert.rejects(() => hold('a1'), refusedAsUnavailable);
+});

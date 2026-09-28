@@ -3,12 +3,17 @@ import assert from 'node:assert/strict';
 
 import {
   enabledOnlineUnitTypes,
+  hasTenantLink,
   isArchivedForOnlineRental,
   isInternalUseUnit,
+  isUnitClaimedByActiveTenant,
+  isUnitHeldByTenant,
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
   isUnlistedUnit,
+  readUnitNumbersClaimedByActiveTenants,
   unitNotOfferedOnlineReason,
+  unitNumbersClaimedByActiveTenants,
   unitTypeOf,
 } from '../units/onlineRental';
 import * as shared from '../index';
@@ -153,4 +158,76 @@ test('the online rental rules are exported from the package root the callables i
   assert.equal(shared.isUnitTypeOfferedOnline, isUnitTypeOfferedOnline);
   assert.equal(shared.unitNotOfferedOnlineReason, unitNotOfferedOnlineReason);
   assert.equal(shared.unitTypeOf, unitTypeOf);
+  assert.equal(shared.hasTenantLink, hasTenantLink);
+  assert.equal(shared.unitNumbersClaimedByActiveTenants, unitNumbersClaimedByActiveTenants);
+  assert.equal(shared.isUnitClaimedByActiveTenant, isUnitClaimedByActiveTenant);
+  assert.equal(shared.isUnitHeldByTenant, isUnitHeldByTenant);
+  assert.equal(shared.readUnitNumbersClaimedByActiveTenants, readUnitNumbersClaimedByActiveTenants);
+});
+
+test('only a tenant whose isActive is exactly true claims a unit, by its number trimmed and lower-cased', () => {
+  // As the public map's two writers read it: the app's
+  // claimedUnitNumbersFromActiveTenants and the inventory sync.
+  const claimed = unitNumbersClaimedByActiveTenants([
+    { isActive: true, unitNumber: '  A1 ' },
+    { isActive: true, unitNumber: 'Row-B2' },
+    { isActive: true, unitNumber: '	c3' },
+    { isActive: true, unitNumber: '   ' },
+    { isActive: true },
+    { isActive: false, unitNumber: 'D4' },
+    { isActive: 'true', unitNumber: 'E5' },
+    { unitNumber: 'F6' },
+  ]);
+  assert.deepEqual([...claimed].sort(), ['a1', 'c3', 'row-b2']);
+});
+
+test("a unit is claimed when an active tenant's number matches its own, whatever the case or spacing", () => {
+  const claimed = unitNumbersClaimedByActiveTenants([{ isActive: true, unitNumber: 'a1' }, { isActive: true, unitNumber: '102' }]);
+  assert.equal(isUnitClaimedByActiveTenant({ unitNumber: 'A1' }, claimed), true);
+  assert.equal(isUnitClaimedByActiveTenant({ unitNumber: ' a1  ' }, claimed), true);
+  // A number stored as a number is read as its text, as the app reads it.
+  assert.equal(isUnitClaimedByActiveTenant({ unitNumber: 102 }, claimed), true);
+  assert.equal(isUnitClaimedByActiveTenant({ unitNumber: 'A2' }, claimed), false);
+  // No number is claimed by no one: a blank tenant number claims nothing.
+  assert.equal(isUnitClaimedByActiveTenant({}, claimed), false);
+  assert.equal(isUnitClaimedByActiveTenant({ unitNumber: '' }, unitNumbersClaimedByActiveTenants([{ isActive: true, unitNumber: ' ' }])), false);
+});
+
+test('a unit is held by a tenant when linked to one or claimed by number; its status is not looked at', () => {
+  const none = new Set<string>();
+  assert.equal(hasTenantLink({ tenantId: 't1' }), true);
+  assert.equal(hasTenantLink({ tenantId: '  ' }), false);
+  // Only text is a link, as the public map reads it.
+  assert.equal(hasTenantLink({ tenantId: 5 }), false);
+  assert.equal(hasTenantLink({}), false);
+  assert.equal(isUnitHeldByTenant({ status: 'available', tenantId: 't1' }, none), true);
+  assert.equal(isUnitHeldByTenant({ status: 'available', unitNumber: 'A1' }, new Set(['a1'])), true);
+  assert.equal(isUnitHeldByTenant({ status: 'occupied', unitNumber: 'A1' }, none), false);
+});
+
+test("the claimed unit numbers are read from the facility's active tenants, in the transaction when given one", async () => {
+  const docs = [
+    { data: () => ({ isActive: true, unitNumber: ' U7 ' }) },
+    { data: () => ({ isActive: true, unitNumber: 'U8' }) },
+  ];
+  const filters: unknown[][] = [];
+  const query = { get: async () => ({ docs }) };
+  const tenants = {
+    where: (...args: unknown[]) => {
+      filters.push(args);
+      return query;
+    },
+  } as unknown as Parameters<typeof readUnitNumbersClaimedByActiveTenants>[0];
+  const txReads: unknown[] = [];
+  const tx = {
+    get: async (q: unknown) => {
+      txReads.push(q);
+      return { docs };
+    },
+  } as unknown as Parameters<typeof readUnitNumbersClaimedByActiveTenants>[1];
+
+  assert.deepEqual([...(await readUnitNumbersClaimedByActiveTenants(tenants))].sort(), ['u7', 'u8']);
+  assert.deepEqual([...(await readUnitNumbersClaimedByActiveTenants(tenants, tx))].sort(), ['u7', 'u8']);
+  assert.deepEqual(filters, [['isActive', '==', true], ['isActive', '==', true]]);
+  assert.deepEqual(txReads, [query]);
 });
