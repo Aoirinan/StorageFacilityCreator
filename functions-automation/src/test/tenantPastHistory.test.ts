@@ -768,3 +768,71 @@ test('free months are validated', () => {
     (e: unknown) => e instanceof PastHistoryInputError,
   );
 });
+
+// --- Re-review: prepaid months only from real credit; closest row match ------
+
+test('money that paid a deposit does not buy future rent: deposit paid, Aug and Sep paid, through 9/30', () => {
+  const store = fullStore({ monthlyRate: 1000 });
+  store.ledgers['dep'] = {
+    tenantId: TENANT_ID,
+    type: 'otherCharge',
+    status: 'posted',
+    amount: 1000,
+    entryDate: new Date('2026-08-01T12:00:00Z'),
+    description: 'Security deposit',
+  };
+  const { result } = recordFull(store, {
+    charges: [
+      { year: 2026, month: 8, day: 1, amount: 1000 },
+      { year: 2026, month: 9, day: 1, amount: 1000 },
+    ],
+    payments: [venmo('2026-08-01', 2000), venmo('2026-09-01', 1000)],
+  });
+  assert.equal(result.balance, 0);
+  assert.equal(result.paidThrough, '2026-09-30');
+  assert.equal(result.prepaidMonths, 0);
+  assert.equal(result.credit, 0);
+});
+
+test('a genuine $160 credit still buys two months', () => {
+  const store = fullStore();
+  const { result } = recordFull(store, {
+    charges: exampleCharges(),
+    payments: [...examplePayments, venmo('2026-06-02', 160), venmo('2026-07-01', 160)],
+  });
+  assert.equal(result.balance, -160);
+  assert.equal(result.prepaidMonths, 2);
+  assert.equal(result.paidThrough, '2026-11-30');
+  assert.equal(result.credit, 0);
+});
+
+test('two $80 payments 4 minutes apart: voiding the second voids its own row, the closest in time', () => {
+  const store = fullStore();
+  const t = (min: number) => new Date(Date.UTC(2026, 8, 27, 20, min));
+  for (const [i, min] of [0, 4].entries()) {
+    store.payments[`pay-${i}`] = { tenantId: TENANT_ID, amount: 80, status: 'completed', isActive: true, createdAt: t(min), paidAt: t(min) };
+    store.tenantPayments[`row-${i}`] = { type: 'manual', status: 'succeeded', amountCents: 8000, createdAt: new Date(t(min).getTime() + 700) };
+    store.ledgers[`led-${i}`] = { tenantId: TENANT_ID, type: 'payment', status: 'posted', amount: -80, entryDate: t(min), metadata: { paymentId: `pay-${i}` } };
+  }
+  const { result } = recordFull(store, { charges: throughAugust(), voidLedgerEntryIds: ['led-1'] });
+  assert.equal(store.tenantPayments['row-1'].status, 'voided');
+  assert.equal(store.tenantPayments['row-0'].status, 'succeeded');
+  assert.ok(!result.warnings.some((w) => /Payment History/.test(w)));
+});
+
+test('two voided payments never claim the same row, and one with no row is reported', () => {
+  const store = fullStore();
+  const t = (min: number) => new Date(Date.UTC(2026, 8, 27, 20, min));
+  for (const [i, min] of [0, 4].entries()) {
+    store.payments[`pay-${i}`] = { tenantId: TENANT_ID, amount: 80, status: 'completed', isActive: true, createdAt: t(min), paidAt: t(min) };
+    store.ledgers[`led-${i}`] = { tenantId: TENANT_ID, type: 'payment', status: 'posted', amount: -80, entryDate: t(min), metadata: { paymentId: `pay-${i}` } };
+  }
+  // Only one row, nearest the second payment.
+  store.tenantPayments['row-only'] = { type: 'manual', status: 'succeeded', amountCents: 8000, createdAt: t(3) };
+  const { result } = recordFull(store, { charges: throughAugust(), voidLedgerEntryIds: ['led-0', 'led-1'] });
+  const batch = store.tenantPastHistory['req-00000001'];
+  assert.deepEqual((batch.voidedTenantPayments as Array<{ id: string }>).map((r) => r.id), ['row-only']);
+  assert.equal(store.tenantPayments['row-only'].voidedByHistoryRequestId, 'req-00000001');
+  const missing = result.warnings.filter((w) => /Couldn't find the matching Payment History row for \$80\.00 on 9\/27\/2026/.test(w));
+  assert.equal(missing.length, 1);
+});

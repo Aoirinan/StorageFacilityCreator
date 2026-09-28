@@ -377,27 +377,58 @@ export function planRecordPastHistory(input: {
 
   // The tenant's own copy of each voided payment (the billing panel's
   // Payment history). Linked by facilityPaymentId when Record payment wrote
-  // it; older rows have no link, so the same amount recorded within ten
-  // minutes of the payment is taken as its copy.
+  // it; older rows have no link, so an unlinked row of the same amount
+  // recorded within ten minutes is taken as its copy, the closest in time
+  // first, each row claimed by one payment at most.
   const voidedTenantPayments: Array<{ id: string; status: unknown }> = [];
-  const rowsLeft = [...(input.tenantPaymentRows ?? [])].filter(
+  const rows = [...(input.tenantPaymentRows ?? [])].filter(
     (r) => r.data && r.data.type === 'manual' && r.data.status !== 'voided',
   );
-  for (const pay of input.linkedPayments ?? []) {
-    if (!voidedExistingPayments.some((v) => v.id === pay.id) || !pay.data) continue;
-    let idx = rowsLeft.findIndex((r) => r.data!.facilityPaymentId === pay.id);
-    if (idx < 0) {
-      const cents = Math.round(Number(pay.data.amount ?? 0) * 100);
-      const at = toDate(pay.data.createdAt)?.getTime() ?? null;
-      idx = rowsLeft.findIndex((r) => {
-        if (r.data!.facilityPaymentId) return false;
-        if (r.data!.amountCents !== cents) return false;
-        const rowAt = toDate(r.data!.createdAt)?.getTime() ?? null;
-        return at !== null && rowAt !== null && Math.abs(rowAt - at) <= 10 * 60 * 1000;
-      });
+  const voidedPays = (input.linkedPayments ?? []).filter(
+    (pay) => pay.data && voidedExistingPayments.some((v) => v.id === pay.id),
+  );
+  const matched = new Map<string, string>(); // payment id -> row id
+  const claimed = new Set<string>();
+  for (const pay of voidedPays) {
+    const row = rows.find((r) => r.data!.facilityPaymentId === pay.id);
+    if (row && !claimed.has(row.id)) {
+      matched.set(pay.id, row.id);
+      claimed.add(row.id);
     }
-    if (idx < 0) continue;
-    const row = rowsLeft.splice(idx, 1)[0];
+  }
+  const WINDOW_MS = 10 * 60 * 1000;
+  const pairs: Array<{ payId: string; rowId: string; gap: number }> = [];
+  for (const pay of voidedPays) {
+    if (matched.has(pay.id)) continue;
+    const cents = Math.round(Number(pay.data!.amount ?? 0) * 100);
+    const at = toDate(pay.data!.createdAt)?.getTime() ?? null;
+    if (at === null) continue;
+    for (const r of rows) {
+      if (claimed.has(r.id) || r.data!.facilityPaymentId || r.data!.amountCents !== cents) continue;
+      const rowAt = toDate(r.data!.createdAt)?.getTime() ?? null;
+      if (rowAt === null) continue;
+      const gap = Math.abs(rowAt - at);
+      if (gap <= WINDOW_MS) pairs.push({ payId: pay.id, rowId: r.id, gap });
+    }
+  }
+  pairs.sort((a, b) => a.gap - b.gap);
+  for (const pair of pairs) {
+    if (matched.has(pair.payId) || claimed.has(pair.rowId)) continue;
+    matched.set(pair.payId, pair.rowId);
+    claimed.add(pair.rowId);
+  }
+  for (const pay of voidedPays) {
+    const rowId = matched.get(pay.id);
+    if (!rowId) {
+      const amount = Number(pay.data!.amount ?? 0);
+      const at = toDate(pay.data!.paidAt) ?? toDate(pay.data!.createdAt);
+      warnings.push(
+        `Couldn't find the matching Payment History row for $${amount.toFixed(2)}` +
+          `${at ? ` on ${formatDay(at)}` : ''}; it may still show there.`,
+      );
+      continue;
+    }
+    const row = rows.find((r) => r.id === rowId)!;
     voidedTenantPayments.push({ id: row.id, status: row.data!.status ?? null });
     writes.push({
       collection: 'tenantPayments',

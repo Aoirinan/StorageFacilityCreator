@@ -470,9 +470,10 @@ export interface HistoryOutcome {
  * Only rent decides paidThrough. All money paid is applied to the rent
  * months in month order; fees (late, admin, move-in, insurance) count in the
  * balance but do not hold paidThrough back. A free month right after a paid
- * month counts as paid. Money left once every charged month is paid buys
- * whole months at `monthlyRate`, as advancePaidThrough does for a payment;
- * less than a month is a credit.
+ * month counts as paid. Months past the last charged month are bought only
+ * with real credit (the whole balance below zero, fees and deposits
+ * included), in whole months at `monthlyRate`; less than a month is a
+ * credit.
  */
 export function computeHistoryOutcome(params: {
   existing: ReadonlyArray<LedgerRow>;
@@ -545,12 +546,19 @@ export function computeHistoryOutcome(params: {
   };
   extendThroughFree();
 
+  // Months past the last charged one are bought only with real credit: the
+  // whole balance below zero, fees and deposits included. Money that paid a
+  // deposit or a fee must not buy future rent just because rent was applied
+  // first on the charged months.
   let prepaidMonths = 0;
   const rate = params.monthlyRate ?? 0;
-  if (firstUnpaid === null && lastCovered !== null && rate > 0 && pool + 0.005 >= rate) {
-    prepaidMonths = Math.floor((pool + 0.005) / rate);
-    pool = roundCents(pool - prepaidMonths * rate);
-    lastCovered += prepaidMonths;
+  if (firstUnpaid === null) {
+    const credit = Math.max(0, roundCents(-balance));
+    if (lastCovered !== null && rate > 0) {
+      prepaidMonths = Math.floor((credit + 0.005) / rate);
+      lastCovered += prepaidMonths;
+    }
+    pool = roundCents(credit - prepaidMonths * rate);
   }
 
   const monthOf = (key: number) => ({ year: Math.floor(key / 12), month: (key % 12) + 1 });
