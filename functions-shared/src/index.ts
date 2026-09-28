@@ -353,6 +353,7 @@ export { checkDisputeForPayment, disputeLedgerEntryId, disputeOutstanding } from
 export type { UnitNotOfferedReason } from './units/onlineRental';
 export {
   enabledOnlineUnitTypes,
+  facilityTakesOnlineRentals,
   isArchivedForOnlineRental,
   isInternalUseUnit,
   isUnitOfferedOnline,

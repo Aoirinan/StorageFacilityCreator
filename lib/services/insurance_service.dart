@@ -1,11 +1,57 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:sfcapp/models/insurance_plan_model.dart';
 import 'package:sfcapp/models/tenant_insurance_model.dart';
 
+/// The insurance provider a facility recommends to its tenants, as the
+/// Insurance screen edits it and the tenant portal shows it.
+typedef InsuranceReferral = ({String name, String url, String notes});
+
 class InsuranceService {
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  // A getter, not a final field, so tests can run the real code against a
+  // fake Firestore.
+  static FirebaseFirestore get _firestore =>
+      _firestoreForTesting ?? FirebaseFirestore.instance;
+  static FirebaseFirestore? _firestoreForTesting;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
+
+  @visibleForTesting
+  static set firestoreForTesting(FirebaseFirestore? firestore) =>
+      _firestoreForTesting = firestore;
+
+  static DocumentReference<Map<String, dynamic>> _referralDoc(
+          String facilityId) =>
+      _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('settings')
+          .doc('insurance');
+
+  /// [facilityId]'s saved referral (facilities/{id}/settings/insurance),
+  /// with blanks for a facility that has none. A failed read throws: a form
+  /// filled with blanks from one would save them over the facility's link.
+  static Future<InsuranceReferral> getReferral(String facilityId) async {
+    final data = (await _referralDoc(facilityId).get()).data();
+    return (
+      name: data?['referralName'] as String? ?? '',
+      url: data?['referralUrl'] as String? ?? '',
+      notes: data?['referralNotes'] as String? ?? '',
+    );
+  }
+
+  /// Writes all three referral fields, so the caller must pass what it read
+  /// with [getReferral] for any field the owner did not change.
+  static Future<void> saveReferral(
+    String facilityId,
+    InsuranceReferral referral,
+  ) =>
+      _referralDoc(facilityId).set({
+        'referralUrl': referral.url,
+        'referralName': referral.name,
+        'referralNotes': referral.notes,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
 
   // Insurance Plans CRUD
   static Future<String> createInsurancePlan({
