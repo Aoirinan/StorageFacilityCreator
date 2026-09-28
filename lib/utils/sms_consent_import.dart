@@ -19,10 +19,12 @@ class ImportedSmsConsent {
   /// a consent record with no date is weaker evidence than one with.
   final DateTime? consentedAt;
 
-  /// Whether the row says plainly that the tenant refused or opted out
-  /// ("no", "opted out", "stop", ...). That is the tenant's own choice, so
-  /// it is imported as an opt-out staff cannot reverse, not as "no consent
-  /// yet". A blank, "false", "0" or "n/a" is only "not recorded".
+  /// Whether the row says in so many words that the tenant refused or opted
+  /// out ("opted out", "stop", "declined", ...). That is the tenant's own
+  /// choice, so it is imported as an opt-out staff cannot reverse. A bare
+  /// "no" / "n" is only "not recorded": many exports use Y/N where N means
+  /// consent was never collected, and locking those tenants would leave staff
+  /// unable to record consent later. Blank, "false", "0" and "n/a" likewise.
   final bool optedOut;
 
   const ImportedSmsConsent({
@@ -38,10 +40,10 @@ class ImportedSmsConsent {
       ImportedSmsConsent(optedIn: false, consentedAt: null, optedOut: true);
 }
 
-/// Cells that say the tenant refused or opted out, as opposed to cells that
-/// only fail to say yes.
+/// Cells that say unambiguously that the tenant refused or opted out, as
+/// opposed to cells that only fail to say yes (including a bare "no" / "n").
 const _explicitOptOut = <String>{
-  'no', 'n', 'opted out', 'opted-out', 'optout', 'opt out', 'opt-out',
+  'opted out', 'opted-out', 'optout', 'opt out', 'opt-out',
   'declined', 'refused', 'unsubscribed', 'stop',
 };
 

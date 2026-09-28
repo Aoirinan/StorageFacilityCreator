@@ -420,8 +420,10 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
     }
     if (refused > 0) {
       message += ' $refused ${refused == 1 ? 'row says' : 'rows say'} the tenant '
-          'opted out ("no", "stop", ...): imported as opted out, and only the '
-          'tenant can opt back in, by texting START.';
+          'opted out ("opted out", "stop", "declined", ...): imported as opted '
+          'out, and only the tenant can opt back in, by texting START. A plain '
+          '"no" or "N" is imported as not recorded, so consent can still be '
+          'recorded later.';
     }
 
     return Card(

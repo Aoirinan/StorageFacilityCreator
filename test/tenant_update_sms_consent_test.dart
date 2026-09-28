@@ -90,16 +90,18 @@ void main() {
   });
 
   group('CSV import consent column', () {
-    test('an explicit no / stop is an opt-out, not just "no consent"', () {
-      for (final value in ['No', 'n', 'Opted out', 'STOP', 'opt-out', 'declined']) {
+    test('an unambiguous opt-out word is an opt-out, not just "no consent"', () {
+      for (final value in ['Opted out', 'STOP', 'opt-out', 'opt out', 'declined', 'refused', 'unsubscribed']) {
         final parsed = parseSmsConsent(consentValue: value);
         expect(parsed.optedOut, isTrue, reason: value);
         expect(parsed.optedIn, isFalse, reason: value);
       }
     });
 
-    test('blank, false, 0 and n/a are only "not recorded"', () {
-      for (final value in ['', 'false', '0', 'n/a', '-', 'maybe']) {
+    test('a bare no / N, blank, false, 0 and n/a are only "not recorded"', () {
+      // Y/N exports often mean N = consent never collected; locking those
+      // tenants would stop staff recording consent later.
+      for (final value in ['No', 'n', 'N', '', 'false', '0', 'n/a', '-', 'maybe']) {
         expect(parseSmsConsent(consentValue: value).optedOut, isFalse, reason: value);
       }
       expect(parseSmsConsent(consentValue: 'yes').optedOut, isFalse);

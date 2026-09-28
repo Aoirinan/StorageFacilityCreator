@@ -5,7 +5,7 @@
           (isFacilityOwnerOrManager(facilityId) && keepsTenantsOwnSmsOptOut());
 
         // A tenant's own SMS opt-out (texted STOP, declined texts at move-in,
-        // "no" on an imported sheet) is theirs alone to reverse, by texting
+        // "opted out" on an imported sheet) is theirs alone to reverse, by texting
         // START, which the server records with the Admin SDK (not subject to
         // these rules). Staff may reverse only an opt-out they made
         // themselves: smsConsentSource 'staff_removed'. Backstop for an app

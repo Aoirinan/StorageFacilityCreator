@@ -51,8 +51,9 @@ class SmsConsentSources {
   /// The CSV import's "SMS Consent" column said yes.
   static const csvImport = 'csv_import';
 
-  /// The CSV import's "SMS Consent" column said no / opted out / stop. The
-  /// tenant's own choice, so it is locked like a STOP.
+  /// The CSV import's "SMS Consent" column said "opted out" / "stop" /
+  /// "declined" (not a bare "no"). The tenant's own choice, so it is locked
+  /// like a STOP.
   static const csvOptOut = 'csv_opt_out';
 
   /// The server's inbound STOP handler.
@@ -85,7 +86,7 @@ enum SmsConsentState {
   /// Nothing recorded either way.
   none,
 
-  /// The tenant opted out (texted STOP, declined at move-in, said no on an
+  /// The tenant opted out (texted STOP, declined at move-in, marked opted out on an
   /// imported sheet, ...). Never overridden by staff.
   optedOut,
 
