@@ -423,6 +423,8 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
         moveInDate: _moveInDate,
         requiresSignature: !_contractSigned,
         requiresPayment: !_skipPayment,
+        // The tenant's rate from now on; the line items are this month's.
+        monthlyRent: _monthlyRent,
       );
 
       // Generate payment reference ID if payment is being processed
