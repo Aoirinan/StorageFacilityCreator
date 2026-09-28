@@ -25,9 +25,11 @@ import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/utils/email_send_feedback.dart';
+import 'package:sfcapp/utils/sms_consent.dart';
 import 'package:sfcapp/utils/tenant_contact_validation.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 import 'package:sfcapp/widgets/modern_page_wrapper.dart';
+import 'package:sfcapp/widgets/sms_consent_checkbox.dart';
 import 'package:sfcapp/widgets/tenant_facility_unit_picker.dart';
 
 class TenantCreationScreen extends ConsumerStatefulWidget {
@@ -74,6 +76,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
   bool _dnrOverride = false;
   List<DNRModel>? _dnrMatches;
   bool _smsConsent = false; // SMS consent checkbox state
+  SmsConsentMethod? _smsConsentMethod;
 
   final Random _random = Random.secure();
 
@@ -999,6 +1002,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
         portalWelcomeMessage: portalWelcomeMessage,
         leadSource: _selectedLeadSource,
         smsOptInDate: _smsConsent ? DateTime.now() : null,
+        smsConsentMethod: _smsConsent ? _smsConsentMethod : null,
       );
       
       if (kDebugMode) {
@@ -1345,74 +1349,14 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
                 Consumer(
                   builder: (context, ref, child) {
                     final facilityAsync = ref.watch(facilityProvider(_selectedFacilityId));
-                    final facilityName = facilityAsync.value?.name ?? 'this facility';
-                    
-                    return Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: AppTheme.backgroundSecondary,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: AppTheme.borderLight),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Checkbox(
-                                value: _smsConsent,
-                                onChanged: (value) {
-                                  setState(() {
-                                    _smsConsent = value ?? false;
-                                  });
-                                },
-                              ),
-                              Expanded(
-                                child: GestureDetector(
-                                  onTap: () {
-                                    setState(() {
-                                      _smsConsent = !_smsConsent;
-                                    });
-                                  },
-                                  child: Padding(
-                                    padding: const EdgeInsets.only(top: 12),
-                                    child: RichText(
-                                      text: TextSpan(
-                                        style: const TextStyle(
-                                          fontSize: 13,
-                                          color: AppTheme.textPrimary,
-                                          height: 1.4,
-                                        ),
-                                        children: [
-                                          const TextSpan(
-                                            text: 'I consent to receive SMS notifications regarding my storage account. Message frequency varies. Message & data rates may apply. Reply STOP to opt out, HELP for help. ',
-                                            style: TextStyle(fontWeight: FontWeight.w500),
-                                          ),
-                                          WidgetSpan(
-                                            child: GestureDetector(
-                                              onTap: () {
-                                                context.go('/sms-policy');
-                                              },
-                                              child: const Text(
-                                                'See SMS Terms',
-                                                style: TextStyle(
-                                                  color: AppTheme.primaryBlue,
-                                                  decoration: TextDecoration.underline,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
+                    final facilityName = facilityAsync.value?.name ?? 'This facility';
+                    return SmsConsentCheckbox(
+                      facilityName: facilityName,
+                      savedState: null,
+                      value: _smsConsent,
+                      onChanged: (v) => setState(() => _smsConsent = v),
+                      method: _smsConsentMethod,
+                      onMethodChanged: (m) => setState(() => _smsConsentMethod = m),
                     );
                   },
                 ),

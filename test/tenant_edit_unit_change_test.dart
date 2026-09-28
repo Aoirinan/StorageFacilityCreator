@@ -9,6 +9,7 @@ import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/screens/tenant_edit_screen.dart';
 import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/utils/sms_consent.dart';
 import 'package:sfcapp/widgets/tenant_contact_edit_dialog.dart';
 import 'package:sfcapp/widgets/tenant_facility_unit_picker.dart';
 
@@ -49,7 +50,7 @@ class _FakeOperations extends TenantOperationsNotifier {
     String? portalWelcomeMessage,
     DateTime? portalLastAccessAt,
     bool resetPortalStats = false,
-    DateTime? smsOptInDate,
+    SmsConsentUpdate? smsConsent,
     ConfirmFreeUnit? confirmFreeOldUnit,
   }) async {
     savedUnitNumber = unitNumber;

@@ -20,6 +20,7 @@ import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/utils/callable_failure.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/utils/sms_consent.dart';
 import 'package:sfcapp/utils/unit_areas.dart';
 import 'package:sfcapp/utils/unit_label.dart';
 import 'package:sfcapp/utils/unit_number.dart';
@@ -804,6 +805,10 @@ class TenantService {
     String? portalWelcomeMessage,
     String? leadSource,
     DateTime? smsOptInDate,
+    // Where the consent came from, with [smsOptInDate]: staff ticking the
+    // box, or the CSV import.
+    String smsConsentSource = SmsConsentSources.staffRecorded,
+    SmsConsentMethod? smsConsentMethod,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -863,7 +868,16 @@ class TenantService {
         'portalVisitCount': 0,
         if (leadSource != null && leadSource.isNotEmpty) 'leadSource': leadSource,
         'smsOptOut': false,
-        if (smsOptInDate != null) 'smsOptInDate': Timestamp.fromDate(smsOptInDate),
+        if (smsOptInDate != null) ...{
+          'smsOptInDate': Timestamp.fromDate(smsOptInDate),
+          // Both shapes the server reads, kept in step.
+          'smsConsentStatus': 'opted_in',
+          'smsConsentTimestamp': Timestamp.fromDate(smsOptInDate),
+          'smsConsentSource': smsConsentSource,
+          'smsConsentRecordedAt': FieldValue.serverTimestamp(),
+          'smsConsentRecordedBy': user.uid,
+          if (smsConsentMethod != null) 'smsConsentMethod': smsConsentMethod.value,
+        },
       };
 
       if (kDebugMode) {
@@ -1183,7 +1197,9 @@ class TenantService {
     double? coverageAmount,
     DateTime? tppEnrollmentDate,
     String? tppCoverageLevel,
-    DateTime? smsOptInDate,
+    // A change to the tenant's SMS consent (see smsConsentChange); null
+    // leaves it as it is, so a re-save keeps the date they agreed.
+    SmsConsentUpdate? smsConsent,
     Map<String, String>? monthStatusOverrides,
     ConfirmFreeUnit? confirmFreeOldUnit,
     // Tests only: in place of Firestore, the audit/stats/map side effects
@@ -1307,11 +1323,8 @@ class TenantService {
       if (tppCoverageLevel != null) {
         updateData['tppCoverageLevel'] = tppCoverageLevel.isEmpty ? FieldValue.delete() : tppCoverageLevel;
       }
-      if (smsOptInDate != null) {
-        updateData['smsOptInDate'] = Timestamp.fromDate(smsOptInDate);
-        // If opting in, clear opt-out status
-        updateData['smsOptOut'] = false;
-        updateData['smsOptOutDate'] = FieldValue.delete();
+      if (smsConsent != null) {
+        updateData.addAll(smsConsent.fields(actingUid: uid));
       }
 
       // Month status overrides: Map<String, String> keyed by "yyyy-MM", value "paid"|"late"|"moved_out"

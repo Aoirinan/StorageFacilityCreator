@@ -2,7 +2,6 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:sfcapp/constants/location_options.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
@@ -10,10 +9,12 @@ import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/services/modern_navigation_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/utils/sms_consent.dart';
 import 'package:sfcapp/utils/tenant_contact_validation.dart';
 import 'package:sfcapp/widgets/confirm_free_old_unit_dialog.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 import 'package:sfcapp/widgets/modern_page_wrapper.dart';
+import 'package:sfcapp/widgets/sms_consent_checkbox.dart';
 import 'package:sfcapp/widgets/tenant_facility_unit_picker.dart';
 
 class TenantEditScreen extends ConsumerStatefulWidget {
@@ -62,6 +63,7 @@ class _TenantEditScreenState extends ConsumerState<TenantEditScreen> {
   DateTime? _portalLastAccessAt;
   int _portalVisitCount = 0;
   bool _smsConsent = false; // SMS consent checkbox state
+  SmsConsentMethod? _smsConsentMethod;
 
   final Random _random = Random.secure();
   late final String _facilityId;
@@ -92,7 +94,7 @@ class _TenantEditScreenState extends ConsumerState<TenantEditScreen> {
     _portalWelcomeController.text = widget.tenant.portalWelcomeMessage ?? '';
     _portalLastAccessAt = widget.tenant.portalLastAccessAt;
     _portalVisitCount = widget.tenant.portalVisitCount;
-    _smsConsent = widget.tenant.smsOptInDate != null && !widget.tenant.smsOptOut;
+    _smsConsent = smsConsentState(widget.tenant) == SmsConsentState.consented;
     _idNumberController.text = widget.tenant.governmentIdNumber ?? '';
     _idStateController.text = widget.tenant.governmentIdState ?? '';
     _selectedIdState = widget.tenant.governmentIdState;
@@ -941,7 +943,13 @@ class _TenantEditScreenState extends ConsumerState<TenantEditScreen> {
         emergencyContacts: contacts,
         vehicles: vehicles,
         portalEnabled: _portalEnabled,
-        smsOptInDate: _smsConsent && !widget.tenant.smsOptOut ? DateTime.now() : null,
+        // Only a flip of the box writes: re-saving keeps the date the
+        // tenant agreed, and a tenant's own opt-out is left alone.
+        smsConsent: smsConsentChange(
+          tenant: widget.tenant,
+          ticked: _smsConsent,
+          method: _smsConsentMethod,
+        ),
         portalAccessCode: portalAccessCode,
         clearPortalAccessCode: shouldClearPortalCode,
         portalWelcomeMessage: portalWelcomeForUpdate,
@@ -1100,90 +1108,14 @@ class _TenantEditScreenState extends ConsumerState<TenantEditScreen> {
                           Consumer(
                             builder: (context, ref, child) {
                               final facilityAsync = ref.watch(facilityProvider(_facilityId));
-                              final facilityName = facilityAsync.value?.name ?? 'this facility';
-                              
-                              return Container(
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(
-                                  color: AppTheme.backgroundSecondary,
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(color: AppTheme.borderLight),
-                                ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Checkbox(
-                                          value: _smsConsent && !widget.tenant.smsOptOut,
-                                          onChanged: widget.tenant.smsOptOut
-                                              ? null
-                                              : (value) {
-                                                  setState(() {
-                                                    _smsConsent = value ?? false;
-                                                  });
-                                                },
-                                        ),
-                                        Expanded(
-                                          child: GestureDetector(
-                                            onTap: widget.tenant.smsOptOut
-                                                ? null
-                                                : () {
-                                                    setState(() {
-                                                      _smsConsent = !_smsConsent;
-                                                    });
-                                                  },
-                                            child: Padding(
-                                              padding: const EdgeInsets.only(top: 12),
-                                              child: widget.tenant.smsOptOut
-                                                  ? Text(
-                                                      'This tenant has opted out of SMS messaging. They cannot receive SMS messages.',
-                                                      style: TextStyle(
-                                                        fontSize: 13,
-                                                        color: AppTheme.error,
-                                                        fontWeight: FontWeight.w500,
-                                                      ),
-                                                    )
-                                                  : RichText(
-                                                      text: TextSpan(
-                                                        style: const TextStyle(
-                                                          fontSize: 13,
-                                                          color: AppTheme.textPrimary,
-                                                          height: 1.4,
-                                                        ),
-                                                        children: [
-                                                          TextSpan(
-                                                            text: 'I agree to receive SMS reminders and account notifications from $facilityName. ',
-                                                            style: const TextStyle(fontWeight: FontWeight.w500),
-                                                          ),
-                                                          const TextSpan(
-                                                            text: 'Reply STOP to opt out, HELP for help. Message frequency varies. Msg & data rates may apply. ',
-                                                          ),
-                                                          WidgetSpan(
-                                                            child: GestureDetector(
-                                                              onTap: () {
-                                                                context.go('/sms-policy');
-                                                              },
-                                                              child: const Text(
-                                                                'See SMS Policy',
-                                                                style: TextStyle(
-                                                                  color: AppTheme.primaryBlue,
-                                                                  decoration: TextDecoration.underline,
-                                                                ),
-                                                              ),
-                                                            ),
-                                                          ),
-                                                        ],
-                                                      ),
-                                                    ),
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
+                              final facilityName = facilityAsync.value?.name ?? 'This facility';
+                              return SmsConsentCheckbox(
+                                facilityName: facilityName,
+                                savedState: smsConsentState(widget.tenant),
+                                value: _smsConsent,
+                                onChanged: (v) => setState(() => _smsConsent = v),
+                                method: _smsConsentMethod,
+                                onMethodChanged: (m) => setState(() => _smsConsentMethod = m),
                               );
                             },
                           ),

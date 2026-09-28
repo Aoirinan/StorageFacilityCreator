@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
+import 'package:sfcapp/utils/sms_consent.dart';
 import 'package:sfcapp/utils/sms_consent_import.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sfcapp/models/unit_model.dart';
@@ -483,6 +484,7 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
           smsOptInDate: consent.optedIn
               ? (consent.consentedAt ?? DateTime.now())
               : null,
+          smsConsentSource: SmsConsentSources.csvImport,
           // Missing contact details are stored as blank. Placeholders like
           // pending@example.com looked harmless but sent that tenant's
           // receipts to a real stranger's mailbox, and made every later
