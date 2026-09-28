@@ -192,6 +192,7 @@ export {
 } from './twilio/a2pBusinessValidation';
 export type {
   A2PBusinessData,
+  A2PBusinessValidationOptions,
   A2PValidationIssue,
 } from './twilio/a2pBusinessValidation';
 export {

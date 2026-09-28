@@ -13,6 +13,8 @@ class _FakeRepository implements TextingOnboardingRepository {
   final Map<String, TextingOnboardingSnapshot> snapshots;
   int refreshCount = 0;
   int resetCount = 0;
+  List<String>? submittedSamples;
+  List<String>? submittedConsentMethods;
   int provisionCount = 0;
 
   _FakeRepository(this.snapshots);
@@ -70,21 +72,25 @@ class _FakeRepository implements TextingOnboardingRepository {
     required String facilityId,
     required List<String> useCases,
     required List<String> sampleMessages,
+    List<String> consentMethods = const [],
+    String? areaCode,
   }) async {
+    submittedSamples = sampleMessages;
+    submittedConsentMethods = consentMethods;
     return snapshots[facilityId]!;
   }
 }
 
 const _business = TextingBusinessDetails(
-  legalBusinessName: 'Keepsake Storage LLC',
+  legalBusinessName: 'Example Storage LLC',
   businessType: 'LLC',
   einLast4: '6789',
   addressLine1: '100 Main Street',
   city: 'Austin',
   state: 'TX',
   postalCode: '78701',
-  website: 'https://keepsake.example',
-  supportEmail: 'help@keepsake.example',
+  website: 'https://storage.example',
+  supportEmail: 'help@storage.example',
   supportPhone: '5125550100',
   // Carrier vetting requires a named authorized representative, so business
   // details are not complete without one.
@@ -123,19 +129,19 @@ const _approvedSnapshot = TextingOnboardingSnapshot(
   hasTrustProfile: true,
 );
 
-/// Keepsake's actual situation: a trust profile exists, but the saved details
-/// predate the authorized-representative fields, so they are incomplete.
+/// A facility whose trust profile exists but whose saved details predate the
+/// authorized-representative fields, so they are incomplete.
 const _businessMissingRep = TextingBusinessDetails(
-  legalBusinessName: 'Keepsake',
+  legalBusinessName: 'Example Storage',
   businessType: 'LLC',
-  einLast4: '6565',
-  addressLine1: '4180 US HWY 82 East',
-  city: 'Paris',
+  einLast4: '6789',
+  addressLine1: '100 Main Street',
+  city: 'Austin',
   state: 'TX',
-  postalCode: '75460',
-  website: 'https://keepsake.example',
-  supportEmail: 'help@keepsake.example',
-  supportPhone: '9037157504',
+  postalCode: '78701',
+  website: 'https://storage.example',
+  supportEmail: 'help@storage.example',
+  supportPhone: '5125550100',
 );
 
 const _profileWithIncompleteDetails = TextingOnboardingSnapshot(
@@ -154,16 +160,67 @@ const _lockedSnapshot = TextingOnboardingSnapshot(
   businessDetailsLocked: true,
 );
 
+/// Profile passed and is in review; the A2P trust product failed evaluation.
+/// The product can be rebuilt, the profile's own fields cannot change.
+const _profileInReviewSnapshot = TextingOnboardingSnapshot(
+  status: TextingRegistrationStatus.draft,
+  platformApproved: false,
+  businessDetails: _business,
+  hasTrustProfile: true,
+  profileDetailsLocked: true,
+  lockReason: 'Your business profile is with Twilio for review.',
+  bundleProfileStatus: 'in-review',
+  bundleProductStatus: 'draft',
+  bundleIssues: 'A2P Messaging Profile Information - Company Type: invalid',
+);
+
+/// Saved details and a single message type chosen, bundles approved by
+/// Twilio: resumes at review with the submit button enabled.
+const _oneUseCaseSnapshot = TextingOnboardingSnapshot(
+  status: TextingRegistrationStatus.draft,
+  platformApproved: false,
+  businessDetails: _business,
+  useCases: ['Payment reminders'],
+  consentMethods: ['online_form'],
+  senderName: 'Example Self Storage',
+  hasTrustProfile: true,
+  bundleReady: true,
+  bundleApproved: true,
+  bundleProfileStatus: 'twilio-approved',
+  bundleProductStatus: 'twilio-approved',
+);
+
+/// Same, but Twilio is still reviewing the A2P messaging registration.
+const _awaitingApprovalSnapshot = TextingOnboardingSnapshot(
+  status: TextingRegistrationStatus.draft,
+  platformApproved: false,
+  businessDetails: _business,
+  useCases: ['Payment reminders'],
+  consentMethods: ['online_form'],
+  hasTrustProfile: true,
+  bundleReady: true,
+  bundleProfileStatus: 'twilio-approved',
+  bundleProductStatus: 'in-review',
+);
+
 /// At "Review and submit" (details and plan saved), by what Twilio's
 /// pre-check said about the business details.
-TextingOnboardingSnapshot _atReview({required bool bundleReady, String? bundleIssues}) =>
+/// `bundleApproved` defaults to true so these cases isolate the pre-check;
+/// the approval lock has its own test.
+TextingOnboardingSnapshot _atReview({
+  required bool bundleReady,
+  String? bundleIssues,
+  bool bundleApproved = true,
+}) =>
     TextingOnboardingSnapshot(
       status: TextingRegistrationStatus.draft,
       platformApproved: false,
       businessDetails: _business,
       useCases: const ['Payment reminders'],
+      consentMethods: const ['online_form'],
       hasTrustProfile: true,
       bundleReady: bundleReady,
+      bundleApproved: bundleApproved,
       bundleIssues: bundleIssues,
     );
 
@@ -273,6 +330,130 @@ void main() {
       expect(find.text('Business profile submitted'), findsOneWidget);
     });
 
+    testWidgets(
+        'profile in review: profile fields locked, product can be resubmitted',
+        (tester) async {
+      await _pumpScreen(
+          tester,
+          _FakeRepository({
+            'facility-1': _profileInReviewSnapshot,
+          }));
+      // Resume step is 1 for complete details; go back to business details.
+      await tester.tap(find.text('Business details').first);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('profile-locked-callout')), findsOneWidget);
+      expect(find.text('Your business profile is with Twilio for review.'),
+          findsOneWidget);
+      expect(
+        tester
+            .widget<TextFormField>(find.byKey(const Key('legal-business-name')))
+            .enabled,
+        isFalse,
+      );
+      expect(
+        tester.widget<TextFormField>(find.byKey(const Key('ein'))).enabled,
+        isFalse,
+      );
+      expect(
+        tester.widget<TextFormField>(find.byKey(const Key('dba'))).enabled,
+        isNot(false),
+      );
+      expect(find.text('Resubmit A2P registration'), findsOneWidget);
+      expect(
+        tester
+            .widget<Text>(find.byKey(const Key('bundle-profile-status')))
+            .data,
+        'In review at Twilio',
+      );
+      expect(
+        tester
+            .widget<Text>(find.byKey(const Key('bundle-product-status')))
+            .data,
+        'Not submitted',
+      );
+      expect(find.text('Carrier profile needs corrections'), findsOneWidget);
+    });
+
+    testWidgets('always submits at least two sample messages', (tester) async {
+      final repository = _FakeRepository({'facility-1': _oneUseCaseSnapshot});
+      await _pumpScreen(tester, repository);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('review-stage')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('consent-confirmation')));
+      await tester.pump();
+      tester
+          .widget<FilledButton>(find.byKey(const Key('primary-stage-action')))
+          .onPressed!();
+      await tester.pumpAndSettle();
+
+      final samples = repository.submittedSamples!;
+      expect(samples.length, greaterThanOrEqualTo(2));
+      expect(samples.toSet().length, samples.length);
+      for (final sample in samples) {
+        // The server's sender name, which live texts also open with.
+        expect(sample, startsWith('Example Self Storage:'));
+        expect(sample.length, greaterThanOrEqualTo(20));
+      }
+      expect(repository.submittedConsentMethods, ['online_form']);
+      // The number is reserved inside the one submit call, after the server's
+      // checks, never by a separate provisionPhoneNumber call first.
+      expect(repository.provisionCount, 0);
+    });
+
+    testWidgets('submit stays disabled until Twilio approves both bundles',
+        (tester) async {
+      final repository =
+          _FakeRepository({'facility-1': _awaitingApprovalSnapshot});
+      await _pumpScreen(tester, repository);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('review-stage')), findsOneWidget);
+      expect(find.byKey(const Key('awaiting-bundle-approval')), findsOneWidget);
+      expect(find.textContaining('A2P messaging registration: In review at Twilio'),
+          findsOneWidget);
+      final button = tester
+          .widget<FilledButton>(find.byKey(const Key('primary-stage-action')));
+      expect(button.onPressed, isNull);
+      expect(repository.submittedSamples, isNull);
+      expect(repository.provisionCount, 0);
+    });
+
+    testWidgets('messaging plan requires a consent method', (tester) async {
+      await _pumpScreen(
+          tester,
+          _FakeRepository({
+            'facility-1': _savedDraftSnapshot,
+          }));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('messaging-plan-stage')), findsOneWidget);
+      expect(find.byKey(const Key('consent-method-error')), findsOneWidget);
+      // START only restores a tenant's own STOP, so it is not offered as a
+      // way to opt in (and therefore never filed with the carriers).
+      expect(find.byKey(const Key('consent-method-text_start')), findsNothing);
+      expect(find.textContaining('START'), findsNothing);
+      tester
+          .widget<FilledButton>(find.byKey(const Key('primary-stage-action')))
+          .onPressed!();
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('messaging-plan-stage')), findsOneWidget,
+          reason: 'cannot continue without a consent method');
+
+      tester
+          .widget<CheckboxListTile>(
+              find.byKey(const Key('consent-method-signed_form')))
+          .onChanged!(true);
+      await tester.pump();
+      expect(find.byKey(const Key('consent-method-error')), findsNothing);
+      tester
+          .widget<FilledButton>(find.byKey(const Key('primary-stage-action')))
+          .onPressed!();
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('review-stage')), findsOneWidget);
+    });
+
     testWidgets('requires a named authorized representative', (tester) async {
       // The carrier customer-profile policy will not approve a bundle without
       // authorized_representative_1, so the form has to collect it.
@@ -340,6 +521,15 @@ void main() {
         expect(find.byKey(const Key('reserve-blocked')), findsNothing);
       });
 
+      testWidgets('stays locked after the pre-check until Twilio approves both bundles',
+          (tester) async {
+        await openReview(
+            tester, _atReview(bundleReady: true, bundleApproved: false));
+        expect(reserve(tester).onPressed, isNull);
+        expect(find.byKey(const Key('awaiting-bundle-approval')), findsOneWidget);
+        expect(find.byKey(const Key('reserve-blocked')), findsNothing);
+      });
+
       test('readyToReserveNumber', () {
         expect(_atReview(bundleReady: true).readyToReserveNumber, isTrue);
         expect(_atReview(bundleReady: true, bundleIssues: '  ').readyToReserveNumber, isTrue);
@@ -401,7 +591,7 @@ Future<void> _pumpScreen(
   final user = MockUser(uid: 'user-1', email: 'owner@example.com');
   final facility = FacilityModel(
     id: 'facility-1',
-    name: 'Keepsake Self Storage',
+    name: 'Example Self Storage',
     ownerUid: user.uid,
     createdAt: DateTime(2025),
   );

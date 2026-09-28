@@ -21,6 +21,15 @@ export function isHelpKeyword(input: string): boolean {
   return keyword === 'HELP' || keyword === 'INFO';
 }
 
+/**
+ * Fold Twilio's brand and campaign states into the facility's A2P status.
+ *
+ * Twilio reports a brand as PENDING / IN_REVIEW / APPROVED / FAILED and a
+ * campaign (`usAppToPerson.campaignStatus`) as PENDING / IN_PROGRESS /
+ * VERIFIED / FAILED. Only a verified (or approved) *campaign* means the number
+ * can send: an approved brand with its campaign still in review is pending, not
+ * approved, because platform approval keys off `approved`.
+ */
 export function computeA2PStatus(
   currentStatus: A2PStatus,
   brandStatus?: string | null,
@@ -28,17 +37,26 @@ export function computeA2PStatus(
 ): A2PStatus {
   const brand = (brandStatus || '').toLowerCase();
   const campaign = (campaignStatus || '').toLowerCase();
+  const failed = (s: string) =>
+    s.includes('reject') || s.includes('denied') || s.includes('fail') || s.includes('suspend');
 
-  if (brand.includes('reject') || campaign.includes('reject') || brand.includes('denied') || campaign.includes('denied')) {
+  if (failed(brand) || failed(campaign)) {
     return 'rejected';
   }
-  if (campaign.includes('approv') || brand.includes('approv')) {
+  // A rejection with no campaign on file (the hourly poll gave up filing it
+  // under an approved brand) stays rejected: only filing a campaign changes
+  // that. Demoting it to pending here wiped the reason and left the facility
+  // where neither the reset (needs rejected) nor the poll (needs a pending
+  // filing) would touch it again.
+  if (currentStatus === 'rejected' && !campaign) {
+    return 'rejected';
+  }
+  if (campaign.includes('approv') || campaign.includes('verified')) {
     return 'approved';
   }
-  if (currentStatus === 'submitted' || brand.includes('submit') || campaign.includes('submit')) {
-    return 'pending';
-  }
-  return currentStatus;
+  // Nothing reported (no brand or campaign filed yet): leave the status alone.
+  if (!brand && !campaign) return currentStatus;
+  return 'pending';
 }
 
 export async function ensureIdempotentResource<T>(

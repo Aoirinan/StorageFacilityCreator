@@ -158,8 +158,17 @@ export function buildBusinessInformationAttributes(
   // verifies the owner by mobile OTP instead. Only send the registration
   // number for entities that actually have one.
   if (!mapping.soleProprietor) {
+    // Never send an empty or partial registration number. Twilio accepts the
+    // end user either way and the gap only surfaces at brand vetting, after
+    // the fee is spent; the caller must supply all nine digits.
+    const ein = normalizeEin(input.ein);
+    if (ein.length !== 9) {
+      throw new Error(
+        'A 9-digit EIN is required to register a business that is not a sole proprietor.',
+      );
+    }
     attrs.business_registration_identifier = A2P_REGISTRATION_IDENTIFIER;
-    attrs.business_registration_number = normalizeEin(input.ein);
+    attrs.business_registration_number = ein;
   }
   return attrs;
 }
@@ -227,14 +236,28 @@ export interface EvaluationSummary {
   compliant: boolean;
   status: string;
   failures: EvaluationFieldFailure[];
+  /** SID of the evaluation (EL...), so a stored issue can be looked up in Twilio. */
+  evaluationSid?: string;
+  /** Policy the bundle was evaluated against (RN...). */
+  policySid?: string;
+}
+
+function firstText(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
 }
 
 /**
  * Flatten a TrustHub evaluation into the specific fields that failed.
  *
- * Twilio nests failures two levels deep and reports the overall verdict as a
- * `status` string, so without this the owner sees "noncompliant" and no way to
- * know which box to fix.
+ * Twilio reports each policy requirement as a result carrying
+ * `requirement_friendly_name` / `requirement_name`, the overall `passed` flag,
+ * and the failing fields in `invalid[]` (with `valid[]` for the ones that
+ * passed). An older shape used `friendly_name` and `fields[]` with a per-field
+ * `passed`; both are read. Without this the owner sees "noncompliant" and no way
+ * to know which box to fix, and every failure collapsed to "missing".
  */
 export function summarizeEvaluation(evaluation: unknown): EvaluationSummary {
   const ev = (evaluation || {}) as Record<string, any>;
@@ -244,17 +267,21 @@ export function summarizeEvaluation(evaluation: unknown): EvaluationSummary {
   for (const result of Array.isArray(ev.results) ? ev.results : []) {
     const r = (result || {}) as Record<string, any>;
     if (r.passed === true) continue;
-    const objectType = String(r.friendly_name || r.object_type || 'requirement');
+    const objectType =
+      firstText(r.requirement_friendly_name, r.friendly_name, r.requirement_name, r.object_type) ||
+      'requirement';
 
-    const fields = Array.isArray(r.fields) ? r.fields : [];
+    const invalid = Array.isArray(r.invalid) ? r.invalid : [];
+    const legacyFields = (Array.isArray(r.fields) ? r.fields : []).filter(
+      (f: unknown) => (f as Record<string, any> | null)?.passed !== true,
+    );
     let addedForThisResult = false;
-    for (const field of fields) {
+    for (const field of [...invalid, ...legacyFields]) {
       const f = (field || {}) as Record<string, any>;
-      if (f.passed === true) continue;
       failures.push({
         objectType,
-        field: String(f.friendly_name || f.object_field || 'unknown'),
-        reason: String(f.failure_reason || 'Did not meet the carrier policy'),
+        field: firstText(f.friendly_name, f.object_field, f.name) || 'unknown',
+        reason: firstText(f.failure_reason) || 'Did not meet the carrier policy',
       });
       addedForThisResult = true;
     }
@@ -265,21 +292,39 @@ export function summarizeEvaluation(evaluation: unknown): EvaluationSummary {
       failures.push({
         objectType,
         field: 'missing',
-        reason: String(r.failure_reason || 'Required item is missing from the bundle'),
+        reason: firstText(r.failure_reason) || 'Required item is missing from the bundle',
       });
     }
   }
 
-  return { compliant: status === 'compliant' && failures.length === 0, status, failures };
+  const evaluationSid = firstText(ev.sid);
+  const policySid = firstText(ev.policySid, ev.policy_sid);
+  return {
+    compliant: status === 'compliant' && failures.length === 0,
+    status,
+    failures,
+    ...(evaluationSid ? { evaluationSid } : {}),
+    ...(policySid ? { policySid } : {}),
+  };
 }
 
-/** Owner-facing one-liner naming exactly what to fix. */
+/**
+ * Owner-facing one-liner naming exactly what to fix, followed by the
+ * evaluation and policy SIDs so support can find the same verdict in Twilio.
+ */
 export function formatEvaluationFailures(summary: EvaluationSummary): string {
   if (summary.compliant) return '';
+  const refs = [
+    summary.evaluationSid ? `evaluation ${summary.evaluationSid}` : '',
+    summary.policySid ? `policy ${summary.policySid}` : '',
+  ]
+    .filter(Boolean)
+    .join(', ');
+  const suffix = refs ? ` (${refs})` : '';
   if (summary.failures.length === 0) {
-    return `Twilio reported the business profile as ${summary.status}.`;
+    return `Twilio reported the business profile as ${summary.status}.${suffix}`;
   }
-  return summary.failures
-    .map((f) => `${f.objectType} — ${f.field}: ${f.reason}`)
-    .join('; ');
+  return (
+    summary.failures.map((f) => `${f.objectType} — ${f.field}: ${f.reason}`).join('; ') + suffix
+  );
 }

@@ -234,7 +234,33 @@ service cloud.firestore {
       'twilioCampaignSid',
       'twilioMessagingServiceSid',
       'twilioPhoneNumber',
-      'twilioPhoneNumberSid'
+      'twilioPhoneNumberSid',
+      // The facility's own number: sendSMS sends From it once approved, and
+      // the inbound webhook routes replies by it. Written only when a callable
+      // buys the number (the app only ever re-saves the value it read).
+      'twilioPhoneNumberE164',
+      // Paid-step coordination (a2pSubmission.ts / a2pPaidSteps.ts). An owner
+      // who could clear the lease could run two purchases at once; one who
+      // could set a2pCampaignPending could make the poll file a campaign.
+      'a2pSubmitLease',
+      'a2pCampaignPending',
+      'a2pCampaignFilingFailures',
+      'a2pCampaignStatus',
+      'a2pBrandStatus',
+      'a2pBrandResubmitRequired',
+      'a2pBrandResubmissions',
+      'a2pLastResetOf',
+      'a2pBundleProfilePolicySid',
+      'a2pBundleProductPolicySid',
+      'a2pAbandonedBundleSids',
+      'twilioCampaignId',
+      // What the filed campaign claims (consent methods, samples). Set only by
+      // the submit callable after server-side validation; the poll refiles
+      // from these, so they must not be client-editable.
+      'textingConsentMethods',
+      'textingSampleMessages',
+      'textingUseCases',
+      'textingConsentConfirmedAt'
     ];
   }
 

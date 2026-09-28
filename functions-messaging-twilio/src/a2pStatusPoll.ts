@@ -5,8 +5,18 @@ import {
   computeA2PStatus,
   type A2PStatus,
 } from '@sfc/functions-shared';
-import { getTwilioClient, isTwilioDryRunEnabled } from './twilioClient';
+import { getA2PTwilioClient, isTwilioDryRunEnabled } from './twilioClient';
 import { TWILIO_SECRETS } from './secrets';
+import { fetchTrustBundleState } from './a2pTrustBundle';
+import {
+  campaignFilingFields,
+  deferredFilingFailureFields,
+  fetchUsAppToPersonCampaign,
+  fileCampaignWhenBrandApproved,
+  prepareCampaignSamples,
+} from './a2pCampaign';
+import { A2PLeaseHeldError, withA2PSubmitLease, type LeaseDb } from './a2pSubmission';
+import type { A2PTwilioClient } from './a2pTwilioTypes';
 
 /**
  * Poll Twilio for A2P brand/campaign outcomes.
@@ -30,10 +40,15 @@ import { TWILIO_SECRETS } from './secrets';
  * rejected and in need of corrections. Skips facilities that already have a
  * brand, since the bundle stage is behind them.
  *
+ * Every facility with a customer profile is checked, not only those whose
+ * bundle was marked ready: a facility whose profile passed but whose A2P trust
+ * product failed evaluation was never marked ready, so the profile's own
+ * review outcome never reached the page or the form lock.
+ *
  * Returns how many facilities were checked.
  */
 async function pollTrustBundleReviews(
-  twilio: any,
+  twilio: A2PTwilioClient,
   docs: admin.firestore.QueryDocumentSnapshot[],
 ): Promise<number> {
   let checked = 0;
@@ -42,21 +57,17 @@ async function pollTrustBundleReviews(
     const data = doc.data();
     if (data.twilioBrandSid) continue;
     const profileSid = (data.twilioTrustProfileSid as string | undefined)?.trim();
-    const productSid = (data.twilioTrustProductSid as string | undefined)?.trim();
-    if (!profileSid || !productSid) continue;
+    if (!profileSid) continue;
 
     try {
-      const [profile, product] = await Promise.all([
-        twilio.trusthub.v1.customerProfiles(profileSid).fetch(),
-        twilio.trusthub.v1.trustProducts(productSid).fetch(),
-      ]);
+      const { profile, product } = await fetchTrustBundleState(twilio, data);
       checked += 1;
 
-      const profileStatus = String(profile.status || '').toLowerCase();
-      const productStatus = String(product.status || '').toLowerCase();
+      const profileStatus = profile?.status ?? '';
+      const productStatus = product?.status ?? '';
       if (
-        profileStatus === data.a2pBundleProfileStatus &&
-        productStatus === data.a2pBundleProductStatus
+        profileStatus === (data.a2pBundleProfileStatus ?? '') &&
+        productStatus === (data.a2pBundleProductStatus ?? '')
       ) {
         continue;
       }
@@ -69,6 +80,7 @@ async function pollTrustBundleReviews(
           a2pBundleProfileStatus: profileStatus,
           a2pBundleProductStatus: productStatus,
           a2pBundleApproved: approved,
+          ...(product?.policySid ? { a2pBundleProductPolicySid: product.policySid } : {}),
           // A rejected bundle has to be rebuilt before anything else can
           // happen, so clear the ready flag that gates brand submission.
           ...(rejected ? { a2pBundleReady: false } : {}),
@@ -86,6 +98,77 @@ async function pollTrustBundleReviews(
   }
 
   return checked;
+}
+
+/**
+ * File a campaign the owner asked for while the brand was still in review.
+ *
+ * Runs under the facility's submission lease (so a tab submitting at the same
+ * moment cannot file a second campaign) and re-reads the facility inside it.
+ * A failure is written to `a2pLastError` and counted; after
+ * MAX_DEFERRED_FILING_FAILURES the poll stops retrying and marks the
+ * registration rejected so the owner sees why.
+ */
+async function fileDeferredCampaign(
+  twilio: A2PTwilioClient,
+  ref: admin.firestore.DocumentReference,
+  facilityId: string,
+): Promise<{ stopped: boolean; campaignStatus?: string }> {
+  const db = admin.firestore() as unknown as LeaseDb;
+  try {
+    return await withA2PSubmitLease(db, ref, `poller:${facilityId}:${Date.now()}`, async () => {
+      const fresh = (await ref.get()).data() || {};
+      if (fresh.twilioCampaignSid || fresh.a2pCampaignPending !== true) {
+        return { stopped: false, campaignStatus: undefined };
+      }
+      try {
+        const filing = await fileCampaignWhenBrandApproved(
+          twilio,
+          fresh,
+          prepareCampaignSamples(fresh, fresh.textingSampleMessages),
+        );
+        await ref.set(
+          {
+            ...campaignFilingFields(filing),
+            ...(filing.filed ? { a2pLastError: null } : {}),
+            a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+        functions.logger.info(`A2P poll: facility ${facilityId} deferred campaign filed=${filing.filed}`);
+        return { stopped: false, campaignStatus: filing.campaignStatus ?? undefined };
+      } catch (error: any) {
+        const fields = deferredFilingFailureFields(fresh, error);
+        await ref.set(
+          {
+            ...fields,
+            ...(fields.a2pStatus === 'rejected'
+              ? {
+                  a2pRejectedAt: admin.firestore.FieldValue.serverTimestamp(),
+                  textingPlatformApproved: false,
+                  textingPlatformApprovedAt: null,
+                  textingPlatformApprovedBy: null,
+                }
+              : {}),
+            a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+        functions.logger.error(`A2P poll: deferred campaign filing failed for facility ${facilityId}`, {
+          attempt: fields.a2pCampaignFilingFailures,
+          error: String(error?.message || error),
+        });
+        return { stopped: fields.a2pStatus === 'rejected' };
+      }
+    });
+  } catch (error) {
+    if (error instanceof A2PLeaseHeldError) {
+      // Someone is submitting right now; try again next hour.
+      functions.logger.info(`A2P poll: facility ${facilityId} busy (lease held); deferred filing skipped`);
+      return { stopped: false };
+    }
+    throw error;
+  }
 }
 
 export const pollA2PRegistrationStatus = functions
@@ -106,17 +189,18 @@ export const pollA2PRegistrationStatus = functions
       .where('a2pStatus', 'in', ['submitted', 'pending'])
       .get();
 
-    const twilio = getTwilioClient() as any;
+    const twilio = getA2PTwilioClient();
 
     // Facilities whose TrustHub bundle is with Twilio but whose brand has not
     // been submitted yet sit at a2pStatus 'draft', so the query above misses
     // them entirely. Bundle review is the step before brand registration and
     // takes about a business day; without this the owner has no way to learn it
-    // finished short of opening the page and pressing refresh.
+    // finished short of opening the page and pressing refresh. Any facility
+    // with a profile SID qualifies (the brand filter is applied per document).
     const awaitingBundle = await admin
       .firestore()
       .collection('facilities')
-      .where('a2pBundleReady', '==', true)
+      .where('twilioTrustProfileSid', '>', '')
       .get();
     const bundleChecked = await pollTrustBundleReviews(twilio, awaitingBundle.docs);
 
@@ -147,12 +231,30 @@ export const pollA2PRegistrationStatus = functions
           brandErrors = brand.errors;
           brandFailureReason = brand.failureReason;
         }
-        if (facilityData.twilioCampaignSid) {
-          const campaign = await twilio.messaging.v1
-            .campaigns(facilityData.twilioCampaignSid)
-            .fetch();
-          campaignStatus = campaign.status;
-          campaignErrors = campaign.errors;
+        if (facilityData.twilioCampaignSid && facilityData.twilioMessagingServiceSid) {
+          // Campaigns live under the messaging service (usAppToPerson); there
+          // is no top-level campaigns resource in the SDK.
+          const campaign = await fetchUsAppToPersonCampaign(
+            twilio,
+            String(facilityData.twilioMessagingServiceSid),
+            String(facilityData.twilioCampaignSid),
+          );
+          campaignStatus = campaign?.campaignStatus;
+          campaignErrors = campaign?.errors;
+        } else if (
+          facilityData.a2pCampaignPending === true &&
+          String(brandStatus || '').toUpperCase() === 'APPROVED' &&
+          facilityData.twilioMessagingServiceSid
+        ) {
+          // The owner submitted while the brand was still in review; file the
+          // campaign they asked for now that the brand has cleared.
+          const outcome = await fileDeferredCampaign(twilio, doc.ref, doc.id);
+          if (outcome.stopped) {
+            // Marked rejected with the reason; the owner resubmits from the page.
+            changed += 1;
+            continue;
+          }
+          campaignStatus = outcome.campaignStatus;
         }
 
         const current = ((facilityData.a2pStatus as string) || 'draft') as A2PStatus;
