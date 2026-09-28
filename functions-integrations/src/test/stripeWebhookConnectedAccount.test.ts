@@ -5,6 +5,7 @@ import { dispatchStripeWebhookEvent } from '../stripeWebhook';
 import { STRIPE_WEBHOOK_REFUSALS_COLLECTION } from '../connectedAccountGuard';
 import {
   ACCOUNT,
+  captureLogs,
   event,
   LEDGERS,
   linkPaymentIntent,
@@ -297,4 +298,38 @@ test('the platform\'s own test-mode objects are not refused as connected-account
   await dispatchStripeWebhookEvent(event('payment_intent.succeeded', portalPaymentIntent('pi_platform'), undefined, undefined, false));
 
   assert.deepEqual(fake.list(LEDGERS), ['payment_pi_platform']);
+});
+
+test('a tenant checkout completing on the facility\'s account is not logged as an error', async () => {
+  setup();
+  // Portal payments, online move-ins and tenant payment checkouts complete on
+  // the facility's account and are recorded from payment_intent.succeeded.
+  const portal = {
+    id: 'cs_portal',
+    object: 'checkout.session',
+    mode: 'payment',
+    metadata: { facilityId: 'f1', tenantId: 't1', type: 'tenant_portal_payment' },
+  };
+  const subscription = {
+    id: 'cs_sub',
+    object: 'checkout.session',
+    mode: 'subscription',
+    metadata: { accountId: 'acc_1', facilityId: 'f1' },
+  };
+
+  const portalLogs = await captureLogs(() =>
+    dispatchStripeWebhookEvent(event('checkout.session.completed', portal, ACCOUNT)),
+  );
+  const subscriptionLogs = await captureLogs(() =>
+    dispatchStripeWebhookEvent(event('checkout.session.completed', subscription, ACCOUNT)),
+  );
+
+  // Before: every portal payment, move-in and tenant checkout raised an ERROR.
+  assert.deepEqual(portalLogs.filter((l) => l.severity === 'ERROR'), []);
+  assert.ok(portalLogs.some((l) => l.message.includes('left to its own handler')));
+  assert.ok(
+    subscriptionLogs.some(
+      (l) => l.severity === 'ERROR' && l.message.includes('Subscription checkout from a connected account ignored'),
+    ),
+  );
 });

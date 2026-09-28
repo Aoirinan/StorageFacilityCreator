@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import type Stripe from 'stripe';
 import { Timestamp } from 'firebase-admin/firestore';
 import {
@@ -126,4 +127,33 @@ export function setup(link: Record<string, unknown> = {}) {
   const stripe = new FakeStripeObjects();
   stripe.install();
   return { fake, stripe };
+}
+
+type ConsoleSink = Record<'debug' | 'info' | 'log' | 'warn' | 'error', (line: string) => void>;
+
+/**
+ * Every line firebase-functions' logger writes while [run] runs, with its
+ * severity. The logger's methods cannot be replaced, but it writes through
+ * this table, so the test swaps the table's sinks.
+ */
+export async function captureLogs(run: () => Promise<unknown>): Promise<Array<{ severity: string; message: string }>> {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const common = require(path.join(path.dirname(require.resolve('firebase-functions/v1')), '..', 'logger', 'common.js')) as {
+    UNPATCHED_CONSOLE: ConsoleSink;
+  };
+  const sinks = common.UNPATCHED_CONSOLE;
+  const saved = { ...sinks };
+  const lines: Array<{ severity: string; message: string }> = [];
+  for (const key of Object.keys(sinks) as Array<keyof ConsoleSink>) {
+    sinks[key] = (line: string) => {
+      const entry = JSON.parse(line) as { severity?: string; message?: string };
+      lines.push({ severity: entry.severity ?? key, message: entry.message ?? '' });
+    };
+  }
+  try {
+    await run();
+  } finally {
+    Object.assign(sinks, saved);
+  }
+  return lines;
 }

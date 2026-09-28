@@ -73,10 +73,19 @@ export async function handleCheckoutCompleted(
   // connected account carries whatever metadata its owner wrote (accountId,
   // facilityId), and this path adds that facility to that owner account.
   if (connectedAccountId) {
-    functions.logger.error('Subscription checkout from a connected account ignored', {
-      sessionId: session.id,
-      connectedAccountId,
-    });
+    // Tenant portal payments, online move-ins and tenant payment checkouts
+    // also complete on connected accounts, and are recorded elsewhere (their
+    // payment_intent.succeeded, the move-in flow). Only one that looks like
+    // an owner subscription is worth an error: at error level, every tenant
+    // payment raised an alert once the Connect endpoint sent these.
+    const looksLikeSubscription = session.mode === 'subscription' || !!session.metadata?.accountId;
+    const log = looksLikeSubscription ? functions.logger.error : functions.logger.info;
+    log(
+      looksLikeSubscription
+        ? 'Subscription checkout from a connected account ignored'
+        : 'Connected-account checkout left to its own handler',
+      { sessionId: session.id, connectedAccountId, mode: session.mode ?? null },
+    );
     return;
   }
 
