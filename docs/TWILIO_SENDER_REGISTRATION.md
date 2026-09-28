@@ -413,3 +413,12 @@ then the brand, the campaign and the consent all belong to the business whose
 tenants are being texted. The shared toll-free is the right answer for a trial
 and the wrong answer at scale. The app now asks operators to start their own
 registration during the trial, for exactly this reason.
+
+Since 2026-09-27 (owner decision) the send path no longer stops shared-number
+texting when a trial ends. Any facility whose account is in good standing
+(trialing, active, past-due retry, or billing-exempt) keeps sending on the
+toll-free whether or not it has filed its own registration; cancelled,
+suspended and unapproved accounts are refused. The per-facility monthly cap
+(`appConfig/outbound.sharedNumberMonthlyCapPerFacility`, default 500) and all
+consent/STOP rules still apply. See
+`functions-messaging-twilio/src/sharedNumberPolicy.ts`.

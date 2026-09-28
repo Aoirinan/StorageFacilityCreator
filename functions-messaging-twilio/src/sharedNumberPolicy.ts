@@ -2,35 +2,26 @@
  * Who may send tenant messages on the platform's shared toll-free number.
  *
  * Every facility sends on that one number until its own number is registered
- * and approved. That is the right answer for a trial — it works on day one
- * with no filing — and the wrong answer indefinitely, for two reasons.
+ * and approved. The toll-free is verified and carries any facility's traffic
+ * with the facility name prefixed, so there is no carrier reason to stop a
+ * facility using it once its trial ends.
  *
- * The first is carrier-facing. One shared number carrying many businesses'
- * tenant traffic means a single complaint or audit against it stops texting
- * for every customer at once, rather than for the one that caused it.
+ * Decision from the owner (2026-09-27): facilities keep using the shared
+ * number after their trial. The earlier rule refused a paying facility that
+ * had not filed its own registration, which in practice turned texting off at
+ * the end of every trial. What remains:
  *
- * The second is structural, and is what got the 10DLC campaign rejected with
- * 30909: the call to action belongs to a facility the reviewer cannot reach.
- * The fix is for each operator to register their own brand and number, so the
- * brand, the campaign and the consent all belong to the business whose tenants
- * are being texted.
+ *   - the account must be in good standing: trialing, active (paying, or in
+ *     Stripe's past-due retry window), or billing-exempt. A cancelled,
+ *     suspended or never-approved account does not text on our number;
+ *   - one facility's traffic on the shared number stays under a monthly
+ *     ceiling, so a single operator cannot put the number at risk for all.
  *
- * This file is the rule in the send path rather than in a document, because a
- * policy nobody enforces is a policy that quietly stops being true.
+ * Consent, STOP and quiet hours are enforced in the send paths themselves and
+ * are unchanged by this file.
  */
 
-/** Statuses that mean a facility has filed and is waiting on the carrier. */
-const IN_PROGRESS_STATUSES = new Set([
-  'pending',
-  'pending_review',
-  'in_review',
-  'submitted',
-  'verifying',
-  'in-progress',
-  'in_progress',
-]);
-
-export type SharedNumberRefusal = 'registration_required' | 'shared_cap';
+export type SharedNumberRefusal = 'account_inactive' | 'shared_cap';
 
 export interface SharedNumberDecision {
   allowed: boolean;
@@ -39,24 +30,41 @@ export interface SharedNumberDecision {
   message?: string;
 }
 
+/** The facility owner's account standing, as the shared-number rule reads it. */
+export interface SharedNumberAccountStanding {
+  /** `subscriptionStatus` from facilityCreatorAccounts, as stored. */
+  subscriptionStatus?: string | null;
+  /** Account- or facility-level billingExempt, exactly true. */
+  billingExempt?: boolean;
+  /** Account `suspended`, exactly true. */
+  suspended?: boolean;
+}
+
 export interface SharedNumberInputs {
   /** True when the message will go out on the facility's own approved number. */
   usesOwnNumber: boolean;
-  /** `a2pStatus` from the facility document. */
-  a2pStatus?: string | null;
-  /** Whether the operator can even start a registration right now. */
-  registrationAvailable: boolean;
-  /** Whether the facility's account is still inside its free trial. */
-  inTrial: boolean;
+  /**
+   * The owner's account. Null when the facility has no linked account or the
+   * account could not be read: treated as in good standing, because refusing
+   * to send over our own read failure is the worse mistake.
+   */
+  account: SharedNumberAccountStanding | null;
   /** Tenant messages already sent on the shared number this calendar month. */
   sharedSendsThisMonth: number;
   /** Ceiling for one facility's monthly traffic on the shared number. */
   sharedMonthlyCap: number;
 }
 
-export function isRegistrationInProgress(a2pStatus?: string | null): boolean {
-  const status = (a2pStatus ?? '').trim().toLowerCase();
-  return IN_PROGRESS_STATUSES.has(status);
+/** Subscription statuses that count as a live account. */
+const ACTIVE_STATUSES = new Set(['trialing', 'active', 'pastdue', 'past_due']);
+
+/** Whether the account may use the shared number at all. */
+export function isAccountInGoodStanding(account: SharedNumberAccountStanding | null): boolean {
+  if (account == null) return true;
+  if (account.suspended === true) return false;
+  if (account.billingExempt === true) return true;
+  const status = String(account.subscriptionStatus ?? '').trim().toLowerCase();
+  return ACTIVE_STATUSES.has(status);
 }
 
 /**
@@ -71,20 +79,13 @@ export function decideSharedNumberSend(input: SharedNumberInputs): SharedNumberD
     return { allowed: true };
   }
 
-  const filed = isRegistrationInProgress(input.a2pStatus);
-
-  // A paying facility that has not even started its registration is the case
-  // this rule exists for. One that has filed keeps sending while the carrier
-  // takes its two weeks — punishing them for our queue would be perverse.
-  if (!input.inTrial && !filed && input.registrationAvailable) {
+  if (!isAccountInGoodStanding(input.account)) {
     return {
       allowed: false,
-      refusal: 'registration_required',
+      refusal: 'account_inactive',
       message:
-        'Texting for this facility needs its own registered number now that ' +
-        'the trial has ended. Start it in Settings > Texting setup — it takes ' +
-        'a few minutes to file and up to two weeks for the carrier to approve. ' +
-        'Email reminders are unaffected.',
+        'Texting is not available because this facility\'s subscription is not ' +
+        'active. Reactivate the subscription to send texts again.',
     };
   }
 

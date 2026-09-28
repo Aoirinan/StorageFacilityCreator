@@ -186,15 +186,17 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
       createdByEmail: userEmail || null,
     });
 
-    // Pre-launch gate: no real customer receives mail until appConfig/outbound
-    // says so. This callable is the generic send path the app uses for
-    // statements, receipts, invoices, contract sends, delinquency notices and
-    // bulk messaging, and it went straight to SendGrid without ever asking.
-    // sendFacilityEmailWithCompliance has enforced this for its own callers
-    // and the Twilio callable enforces the SMS half, so this was the one hole
-    // left in the switch. Super admins and allowlisted test addresses pass.
-    if (!(await isCustomerEmailAllowed(to))) {
-      functions.logger.info('Blocked customer email (pre-launch gate; appConfig/outbound.customerEmailsEnabled is off)', {
+    // Customer contact gate: no real customer receives mail until
+    // appConfig/outbound says so, and never from a facility listed in
+    // blockedFacilityIds. This callable is the generic send path the app uses
+    // for statements, receipts, invoices, contract sends, delinquency notices
+    // and bulk messaging, and it went straight to SendGrid without ever
+    // asking. sendFacilityEmailWithCompliance has enforced this for its own
+    // callers and the Twilio callable enforces the SMS half, so this was the
+    // one hole left in the switch. Super admins and allowlisted test addresses
+    // pass.
+    if (!(await isCustomerEmailAllowed(to, { facilityId }))) {
+      functions.logger.info('Blocked customer email (customer contact gate; see appConfig/outbound)', {
         facilityId,
         tenantId: tenantInfo.tenantId,
         subject,
@@ -222,8 +224,9 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
         providerMessageId: null,
         errorCode: 'prelaunch_gate',
         errorMessage:
-          'Blocked before launch. A super admin can allow it by setting ' +
-          'customerEmailsEnabled on appConfig/outbound, or by adding the address to the allowlist.',
+          'Blocked by the customer contact gate. A super admin can allow it by setting ' +
+          'customerEmailsEnabled on appConfig/outbound (and removing this facility from ' +
+          'blockedFacilityIds if it is listed), or by adding the address to the allowlist.',
         sentAt: null,
         createdByUid: context.auth.uid,
         createdByEmail: userEmail || null,
@@ -255,9 +258,9 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
       // message verbatim, marker and all. Accurate, and it fails closed.
       throw new functions.https.HttpsError(
         'failed-precondition',
-        'prelaunch_gate: customer email is switched off before launch. Ask a super ' +
-          'admin to enable customerEmailsEnabled on appConfig/outbound, or add this ' +
-          'address to the allowlist.',
+        'prelaunch_gate: customer email is switched off for this facility. Ask a super ' +
+          'admin to enable customerEmailsEnabled on appConfig/outbound (and remove this ' +
+          'facility from blockedFacilityIds if it is listed), or add this address to the allowlist.',
         { blocked: 'prelaunch', messageLogId },
       );
     }

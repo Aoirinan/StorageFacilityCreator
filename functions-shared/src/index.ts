@@ -61,11 +61,21 @@ export { sendFacilityEmailWithCompliance, isFacilityEmailSuppressed } from './em
 export {
   isCustomerRecipientAllowed,
   isCustomerEmailAllowed,
+  isCustomerContactAllowed,
+  decideCustomerRecipient,
+  parseOutboundGateConfig,
+  parseOutboundGateConfigWithProblems,
   getOutboundGateConfig,
   resetOutboundGateCache,
   DEFAULT_OUTBOUND_GATE,
 } from './email/customerOutboundGate';
-export type { OutboundGateConfig } from './email/customerOutboundGate';
+export type {
+  OutboundGateConfig,
+  OutboundChannel,
+  OutboundTarget,
+  OutboundGateDecision,
+  OutboundGateReason,
+} from './email/customerOutboundGate';
 export {
   isOwnerOnboardingRecipientAllowed,
   isOwnerOnboardingEmailAllowed,
