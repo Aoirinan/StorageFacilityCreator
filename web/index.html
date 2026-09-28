@@ -47,10 +47,13 @@
       var isOperatorHost = h === 'app.storagefacilitycreator.com' || h === 'localhost' || h === '127.0.0.1';
 
       // The app routes by hash. Links and Stripe return URLs written as plain
-      // paths (older payment links, /pay?token=…, /portal/payment/success)
-      // would otherwise load the app at its root and show the manager login.
-      // Rewrite the known public entry points to their hash routes, keeping the
-      // query on the route so the screen can still read it.
+      // paths (older payment links, /pay?token=…, /portal/payment/success,
+      // a copied /tenants/detail?tenantId=…) would otherwise load the app at
+      // its root and show the manager login. Rewrite any path to the same hash
+      // route, except the few below that land on a different screen, keeping
+      // the query on the route so the screen can still read it. The query
+      // leaves location.search, so code reading Uri.base.queryParameters (the
+      // QuickBooks OAuth capture) sees none unless its return URL is `/`.
       var pathToHash = {
         '/pay': '/pay',
         '/tenant-portal': '/tenant-portal',
@@ -59,7 +62,12 @@
         '/subscription/success': '/subscription',
         '/subscription/cancel': '/subscription'
       };
-      var mapped = pathToHash[location.pathname];
+      var path = location.pathname;
+      var mapped = pathToHash[path];
+      if (!mapped && path !== '/index.html') {
+        // GoRouter matches /tenants/detail, not /tenants/detail/.
+        mapped = path.replace(/\/+$/, '');
+      }
       if (isOperatorHost && mapped && !location.hash) {
         location.replace('/#' + mapped + location.search);
         return;
