@@ -53,15 +53,31 @@ function sendsIn(text, clientNames) {
   return false;
 }
 
-// Any one of these means the file asked permission before sending.
-const GATE_PATTERNS = [
-  /isCustomerEmailAllowed/,
-  /isCustomerRecipientAllowed/,
-  /getOutboundGateConfig/,
-  /isOwnerOnboardingEmailAllowed/,
-  /getOwnerOnboardingGateConfig/,
-  /sendFacilityEmailWithCompliance/,
+// A call to any one of these means the region asked permission before sending.
+const GATE_NAMES = [
+  'isCustomerEmailAllowed',
+  'isCustomerContactAllowed',
+  'isCustomerRecipientAllowed',
+  'decideCustomerRecipient',
+  'getOutboundGateConfig',
+  'isOwnerOnboardingEmailAllowed',
+  'getOwnerOnboardingGateConfig',
+  'sendFacilityEmailWithCompliance',
 ];
+
+// Only a call counts, and a declaration is not a call.
+//
+// The first version matched the bare name, and that let an ungated copy
+// through: functions-messaging-twilio/src/facilityOutboundEmail.ts declared its
+// own `export async function sendFacilityEmailWithCompliance(...)` that went
+// straight to SendGrid without asking the gate. The declaration's own name
+// matched the gate pattern, so its region looked gated. sendSMSAsEmail (the
+// SMS-limit email fallback) used that copy, and it bypassed the pre-launch
+// switch. Matching the bare name also let an import line in module scope vouch
+// for a private helper that never called it.
+const GATE_PATTERNS = GATE_NAMES.map(
+  (name) => new RegExp(String.raw`(?<![\w$]|\bfunction\s*\*?\s*)` + name + String.raw`\s*\(`),
+);
 
 // Send paths that legitimately skip the customer gate. Each needs a reason,
 // and the reason has to survive someone reading it a year from now.

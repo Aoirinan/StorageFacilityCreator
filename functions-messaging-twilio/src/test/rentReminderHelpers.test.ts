@@ -3,13 +3,27 @@ import test from 'node:test';
 import { tenantUnitLabel } from '@sfc/functions-shared';
 import {
   buildRentReminderMessage,
-  daysUntil,
+  CalendarDate,
+  calendarDateIn,
+  creditCoversRent,
+  daysBetween,
   decideRentReminder,
+  dueDateKey,
   hasSmsConsent,
-  nextRentDueDate,
+  localDateTimeIn,
   RentReminderTenant,
+  selectReminderFromNumber,
+  upcomingDueDate,
 } from '../rentReminderHelpers';
 import { facilityLocalHour, readReminderSettings, rentReminderTenantFromDoc } from '../rentReminderSms';
+
+const TZ = 'America/Chicago';
+const SEP_28: CalendarDate = { year: 2026, month: 9, day: 28 }; // 3 days before 1 Oct
+
+/** An instant that is local midnight on [y-m-d] in Chicago (CDT, UTC-5). */
+function chicagoMidnight(y: number, m: number, d: number): Date {
+  return new Date(Date.UTC(y, m - 1, d, 5, 0));
+}
 
 function tenant(overrides: Partial<RentReminderTenant> = {}): RentReminderTenant {
   return {
@@ -17,82 +31,92 @@ function tenant(overrides: Partial<RentReminderTenant> = {}): RentReminderTenant
     name: 'Alexa Rau',
     phone: '406-555-0100',
     isActive: true,
-    paidThrough: new Date(2026, 8, 30), // 30 Sep 2026
+    paidThrough: chicagoMidnight(2026, 9, 30), // paid through 30 Sep: up to date, Oct not paid
     smsOptOut: false,
     smsOptInDate: new Date(2026, 8, 1),
     monthlyRate: 130,
+    unitNumber: '2',
     lastSmsPaymentReminderDate: null,
+    lastSmsPaymentReminderDueDate: null,
     ...overrides,
   };
 }
 
+function decide(t: RentReminderTenant, today: CalendarDate = SEP_28, reminderDays = 3) {
+  return decideRentReminder({ tenant: t, reminderDays, today, timeZone: TZ });
+}
+
 test('consent is recognised in either recorded shape', () => {
   assert.equal(hasSmsConsent(tenant()), true);
-  assert.equal(
-    hasSmsConsent(tenant({ smsOptInDate: null, smsConsentStatus: 'opted_in' })),
-    true,
-  );
+  assert.equal(hasSmsConsent(tenant({ smsOptInDate: null, smsConsentStatus: 'opted_in' })), true);
   assert.equal(hasSmsConsent(tenant({ smsOptInDate: null, smsConsentStatus: null })), false);
 });
 
 test('an opt-out beats a recorded consent', () => {
   assert.equal(hasSmsConsent(tenant({ smsOptOut: true, smsConsentStatus: 'opted_in' })), false);
+  assert.equal(hasSmsConsent(tenant({ smsConsentStatus: 'opted_out' })), false);
 });
 
-test('rent is due the first of the month after the one paid through', () => {
-  const due = nextRentDueDate(new Date(2026, 8, 30), new Date(2026, 8, 28));
-  assert.equal(due.getFullYear(), 2026);
-  assert.equal(due.getMonth(), 9); // October
-  assert.equal(due.getDate(), 1);
+test('the due date is the next 1st, or today on the 1st', () => {
+  assert.deepEqual(upcomingDueDate(SEP_28), { year: 2026, month: 10, day: 1 });
+  assert.deepEqual(upcomingDueDate({ year: 2026, month: 12, day: 20 }), { year: 2027, month: 1, day: 1 });
+  assert.deepEqual(upcomingDueDate({ year: 2026, month: 10, day: 1 }), { year: 2026, month: 10, day: 1 });
+  assert.equal(dueDateKey({ year: 2026, month: 10, day: 1 }), '2026-10-01');
 });
 
-test('December rolls into January of the next year', () => {
-  const due = nextRentDueDate(new Date(2026, 11, 31), new Date(2026, 11, 20));
-  assert.equal(due.getFullYear(), 2027);
-  assert.equal(due.getMonth(), 0);
-});
-
-test('a tenant imported from a rent roll is billed from the coming month, not skipped', () => {
-  // The email reminder skips anyone without paidThrough, which is every row of
-  // an imported rent roll, so those tenants never heard from us at all.
-  const due = nextRentDueDate(null, new Date(2026, 8, 21));
-  assert.equal(due.getMonth(), 9);
-  assert.equal(due.getDate(), 1);
-
-  const decision = decideRentReminder({
-    tenant: tenant({ paidThrough: null }),
-    balance: 130,
-    reminderDays: 10,
-    now: new Date(2026, 8, 21),
-  });
+// The bug this fixes: a paid-up tenant owes nothing before the 1st, and the old
+// job required a positive balance, so nobody was reminded before rent was due.
+test('a paid-up tenant gets the pre-due reminder', () => {
+  const decision = decide(tenant());
   assert.equal(decision.send, true);
+  assert.deepEqual(decision.dueDate, { year: 2026, month: 10, day: 1 });
+  assert.equal(decision.dueKey, '2026-10-01');
+});
+
+test('a tenant imported from a rent roll (no paidThrough) is reminded', () => {
+  assert.equal(decide(tenant({ paidThrough: null })).send, true);
+});
+
+test('a tenant in arrears is still reminded about the coming 1st', () => {
+  // Paid through July: the old job computed a due date of 1 Aug, which never
+  // matched "3 days from today" again.
+  assert.equal(decide(tenant({ paidThrough: chicagoMidnight(2026, 7, 31) })).send, true);
+});
+
+test('a tenant paid ahead is skipped', () => {
+  for (const paidThrough of [chicagoMidnight(2026, 10, 31), chicagoMidnight(2026, 10, 1), chicagoMidnight(2027, 3, 31)]) {
+    const decision = decide(tenant({ paidThrough }));
+    assert.equal(decision.send, false, paidThrough.toISOString());
+    assert.equal(decision.reason, 'paid-ahead');
+  }
+});
+
+test('paidThrough is read as a local date, so a UTC timestamp does not tip it over', () => {
+  // Written by a client as local midnight 30 Sep: 05:00 UTC. Still Sep 30.
+  assert.equal(decide(tenant({ paidThrough: new Date('2026-09-30T05:00:00Z') })).send, true);
+  // 31 Oct local, written from a zone ahead of UTC (30 Oct 14:00 UTC).
+  assert.equal(decide(tenant({ paidThrough: new Date('2026-10-30T14:00:00Z') })).reason, 'paid-ahead');
+});
+
+test('a ledger credit that covers the month counts as paid ahead', () => {
+  assert.equal(creditCoversRent(-130, 130), true);
+  assert.equal(creditCoversRent(-200, 130), true);
+  assert.equal(creditCoversRent(-129.99, 130), false);
+  assert.equal(creditCoversRent(0, 130), false);
+  assert.equal(creditCoversRent(260, 130), false);
+  assert.equal(creditCoversRent(Number.NaN, 130), false);
 });
 
 test('sends only on the day that matches the facility lead time', () => {
-  const now = new Date(2026, 8, 28); // 3 days before 1 Oct
-  assert.equal(
-    decideRentReminder({ tenant: tenant(), balance: 130, reminderDays: 3, now }).send,
-    true,
-  );
-  assert.equal(
-    decideRentReminder({ tenant: tenant(), balance: 130, reminderDays: 5, now }).send,
-    false,
-  );
+  assert.equal(decide(tenant(), SEP_28, 3).send, true);
+  assert.equal(decide(tenant(), SEP_28, 5).reason, 'not-due');
+  assert.equal(decide(tenant(), { year: 2026, month: 9, day: 26 }, 5).send, true);
+  // Zero days before: on the 1st itself.
+  assert.equal(decide(tenant(), { year: 2026, month: 10, day: 1 }, 0).send, true);
+  assert.equal(decide(tenant(), { year: 2026, month: 10, day: 1 }, 3).reason, 'not-due');
 });
 
-test('a settled account gets no reminder', () => {
-  const decision = decideRentReminder({
-    tenant: tenant(),
-    balance: 0,
-    reminderDays: 3,
-    now: new Date(2026, 8, 28),
-  });
-  assert.equal(decision.send, false);
-  assert.equal(decision.reason, 'nothing-owed');
-});
-
-test('no phone, no consent and inactive are each refused', () => {
-  const now = new Date(2026, 8, 28);
+test('no phone, no consent, opted out, inactive, no rate and no unit are each refused', () => {
   const cases: Array<[Partial<RentReminderTenant>, string]> = [
     [{ phone: '' }, 'no-phone'],
     [{ smsOptInDate: null, smsConsentStatus: null }, 'no-consent'],
@@ -100,57 +124,69 @@ test('no phone, no consent and inactive are each refused', () => {
     [{ isActive: false }, 'inactive'],
     // A doc with no isActive is not an active tenant anywhere else.
     [{ isActive: undefined }, 'inactive'],
+    [{ monthlyRate: 0 }, 'no-rate'],
+    [{ monthlyRate: null }, 'no-rate'],
+    [{ unitNumber: '' }, 'no-unit'],
+    [{ unitNumber: '   ' }, 'no-unit'],
+    [{ unitNumber: null }, 'no-unit'],
   ];
   for (const [overrides, reason] of cases) {
-    const decision = decideRentReminder({
-      tenant: tenant(overrides),
-      balance: 130,
-      reminderDays: 3,
-      now,
-    });
+    const decision = decide(tenant(overrides));
     assert.equal(decision.send, false, reason);
     assert.equal(decision.reason, reason);
   }
 });
 
-test('the same rent is never texted about twice', () => {
-  const now = new Date(2026, 8, 28);
-  const decision = decideRentReminder({
-    tenant: tenant({ lastSmsPaymentReminderDate: now }),
-    balance: 130,
-    reminderDays: 3,
-    now,
-  });
+test('one reminder per tenant per due date', () => {
+  const decision = decide(tenant({ lastSmsPaymentReminderDueDate: '2026-10-01' }));
   assert.equal(decision.send, false);
+  assert.equal(decision.reason, 'already-reminded');
+  // Changing the lead time mid-month does not earn a second text.
+  const later = decide(tenant({ lastSmsPaymentReminderDueDate: '2026-10-01' }), { year: 2026, month: 9, day: 30 }, 1);
+  assert.equal(later.reason, 'already-reminded');
+});
+
+test('a reminder already sent today by the previous version is not repeated', () => {
+  const decision = decide(tenant({ lastSmsPaymentReminderDate: new Date('2026-09-28T14:00:00Z') }));
   assert.equal(decision.reason, 'already-reminded');
 });
 
 test('a reminder sent for last month does not block this month', () => {
-  const now = new Date(2026, 8, 28);
-  const decision = decideRentReminder({
-    tenant: tenant({ lastSmsPaymentReminderDate: new Date(2026, 7, 29) }),
-    balance: 130,
-    reminderDays: 3,
-    now,
-  });
+  const decision = decide(
+    tenant({
+      lastSmsPaymentReminderDueDate: '2026-09-01',
+      lastSmsPaymentReminderDate: new Date('2026-08-29T14:00:00Z'),
+    }),
+  );
   assert.equal(decision.send, true);
 });
 
-test('days are counted by calendar date, not by elapsed hours', () => {
-  // 11pm to 1am is two hours but one day, and the job runs hourly.
-  const due = new Date(2026, 9, 1, 1, 0);
-  const now = new Date(2026, 8, 28, 23, 0);
-  assert.equal(daysUntil(due, now), 3);
+test('days are counted by calendar date', () => {
+  assert.equal(daysBetween(SEP_28, { year: 2026, month: 10, day: 1 }), 3);
+  assert.equal(daysBetween({ year: 2026, month: 12, day: 31 }, { year: 2027, month: 1, day: 1 }), 1);
+  assert.equal(daysBetween({ year: 2026, month: 3, day: 7 }, { year: 2026, month: 3, day: 9 }), 2); // DST week
 });
 
-test('the message names the unit, the amount and the date', () => {
+test('the facility local date, not the UTC date, decides the day', () => {
+  // 04:00 UTC on 29 Sep is still 11pm on 28 Sep in Chicago.
+  const now = new Date('2026-09-29T04:00:00Z');
+  assert.deepEqual(calendarDateIn(TZ, now), SEP_28);
+  assert.deepEqual(localDateTimeIn(TZ, now), { ...SEP_28, hour: 23 });
+  assert.equal(decide(tenant(), calendarDateIn(TZ, now), 3).send, true);
+  // By UTC it would already be 29 Sep, two days out, and no one would be texted.
+  assert.equal(decide(tenant(), { year: 2026, month: 9, day: 29 }, 3).reason, 'not-due');
+});
+
+test('the message names the facility, the unit, the amount and the date', () => {
   const body = buildRentReminderMessage({
+    facilityName: 'Caprock Storage',
     tenantName: 'Doug Devoy',
     amount: 130,
-    dueDate: new Date(2026, 9, 1),
+    dueDate: { year: 2026, month: 10, day: 1 },
     unitNumber: '2',
   });
-  assert.equal(body, 'Hi Doug, a reminder that rent for unit 2 of $130.00 is due Oct 1.');
+  assert.equal(body, 'Caprock Storage: Hi Doug, a reminder that rent for unit 2 of $130.00 is due Oct 1.');
+  assert.ok(body.length < 160 - 40, 'leaves room for the STOP footer in one segment');
 });
 
 test('the message still reads well with no name and no unit', () => {
@@ -165,18 +201,9 @@ test('the message still reads well with no name and no unit', () => {
 
 test('texting is on only when the operator chose sms or both', () => {
   assert.equal(readReminderSettings({}).enabled, false);
-  assert.equal(
-    readReminderSettings({ billingSettings: { paymentReminderChannel: 'email' } }).enabled,
-    false,
-  );
-  assert.equal(
-    readReminderSettings({ billingSettings: { paymentReminderChannel: 'sms' } }).enabled,
-    true,
-  );
-  assert.equal(
-    readReminderSettings({ billingSettings: { paymentReminderChannel: 'both' } }).enabled,
-    true,
-  );
+  assert.equal(readReminderSettings({ billingSettings: { paymentReminderChannel: 'email' } }).enabled, false);
+  assert.equal(readReminderSettings({ billingSettings: { paymentReminderChannel: 'sms' } }).enabled, true);
+  assert.equal(readReminderSettings({ billingSettings: { paymentReminderChannel: 'both' } }).enabled, true);
   assert.equal(
     readReminderSettings({
       billingSettings: { paymentReminderChannel: 'sms', enablePaymentReminders: false },
@@ -202,6 +229,8 @@ test('a facility is texted at its own local hour, not the server hour', () => {
   const now = new Date(Date.UTC(2026, 8, 28, 15, 0));
   assert.equal(facilityLocalHour('America/Denver', now), 9);
   assert.equal(facilityLocalHour('America/Chicago', now), 10);
+  // Midnight is 0, not 24.
+  assert.equal(facilityLocalHour('America/Chicago', new Date('2026-09-28T05:00:00Z')), 0);
 });
 
 test('an unknown time zone does not throw', () => {
@@ -210,25 +239,31 @@ test('an unknown time zone does not throw', () => {
 });
 
 test('a tenant doc is active only when isActive is exactly true', () => {
-  const now = new Date(2026, 8, 28);
   const doc = {
     name: 'Alexa Rau',
     phone: '406-555-0100',
-    paidThrough: new Date(2026, 8, 30),
+    paidThrough: chicagoMidnight(2026, 9, 30),
     smsOptInDate: new Date(2026, 8, 1),
     monthlyRate: 130,
+    unitNumber: '2',
   };
   assert.equal(rentReminderTenantFromDoc('t1', { ...doc, isActive: true }).isActive, true);
-  // Before: `data.isActive !== false`, so a partial doc read as active here
-  // and as inactive in the app and every other job.
+  assert.equal(decide(rentReminderTenantFromDoc('t1', { ...doc, isActive: true })).send, true);
   for (const isActive of [undefined, false, 'true']) {
-    const tenant = rentReminderTenantFromDoc('t1', { ...doc, isActive });
-    assert.equal(tenant.isActive, false, String(isActive));
-    assert.equal(
-      decideRentReminder({ tenant, balance: 130, reminderDays: 3, now }).reason,
-      'inactive',
-    );
+    const t = rentReminderTenantFromDoc('t1', { ...doc, isActive });
+    assert.equal(t.isActive, false, String(isActive));
+    assert.equal(decide(t).reason, 'inactive');
   }
+});
+
+test('a tenant doc carries the unit number and the due-date dedupe key', () => {
+  const t = rentReminderTenantFromDoc('t1', {
+    unitNumber: 12,
+    lastSmsPaymentReminderDueDate: '2026-10-01',
+  });
+  assert.equal(t.unitNumber, '12');
+  assert.equal(t.lastSmsPaymentReminderDueDate, '2026-10-01');
+  assert.equal(rentReminderTenantFromDoc('t1', {}).unitNumber, null);
 });
 
 test('the text keeps the plain unit number until the facility numbers units per area', () => {
@@ -240,7 +275,6 @@ test('the text keeps the plain unit number until the facility numbers units per 
       dueDate: new Date(2026, 9, 1),
       unitNumber: tenantUnitLabel(tenantDoc, facility),
     });
-  // Off (missing or false): byte for byte the text before the setting existed.
   const before = 'Hi Doug, a reminder that rent for unit 12 of $130.00 is due Oct 1.';
   assert.equal(message({}), before);
   assert.equal(message({ unitNumbersRepeatAcrossAreas: false }), before);
@@ -255,10 +289,31 @@ test('with the setting on, a tenant with no area still gets the plain number', (
     tenantName: 'Doug Devoy',
     amount: 130,
     dueDate: new Date(2026, 9, 1),
-    unitNumber: tenantUnitLabel(
-      { unitNumber: '12', unitArea: null },
-      { unitNumbersRepeatAcrossAreas: true },
-    ),
+    unitNumber: tenantUnitLabel({ unitNumber: '12', unitArea: null }, { unitNumbersRepeatAcrossAreas: true }),
   });
   assert.equal(body, 'Hi Doug, a reminder that rent for unit 12 of $130.00 is due Oct 1.');
+});
+
+test('reminders use the facility number only with the same approvals sendSMS requires', () => {
+  const platformNumber = '+18555264544';
+  const facilityNumber = '+19035009941';
+  const approved = {
+    textingOnboardingEnabled: true,
+    a2pStatus: 'approved',
+    textingPlatformApproved: true,
+  };
+  const pick = (facilityData: Record<string, unknown>, flag = true, own: string | null = facilityNumber) =>
+    selectReminderFromNumber({ platformNumber, facilityNumber: own, textingOnboardingFlag: flag, facilityData });
+
+  assert.equal(pick(approved), facilityNumber);
+  // Carrier-approved but not approved by a super admin: shared number.
+  assert.equal(pick({ ...approved, textingPlatformApproved: false }), platformNumber);
+  assert.equal(pick({ ...approved, textingPlatformApproved: undefined }), platformNumber);
+  // Onboarding off for the platform or for the facility: shared number.
+  assert.equal(pick(approved, false), platformNumber);
+  assert.equal(pick({ ...approved, textingOnboardingEnabled: false }), platformNumber);
+  // Not carrier-approved, or no number of its own: shared number.
+  assert.equal(pick({ ...approved, a2pStatus: 'draft' }), platformNumber);
+  assert.equal(pick(approved, true, null), platformNumber);
+  assert.equal(pick(approved, true, '  '), platformNumber);
 });

@@ -85,10 +85,11 @@ export async function sendFacilityEmailWithCompliance(
     facilityPhone?: string | null;
   },
 ): Promise<{ sent: boolean; messageId?: string; blocked?: 'prelaunch' }> {
-  // Pre-launch: no customer gets email until appConfig/outbound says so.
-  // Super admins and allowlisted test addresses still do. See customerOutboundGate.ts.
-  if (!(await isCustomerEmailAllowed(msg.to))) {
-    functions.logger.info('Blocked customer email (pre-launch gate; appConfig/outbound.customerEmailsEnabled is off)', {
+  // Customer contact gate: no customer gets email until appConfig/outbound
+  // says so, and never for a facility in blockedFacilityIds. Super admins and
+  // allowlisted test addresses still do. See customerOutboundGate.ts.
+  if (!(await isCustomerEmailAllowed(msg.to, { facilityId: ctx.facilityId }))) {
+    functions.logger.info('Blocked customer email (customer contact gate; see appConfig/outbound)', {
       facilityId: ctx.facilityId,
       tenantId: ctx.tenantId ?? null,
       subject: msg.subject,

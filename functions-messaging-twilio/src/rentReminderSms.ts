@@ -20,10 +20,14 @@ import { addOptOutFooter, checkPerTenantRateLimit, checkQuietHours } from './sms
 import { isSMSComplianceFeatureEnabled } from './smsCompliance';
 import { checkAndIncrementSMSUsage } from './smsUsage';
 import { evaluateSharedNumberSend, recordSharedNumberSend } from './sharedNumberGuard';
+import { isFeatureFlagEnabled } from './featureFlags';
 import {
   buildRentReminderMessage,
+  creditCoversRent,
   decideRentReminder,
+  localDateTimeIn,
   RentReminderTenant,
+  selectReminderFromNumber,
 } from './rentReminderHelpers';
 
 /**
@@ -38,6 +42,9 @@ import {
  *
  * Runs hourly and sends to each facility whose local time has reached its
  * configured send hour, so a facility in Mountain time is not texted at 3am.
+ * The reminder goes out [reminderDays] before the 1st (the facility's local
+ * calendar date) to every active, consenting tenant with a rent and a unit
+ * who is not already paid for that month. See rentReminderHelpers.ts.
  */
 
 const DEFAULT_REMINDER_DAYS = 3;
@@ -71,17 +78,7 @@ export function readReminderSettings(facilityData: Record<string, any>): Facilit
 
 /** The hour of the day at the facility, from its IANA time zone. */
 export function facilityLocalHour(timeZone: string | undefined, now: Date): number {
-  try {
-    const formatted = new Intl.DateTimeFormat('en-US', {
-      timeZone: timeZone && timeZone.trim() ? timeZone : 'America/Chicago',
-      hour: 'numeric',
-      hour12: false,
-    }).format(now);
-    const parsed = Number(formatted);
-    return Number.isFinite(parsed) ? parsed % 24 : now.getUTCHours();
-  } catch {
-    return now.getUTCHours();
-  }
+  return localDateTimeIn(timeZone, now).hour;
 }
 
 /** Posted ledger balance for one tenant. Positive means they owe. */
@@ -143,11 +140,11 @@ async function sendReminderSms(params: {
     if (!limit.canSend) return 'blocked';
   }
 
-  // No text reaches a real customer before launch. Checked before any quota is
-  // reserved so a blocked send costs nothing.
+  // Customer contact gate (launch flag and blockedFacilityIds). Checked before
+  // any quota is reserved so a blocked send costs nothing.
   const gate = await getOutboundGateConfig();
-  if (!isCustomerRecipientAllowed(phoneNumber, gate)) {
-    functions.logger.info('[rentReminderSms] held by pre-launch customer contact gate', {
+  if (!isCustomerRecipientAllowed(phoneNumber, { facilityId, channel: 'sms' }, gate)) {
+    functions.logger.info('[rentReminderSms] held by customer contact gate', {
       facilityId,
       tenantId,
     });
@@ -166,15 +163,18 @@ async function sendReminderSms(params: {
   let body = await addOptOutFooter(facilityId, message);
 
   const platformNumber = (TWILIO_PHONE_NUMBER.value() || '').trim();
-  const facilityNumber = ((facilityData?.twilioPhoneNumberE164 as string | undefined) || '').trim();
-  const a2pApproved = ((facilityData?.a2pStatus as string) || 'draft').toLowerCase() === 'approved';
-  const fromNumber = a2pApproved && facilityNumber ? facilityNumber : platformNumber;
+  // Same rule as sendSMS: the facility's own number only once onboarding is on,
+  // the registration is approved and a super admin has approved the facility.
+  const fromNumber = selectReminderFromNumber({
+    platformNumber,
+    facilityNumber: facilityData?.twilioPhoneNumberE164 as string | undefined,
+    textingOnboardingFlag: await isFeatureFlagEnabled('TEXTING_ONBOARDING_V1'),
+    facilityData,
+  });
   if (!fromNumber) return 'failed';
 
-  // A facility still on the shared number may only send while it is in trial
-  // or waiting on its own registration, and within a monthly ceiling. See
-  // sharedNumberPolicy.ts for why the shared number is a starting point
-  // rather than a destination.
+  // A facility on the shared number may send while its account is in good
+  // standing, within a monthly ceiling. See sharedNumberPolicy.ts.
   const sharedDecision = await evaluateSharedNumberSend({
     facilityId,
     facilityData,
@@ -291,8 +291,43 @@ export function rentReminderTenantFromDoc(id: string, data: Record<string, any>)
     smsOptInDate: toDate(data.smsOptInDate),
     smsConsentStatus: data.smsConsentStatus ?? null,
     monthlyRate: Number(data.monthlyRate) || 0,
+    unitNumber: data.unitNumber == null ? null : String(data.unitNumber),
     lastSmsPaymentReminderDate: toDate(data.lastSmsPaymentReminderDate),
+    lastSmsPaymentReminderDueDate:
+      typeof data.lastSmsPaymentReminderDueDate === 'string' ? data.lastSmsPaymentReminderDueDate : null,
   };
+}
+
+/**
+ * Claims the one reminder a tenant gets for one due date. create() fails when
+ * the document exists, so two overlapping runs (a retry, a slow hour) cannot
+ * both send. Kept off the tenant document so a claim does not fire the tenant
+ * triggers. Released again if the text does not go out.
+ */
+function reminderClaimRef(facilityId: string, tenantId: string, dueKey: string) {
+  return admin
+    .firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('rentReminderSends')
+    .doc(`${tenantId}_${dueKey}`);
+}
+
+async function claimReminder(facilityId: string, tenantId: string, dueKey: string): Promise<boolean> {
+  try {
+    await reminderClaimRef(facilityId, tenantId, dueKey).create({
+      tenantId,
+      dueDate: dueKey,
+      channel: 'sms',
+      status: 'claimed',
+      claimedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return true;
+  } catch (error: any) {
+    // 6 = ALREADY_EXISTS: another run has sent (or is sending) this one.
+    if (error?.code === 6 || /already exists/i.test(String(error?.message ?? ''))) return false;
+    throw error;
+  }
 }
 
 export const processRentDueTextReminders = functions
@@ -323,31 +358,41 @@ export const processRentDueTextReminders = functions
       // Once a day, at the facility's own hour rather than the server's.
       if (facilityLocalHour(facilityData?.timeZone, now) !== settings.sendHour) continue;
 
+      const local = localDateTimeIn(facilityData?.timeZone, now);
+      const today = { year: local.year, month: local.month, day: local.day };
+      const gate = await getOutboundGateConfig();
+
       const tenants = await facilityDoc.ref.collection('tenants').where('isActive', '==', true).get();
 
       for (const tenantDoc of tenants.docs) {
         const data = tenantDoc.data() as Record<string, any>;
         const tenant = rentReminderTenantFromDoc(tenantDoc.id, data);
 
-        // Balance is the expensive read, so only ask for it once the cheap
-        // checks have passed.
-        const preflight = decideRentReminder({ tenant, balance: 1, reminderDays: settings.reminderDays, now });
-        if (!preflight.send) continue;
-
-        const balance = await tenantBalance(facilityId, tenantDoc.id);
         const decision = decideRentReminder({
           tenant,
-          balance,
           reminderDays: settings.reminderDays,
-          now,
+          today,
+          timeZone: facilityData?.timeZone,
         });
-        if (!decision.send || !decision.dueDate) continue;
+        if (!decision.send || !decision.dueDate || !decision.dueKey) continue;
+
+        // A tenant the gate will refuse is skipped before any read or write, so
+        // a blocked facility costs nothing each month. sendReminderSms asks
+        // again; this is only the cheap early exit.
+        const formatted = formatPhoneNumber(String(data.phone ?? ''));
+        if (!formatted || !isCustomerRecipientAllowed(formatted, { facilityId, channel: 'sms' }, gate)) continue;
+
+        // Paid ahead through the portal: a ledger credit that already covers
+        // the month. Online payments do not move paidThrough.
+        const monthlyRate = Number(data.monthlyRate) || 0;
+        const balance = await tenantBalance(facilityId, tenantDoc.id);
+        if (creditCoversRent(balance, monthlyRate)) continue;
 
         considered += 1;
-        const amount = balance > 0 ? balance : Number(data.monthlyRate) || 0;
         const message = buildRentReminderMessage({
+          facilityName: (facilityData?.name as string | undefined) ?? null,
           tenantName: tenant.name,
-          amount,
+          amount: monthlyRate,
           dueDate: decision.dueDate,
           // "12 (Complex 2)" once the facility numbers units per area; the
           // stored number, untouched, until then.
@@ -355,6 +400,8 @@ export const processRentDueTextReminders = functions
         });
 
         try {
+          const claimed = await claimReminder(facilityId, tenantDoc.id, decision.dueKey);
+          if (!claimed) continue;
           const result = await sendReminderSms({
             facilityId,
             facilityData,
@@ -366,9 +413,16 @@ export const processRentDueTextReminders = functions
           });
           if (result === 'sent') {
             sent += 1;
+            await reminderClaimRef(facilityId, tenantDoc.id, decision.dueKey)
+              .update({ status: 'sent', sentAt: admin.firestore.FieldValue.serverTimestamp() })
+              .catch(() => undefined);
             await tenantDoc.ref.update({
               lastSmsPaymentReminderDate: admin.firestore.Timestamp.fromDate(now),
+              lastSmsPaymentReminderDueDate: decision.dueKey,
             });
+          } else {
+            // Nothing went out (quiet hours, allowance, gate): free the claim.
+            await reminderClaimRef(facilityId, tenantDoc.id, decision.dueKey).delete().catch(() => undefined);
           }
         } catch (error: any) {
           functions.logger.error('[rentReminderSms] send failed', {
@@ -376,6 +430,8 @@ export const processRentDueTextReminders = functions
             tenantId: tenantDoc.id,
             error: error?.message ?? String(error),
           });
+          // The claim stays when the outcome is unknown (the text may have
+          // gone out), so a retry never sends it twice.
         }
       }
     }
