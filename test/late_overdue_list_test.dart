@@ -44,7 +44,8 @@ void main() {
   final now = DateTime(2026, 9, 23);
   final lateDate = DateTime(2026, 6, 30);
   final paidAhead = DateTime(2026, 9, 30);
-  const flatFifteen = LateFeeRules(lateFeeType: 'flat', lateFeeAmount: 15);
+  const flatFifteen =
+      LateFeeRules(lateFeeType: 'flat', lateFeeAmount: 15, autoLateFees: true);
 
   group('buildOverdueList', () {
     test('fees on payment records come from the rules passed in', () {
@@ -62,6 +63,24 @@ void main() {
       );
       expect(list, hasLength(1));
       expect(list.single.totalLateFees, 15);
+      expect(list.single.totalDue, 100);
+    });
+
+    test('no fee is counted while automatic late fees are off', () {
+      // The job posts nothing then, so a fee here would be money the tenant
+      // is shown as owing and is never charged.
+      final list = LateLogicService.buildOverdueList(
+        paymentsByTenant: {
+          'a': [_overduePayment('a')],
+        },
+        paymentTenants: {'a': _tenant('a')},
+        paidThroughCandidates: const [],
+        feeRules: LateFeeRules.fromBillingSettings(
+            {'lateFeeType': 'flat', 'lateFeeAmount': 15}),
+        graceDays: 3,
+        now: now,
+      );
+      expect(list.single.totalLateFees, 0);
       expect(list.single.totalDue, 100);
     });
 

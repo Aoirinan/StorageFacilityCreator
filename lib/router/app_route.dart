@@ -134,6 +134,17 @@ class AppRoute {
         if (unitId != null && unitId.isNotEmpty) 'unitId': unitId,
       }).toString();
   static const contactLogs = '/contact-logs';
+
+  /// A tenant's contact log (calls, texts, letters, notes).
+  static String contactLogsFor({
+    required String tenantId,
+    required String facilityId,
+  }) =>
+      Uri(path: contactLogs, queryParameters: {
+        'tenantId': tenantId,
+        'facilityId': facilityId,
+      }).toString();
+
   static const auditLogs = '/audit-logs';
   static const exports = '/exports';
   static const ledger = '/ledger';

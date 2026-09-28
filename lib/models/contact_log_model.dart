@@ -7,8 +7,14 @@ enum ContactLogType {
   inPerson,
   note,
   reminder,
+  // A posted letter, e.g. a final notice mailed to the tenant. Stored as
+  // 'letter'; an older app build reads it as a note.
+  letter,
   other,
 }
+
+/// How the letter type reads in lists and pickers.
+const contactLogLetterLabel = 'Letter / final notice';
 
 enum ContactLogDirection {
   inbound,
@@ -126,6 +132,8 @@ class ContactLog {
         return 'Note';
       case ContactLogType.reminder:
         return 'Reminder';
+      case ContactLogType.letter:
+        return contactLogLetterLabel;
       case ContactLogType.other:
         return 'Other';
     }
