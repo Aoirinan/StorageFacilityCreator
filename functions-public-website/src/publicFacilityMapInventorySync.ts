@@ -6,6 +6,7 @@ import {
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
   isUnlistedUnit,
+  unitTypeOf,
 } from '@sfc/functions-shared';
 
 /** Fields that affect the anonymous public rental inventory payload. */
@@ -153,7 +154,9 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
     // kept a stray non-boolean such as 'true' that the app's publish drops.
     if (isArchivedForOnlineRental(d)) continue;
 
-    const unitType = String(d.unitType || '');
+    // As the app's UnitModel reads it (missing is 'standard'), so both writers
+    // publish the same type and the same rentable flag for it.
+    const unitType = unitTypeOf(d);
     const categorySlug = slugify(unitType);
     const isPubliclyEnabledType = isUnitTypeOfferedOnline(d, enabledTypes);
     // The online rental holds rent a unit whose String(status || '') lower-cases

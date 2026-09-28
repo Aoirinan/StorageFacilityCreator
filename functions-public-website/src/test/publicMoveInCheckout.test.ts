@@ -43,13 +43,22 @@ const NO_LONGER_AVAILABLE: Array<[string, Record<string, unknown> | null]> = [
   ['no longer listed on the public website', { publicListingEnabled: false }],
   ['set to internal use', { internalUse: true }],
   ['archived', { archived: true }],
+  // The public map shows a unit linked to a tenant as rented.
+  ['linked to a tenant since the hold', { tenantId: 'tenant-other' }],
+  ['of a type the owner no longer rents online', { unitType: 'vehicle' }],
   ['deleted', null],
 ];
+
+/** The owner rents standard units online, and no other type. */
+function seedStandardUnitsOnly(inMemory: InMemoryFirestore) {
+  inMemory.seed(`facilities/${FACILITY}/settings/public`, { enabledPublicUnitTypes: ['standard'] });
+}
 
 /** Loads publicMoveIn against [inMemory], with Stripe replaced by a recorder. */
 function loadPublicMoveIn(inMemory: InMemoryFirestore) {
   installInMemoryFirestore(inMemory);
   const stripeCalls: string[] = [];
+  const sessionParams: Array<Record<string, any>> = [];
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const shared = require('@sfc/functions-shared') as typeof import('@sfc/functions-shared');
   Object.defineProperty(shared, 'getStripeClient', {
@@ -59,8 +68,9 @@ function loadPublicMoveIn(inMemory: InMemoryFirestore) {
       ({
         checkout: {
           sessions: {
-            create: async () => {
+            create: async (params: Record<string, any>) => {
               stripeCalls.push('checkout.sessions.create');
+              sessionParams.push(params);
               return { id: 'cs_test', url: 'https://checkout.example/cs_test' };
             },
           },
@@ -71,6 +81,7 @@ function loadPublicMoveIn(inMemory: InMemoryFirestore) {
   const moveIn = require('../publicMoveIn') as typeof import('../publicMoveIn');
   return {
     stripeCalls,
+    sessionParams,
     checkout: (data: Record<string, unknown>) => testEnv.wrap(moveIn.createPublicMoveInCheckout)(data, callableContext),
   };
 }
@@ -145,17 +156,51 @@ for (const [why, unitFields] of NO_LONGER_AVAILABLE) {
   test(`checkout is refused for a unit ${why}, before Stripe is called`, async () => {
     const inMemory = new InMemoryFirestore();
     seedFacilityAndReservation(inMemory);
+    seedStandardUnitsOnly(inMemory);
     if (unitFields) {
       seedUnit(inMemory, unitFields);
     }
     const { checkout, stripeCalls } = loadPublicMoveIn(inMemory);
 
+    // Before, for a tenant link or a type taken off online rental: Stripe
+    // took the payment, and completion then had to refund or move in.
     await assert.rejects(() => checkout(checkoutRequest(inMemory)), refusedWith(NOT_AVAILABLE));
 
     assert.deepEqual(stripeCalls, []);
     assert.equal(inMemory.read(RESERVATION_PATH)?.expectedCheckoutAmountCents, undefined);
   });
 }
+
+test('checkout for a unit with no type reaches Stripe when standard units are offered, as the app reads it', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedFacilityAndReservation(inMemory);
+  seedStandardUnitsOnly(inMemory);
+  seedUnit(inMemory);
+  delete (inMemory.getStore().get(UNIT_PATH) as Record<string, unknown>).unitType;
+  const { checkout, stripeCalls } = loadPublicMoveIn(inMemory);
+
+  await checkout(checkoutRequest(inMemory));
+
+  assert.deepEqual(stripeCalls, ['checkout.sessions.create']);
+});
+
+test('checkout tags the payment with its reservation, so completion can refund it, and nothing more', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedFacilityAndReservation(inMemory);
+  seedUnit(inMemory);
+  const { checkout, sessionParams } = loadPublicMoveIn(inMemory);
+
+  await checkout(checkoutRequest(inMemory));
+
+  // Stripe does not copy the session's metadata to the PaymentIntent, which
+  // is all completion sees. The token is a secret; a facilityId would have
+  // the charge.refunded webhook post a refund to a ledger that never had the
+  // payment.
+  assert.deepEqual(sessionParams[0].payment_intent_data, {
+    metadata: { type: 'public_move_in', reservationId: RESERVATION },
+  });
+  assert.equal(sessionParams[0].metadata.reservationId, RESERVATION);
+});
 
 test.after(() => {
   testEnv.cleanup();

@@ -8,12 +8,14 @@ import {
   escapeHtml,
   enabledOnlineUnitTypes,
   getStripeClient,
+  isArchivedForOnlineRental,
+  isInternalUseUnit,
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
   sendFacilityEmailWithCompliance,
   unitNotOfferedOnlineReason,
+  unitTypeOf,
 } from '@sfc/functions-shared';
-import type { UnitNotOfferedReason } from '@sfc/functions-shared';
 import {
   amountsMatchCents,
   isPublicMoveInStripePaymentRequired,
@@ -27,7 +29,30 @@ import { resolveSmsConsentFields } from './smsConsent';
 import { assertOnlineRentalNotOnDnrList } from './dnrScreening';
 import { resolveMoveInPaymentStripeAccountId } from './moveInPayment';
 import { assertFacilityHasTenantCapacity } from './tenantCapacity';
-import { notifyOwnerOfMoveInToUnitNotOffered } from './onlineMoveInReview';
+import {
+  CHECKOUT_ATTEMPT_FIELD,
+  CHECKOUT_RUN_OUT_MESSAGE,
+  checkoutFieldsOf,
+  checkoutHoldWindow,
+  holdForPaidCheckout,
+  laterExpiry,
+  restoreHoldAfterFailedCheckout,
+  timestampToDate,
+  unitHoldRef,
+} from './checkoutHold';
+import type { ReplacedHold } from './checkoutHold';
+import {
+  onlineMoveInReviewAlert,
+  onlineMoveInReviewRef,
+} from './onlineMoveInReview';
+import type { MoveInReviewReason, MoveInUnitChanges } from './onlineMoveInReview';
+import {
+  PAYMENT_ALREADY_USED_MESSAGE,
+  PUBLIC_MOVE_IN_PAYMENTS_COLLECTION,
+  refusePaidMoveIn,
+  resumePaidMoveInRefund,
+} from './paidMoveInRefund';
+import type { OfferedPayment, PaidMoveInRefusal } from './paidMoveInRefund';
 
 /** Public settings → active contract template with PDF, for online move-in. */
 async function readOnlineMoveInTemplateBinding(facilityId: string): Promise<{
@@ -193,7 +218,9 @@ export const getPublicReservationByToken = functions.https.onCall(async (data: a
     });
   }
   const expiresAt = reservation.expiresAt as admin.firestore.Timestamp | undefined;
-  if (expiresAt && expiresAt.toDate() < new Date()) {
+  // Still returned when checkout has started: the renter may have paid, and
+  // completePublicMoveIn moves in or refunds a renter who has paid.
+  if (expiresAt && expiresAt.toDate() < new Date() && !checkoutMayHaveBeenPaid(reservation)) {
     await doc.ref.set(
       {
         status: 'expired',
@@ -270,6 +297,58 @@ async function assertFacilityTakesOnlineRentals(facilityId: string): Promise<Rec
 }
 
 /**
+ * Someone else has the unit, or the owner has it out of service: a status
+ * other than available or reserved (a missing one is let through, as move-in
+ * always has), or a link to a tenant, which the public map shows as rented.
+ * Renting it would overwrite that tenant or that status, so it is refused
+ * before payment and refunded after.
+ */
+function unitIsTaken(unit: Record<string, unknown>): boolean {
+  const status = String(unit.status || '').toLowerCase();
+  if (status && status !== 'available' && status !== 'reserved') return true;
+  return typeof unit.tenantId === 'string' && unit.tenantId.trim() !== '';
+}
+
+/**
+ * Why [unit] is no longer offered online, or null: taken off online rental,
+ * or of a type the owner no longer rents online. A listing choice, not a
+ * physical one, so a renter who has already paid is still moved in.
+ */
+function moveInReviewReasonFor(
+  unit: Record<string, unknown>,
+  enabledUnitTypes: string[],
+): MoveInReviewReason | null {
+  const reason = unitNotOfferedOnlineReason(unit);
+  if (reason) return reason;
+  return isUnitTypeOfferedOnline(unit, enabledUnitTypes) ? null : 'unit-type-not-offered';
+}
+
+async function readPublicSettings(facilityId: string): Promise<Record<string, unknown>> {
+  const snap = await admin.firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('settings')
+    .doc('public')
+    .get();
+  return (snap.data() || {}) as Record<string, unknown>;
+}
+
+/**
+ * How long a reservation whose checkout has started stays loadable after its
+ * hold runs out. A Checkout Session can be paid for 24 hours, and a hold lasts
+ * at most 15 minutes, so a renter slow on the Stripe page came back paid to
+ * "Reservation not found or has expired", with no way to finish or be
+ * refunded.
+ */
+const CHECKOUT_RETURN_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function checkoutMayHaveBeenPaid(reservation: Record<string, unknown>): boolean {
+  const started = reservation.checkoutUpdatedAt as { toMillis?: () => number } | undefined;
+  return typeof started?.toMillis === 'function' &&
+    Date.now() - started.toMillis() < CHECKOUT_RETURN_WINDOW_MS;
+}
+
+/**
  * Creates a short-lived public reservation hold for a unit.
  * This reduces obvious double-booking races before move-in completion.
  */
@@ -329,7 +408,7 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
   const now = new Date();
   // Capped at 15 minutes, not 60. A hold makes the unit unavailable to everyone
   // else, so a long window is a cheap way to keep inventory off the market.
-  // Fifteen minutes is ample for a checkout that is already in progress.
+  // Starting checkout extends it to cover payment and the form (checkoutHold.ts).
   const boundedMinutes = Math.max(1, Math.min(Number(holdMinutes) || 10, 15));
   const expiresAt = new Date(now.getTime() + boundedMinutes * 60 * 1000);
   const moveInToken = crypto.randomBytes(24).toString('hex');
@@ -583,26 +662,32 @@ export const createPublicMoveInCheckout = functions
     userId: context.auth?.uid || null,
   });
 
-  // The unit can be rented, unlisted, archived or set to internal use while it
-  // is held (up to 15 minutes for a public hold, 60 for a tenant-portal one).
-  // completePublicMoveIn refuses such a unit too, but only after Checkout has
-  // taken the payment, leaving the owner to refund it by hand. Same test and
-  // refusal as both holds; trimmed as loadPublicMoveInChargeQuote does, so the
-  // unit checked is the unit priced.
+  // The unit can be rented, unlisted, archived, set to internal use or have
+  // its type taken off online rental while it is held (up to 15 minutes for a
+  // public hold, 60 for a tenant-portal one). completePublicMoveIn has to
+  // refund or move in such a renter once they have paid, so checkout refuses
+  // them first. Same test and refusal as both holds, plus the tenant link the
+  // public map shows as rented; trimmed as loadPublicMoveInChargeQuote does,
+  // so the unit checked is the unit priced.
   const reservedUnitId = String(reservation.unitId || '').trim();
   if (reservedUnitId) {
-    const unitSnap = await admin.firestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .collection('units')
-      .doc(reservedUnitId)
-      .get();
+    const [unitSnap, publicSettings] = await Promise.all([
+      admin.firestore()
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('units')
+        .doc(reservedUnitId)
+        .get(),
+      readPublicSettings(facilityId),
+    ]);
     const unitData = unitSnap.exists ? (unitSnap.data() as Record<string, any>) : null;
     const unitStatus = String(unitData?.status || '').toLowerCase();
     if (
       !unitData ||
       (unitStatus !== 'available' && unitStatus !== 'reserved') ||
-      !isUnitOfferedOnline(unitData)
+      unitIsTaken(unitData) ||
+      !isUnitOfferedOnline(unitData) ||
+      !isUnitTypeOfferedOnline(unitData, enabledOnlineUnitTypes(publicSettings))
     ) {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
     }
@@ -632,8 +717,12 @@ export const createPublicMoveInCheckout = functions
     phone: reservation.phone ? String(reservation.phone).trim() : '',
   });
 
-  const moveInDate =
-    (reservation.moveInDate as admin.firestore.Timestamp | undefined)?.toDate() || new Date();
+  // Priced for the renter's move-in date, or today when they gave none. That
+  // day is recorded with the amount (quotedMoveInDate), and completion prices
+  // it rather than its own today: proration changes at midnight, server time
+  // (UTC), so a renter who paid before it and finished after it was refused
+  // as 'charges changed' and refunded.
+  const moveInDate = timestampToDate(reservation.moveInDate) ?? new Date();
   const chargeQuote = await loadPublicMoveInChargeQuote({
     facilityId,
     reservation,
@@ -647,14 +736,6 @@ export const createPublicMoveInCheckout = functions
     );
   }
 
-  await reservationRef.set(
-    {
-      expectedCheckoutAmountCents: chargeQuote.totalCents,
-      checkoutUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    },
-    { merge: true },
-  );
-
   const cents = chargeQuote.totalCents;
   if (cents < 50) {
     throw new functions.https.HttpsError(
@@ -662,6 +743,69 @@ export const createPublicMoveInCheckout = functions
       'The amount due is below the $0.50 card minimum. Contact the facility to complete payment.',
     );
   }
+
+  // The hold is extended to outlast the Checkout Session, which is given a
+  // short expiry below, by only the minutes to come back from it; confirming
+  // a paid session gives the time to finish the form (holdForPaidCheckout).
+  // Written before Stripe is called: if this fails, there is no payable
+  // session that the hold does not cover.
+  const holdWindow = checkoutHoldWindow(new Date(), timestampToDate(reservation.reservedAt));
+  if (!holdWindow) {
+    throw new functions.https.HttpsError('failed-precondition', CHECKOUT_RUN_OUT_MESSAGE);
+  }
+  const holdUntil = holdWindow.holdUntil;
+  const holdRef = reservedUnitId ? unitHoldRef(facilityId, reservedUnitId) : null;
+  const attemptId = crypto.randomUUID();
+  const replaced = await admin.firestore().runTransaction(async (tx): Promise<ReplacedHold> => {
+    const currentSnap = await tx.get(reservationRef);
+    const current = (currentSnap.data() || {}) as Record<string, any>;
+    if (current.status !== 'pending' && current.status !== 'confirmed') {
+      throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
+    }
+
+    let hold: Record<string, any> | null = null;
+    if (holdRef) {
+      const holdSnap = await tx.get(holdRef);
+      hold = holdSnap.exists ? (holdSnap.data() as Record<string, any>) : null;
+      const heldUntil = timestampToDate(hold?.expiresAt);
+      if (hold && hold.reservationId !== String(reservationId) && heldUntil && heldUntil > new Date()) {
+        throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
+      }
+    }
+
+    tx.update(reservationRef, {
+      expectedCheckoutAmountCents: chargeQuote.totalCents,
+      quotedMoveInDate: admin.firestore.Timestamp.fromDate(moveInDate),
+      [CHECKOUT_ATTEMPT_FIELD]: attemptId,
+      checkoutUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: admin.firestore.Timestamp.fromDate(laterExpiry(current.expiresAt, holdUntil)),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    const ownHold = Boolean(hold && hold.reservationId === String(reservationId));
+    if (holdRef && ownHold) {
+      tx.update(holdRef, {
+        expiresAt: admin.firestore.Timestamp.fromDate(laterExpiry(hold?.expiresAt, holdUntil)),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } else if (holdRef) {
+      // Missing, or another reservation's lapsed hold: hold the unit again, as
+      // createPublicReservationHold would.
+      tx.set(holdRef, {
+        facilityId,
+        unitId: reservedUnitId,
+        reservationId: String(reservationId),
+        status: 'pending',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        expiresAt: admin.firestore.Timestamp.fromDate(holdUntil),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+    return {
+      reservationExpiresAt: current.expiresAt ?? null,
+      checkoutFields: checkoutFieldsOf(current),
+      holdExpiresAt: ownHold ? hold?.expiresAt ?? null : null,
+    };
+  });
 
   const safeToken = encodeURIComponent(String(token));
   const safeReservationId = encodeURIComponent(String(reservationId));
@@ -700,11 +844,26 @@ export const createPublicMoveInCheckout = functions
         ...(customerEmail ? { customer_email: customerEmail } : {}),
         success_url: successUrl,
         cancel_url: cancelUrl,
+        // Stripe's default is 24 hours; the hold only covers this long.
+        expires_at: Math.floor(holdWindow.sessionExpiresAt.getTime() / 1000),
         metadata: {
           type: 'public_move_in',
           reservationId: String(reservationId),
           moveInToken: String(token),
           facilityId,
+        },
+        // Checkout does not copy the session's metadata to the PaymentIntent,
+        // and completion sees only the PaymentIntent. Tagged, it can be
+        // refused for another reservation, and refunded for this one, without
+        // asking Stripe for its session. No token: it is a secret. No
+        // facilityId: the charge.refunded webhook (functions-integrations)
+        // posts a refund to the ledger of any PaymentIntent carrying one, and
+        // a move-in refunded here never posted its payment there.
+        payment_intent_data: {
+          metadata: {
+            type: 'public_move_in',
+            reservationId: String(reservationId),
+          },
         },
       },
       {
@@ -728,6 +887,23 @@ export const createPublicMoveInCheckout = functions
       sessionId: session.id,
     };
   } catch (err: unknown) {
+    // No session the renter can pay: the unit need not stay held for one.
+    try {
+      await restoreHoldAfterFailedCheckout({
+        reservationRef,
+        holdRef,
+        reservationId: String(reservationId),
+        attemptId,
+        holdUntil,
+        replaced,
+      });
+    } catch (restoreErr: any) {
+      functions.logger.error('createPublicMoveInCheckout: could not restore the hold after a failed checkout', {
+        facilityId,
+        reservationId: String(reservationId),
+        error: restoreErr?.message || String(restoreErr),
+      });
+    }
     if (err instanceof functions.https.HttpsError) {
       throw err;
     }
@@ -834,6 +1010,33 @@ export const confirmPublicMoveInCheckout = functions
     : paymentIntentRaw?.id;
   if (!paymentIntentId) {
     throw new functions.https.HttpsError('failed-precondition', 'No payment intent found on checkout session');
+  }
+
+  // Paid: the renter now re-enters the whole form (Stripe's redirect reloads
+  // the page), so the unit is held for them again, whether or not the
+  // checkout's hold has lapsed. Not claimed over another renter's live hold;
+  // completion refunds this renter if that one still has the unit then. A
+  // failure here does not stop them: completion checks the unit itself.
+  try {
+    const unitHold = await holdForPaidCheckout({
+      reservationRef,
+      facilityId,
+      reservationId: String(reservationId),
+      now: new Date(),
+    });
+    if (unitHold === 'held-by-another') {
+      functions.logger.warn('confirmPublicMoveInCheckout: a paid renter\'s unit is held by another reservation', {
+        facilityId,
+        reservationId: String(reservationId),
+        paymentIntentId,
+      });
+    }
+  } catch (err: any) {
+    functions.logger.error('confirmPublicMoveInCheckout: could not hold the unit for a paid renter', {
+      facilityId,
+      reservationId: String(reservationId),
+      error: err?.message || String(err),
+    });
   }
 
   return {
@@ -947,16 +1150,6 @@ async function mergeTemplateWithCertificatePdf(
 }
 
 /**
- * One document per PaymentIntent that has completed an online move-in, keyed
- * by the PaymentIntent id. Top level rather than under the facility, so a
- * connected account shared by two facilities cannot spend one payment at each.
- */
-const PUBLIC_MOVE_IN_PAYMENTS_COLLECTION = 'publicMoveInPayments';
-
-const PAYMENT_ALREADY_USED_MESSAGE =
-  'This payment has already been used to complete a move-in. Contact the facility.';
-
-/**
  * Complete public move-in flow (no auth)
  * - Validates reservation token
  * - Creates tenant and contract
@@ -1030,15 +1223,45 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     throw new functions.https.HttpsError('permission-denied', 'Invalid token');
   }
 
-  if (reservation.status !== 'pending' && reservation.status !== 'confirmed') {
-    throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
-  }
+  // A renter who says they have paid is not turned away before the payment is
+  // verified: once it is, they are moved in or refunded, never just refused.
+  // Refusing here first left a renter who had paid with no tenancy and no
+  // refund, and nothing said to the owner.
+  const claimsPayment = !skipPayment && Boolean(paymentIntentId);
+  // The first reason a renter who has paid cannot be moved in, with the error
+  // an unpaid move-in gets for it. Acted on once the payment is verified.
+  // (Cast, not annotated: TypeScript does not see the closure below assign it.)
+  let paidRefusal = null as { refusal: PaidMoveInRefusal; unpaidError: functions.https.HttpsError } | null;
+  const refuseUnlessPaid = (refusal: PaidMoveInRefusal, unpaidError: functions.https.HttpsError): void => {
+    if (!claimsPayment) throw unpaidError;
+    paidRefusal ??= { refusal, unpaidError };
+  };
 
+  const reservationStatus = String(reservation.status || '');
+  const reservationActive = reservationStatus === 'pending' || reservationStatus === 'confirmed';
   const nowTs = admin.firestore.FieldValue.serverTimestamp();
   const expiresAt = reservation.expiresAt as admin.firestore.Timestamp | undefined;
-  if (expiresAt && expiresAt.toDate() < new Date()) {
-    await reservationRef.update({ status: 'expired', updatedAt: nowTs });
-    throw new functions.https.HttpsError('failed-precondition', 'Reservation has expired');
+  const reservationExpired = Boolean(expiresAt && expiresAt.toDate() < new Date());
+  if (!claimsPayment) {
+    if (!reservationActive) {
+      throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
+    }
+    if (reservationExpired) {
+      // Left open while a renter who went to checkout may still come back
+      // with their payment: getPublicReservationByToken finds only open ones.
+      if (!checkoutMayHaveBeenPaid(reservation)) {
+        await reservationRef.update({ status: 'expired', updatedAt: nowTs });
+      }
+      throw new functions.https.HttpsError('failed-precondition', 'Reservation has expired');
+    }
+  } else if (!reservationActive && reservationStatus !== 'expired') {
+    // Completed or cancelled. An expired hold is not a refusal for a renter
+    // who has paid: the hold is 15 minutes and paying can take longer, and
+    // the unit itself decides below.
+    refuseUnlessPaid(
+      'reservation-closed',
+      new functions.https.HttpsError('failed-precondition', 'Reservation is not active'),
+    );
   }
 
   // Derive core context
@@ -1048,7 +1271,11 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   const reservationMetadata = (reservation.metadata as Record<string, any> | undefined) || {};
   const reservationSource = String(reservationMetadata.source || '').trim();
   const portalSourceTenantId = String(reservationMetadata.portalTenantId || '').trim();
-  const moveInDate = (reservation.moveInDate as admin.firestore.Timestamp | undefined)?.toDate() || new Date();
+  // The day checkout priced when the renter gave no move-in date: priced
+  // afresh, a completion after midnight (UTC) quoted another day's proration
+  // than the renter paid, and refused and refunded them as 'charges changed'.
+  const moveInDate =
+    timestampToDate(reservation.moveInDate) ?? timestampToDate(reservation.quotedMoveInDate) ?? new Date();
 
   if (!facilityId) {
     throw new functions.https.HttpsError('failed-precondition', 'Reservation missing facilityId');
@@ -1061,12 +1288,16 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   const facilityPhoneForContext = String(facilityPre.phone || '').trim();
   const facilityEmailForContext = String(facilityPre.email || '').trim();
 
+  // The unit types the owner rents online. Both holds and checkout check them;
+  // looked at again here as the other listing choices are.
+  const enabledUnitTypes = enabledOnlineUnitTypes(await readPublicSettings(facilityId));
+
   let preloadedUnitData: Record<string, any> | null = null;
-  // Why the unit is no longer offered online, when it was unlisted, archived
-  // or set to internal use since the hold. Refused below only if nothing
-  // has been paid.
-  let unitNotOfferedReason: UnitNotOfferedReason | null = null;
-  // Optional unit validation
+  // Why the unit is no longer offered online, when it was unlisted, archived,
+  // set to internal use or had its type taken off online rental since the
+  // hold. Refused below only if nothing has been paid.
+  let unitNotOfferedReason: MoveInReviewReason | null = null;
+  // Optional unit validation. Checked again in the transaction, which decides.
   if (unitId) {
     const unitSnap = await admin.firestore()
       .collection('facilities')
@@ -1076,21 +1307,20 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       .get();
 
     if (!unitSnap.exists) {
-      throw new functions.https.HttpsError('not-found', 'Reserved unit not found');
-    }
-
-    preloadedUnitData = unitSnap.data() as Record<string, any>;
-    const unitStatus = String(preloadedUnitData.status || '').toLowerCase();
-    if (unitStatus && unitStatus !== 'available' && unitStatus !== 'reserved') {
-      throw new functions.https.HttpsError('failed-precondition', 'Unit is no longer available');
-    }
-    // Both hold callables and checkout check this too. Looked at again for a
-    // unit unlisted, archived or set to internal use since then; whether that
-    // refuses the move-in waits on the payment check below.
-    unitNotOfferedReason = unitNotOfferedOnlineReason(preloadedUnitData);
-    const numFromUnit = String(preloadedUnitData.unitNumber || '').trim();
-    if (numFromUnit) {
-      displayUnitNumber = numFromUnit;
+      refuseUnlessPaid('unit-missing', new functions.https.HttpsError('not-found', 'Reserved unit not found'));
+    } else {
+      preloadedUnitData = unitSnap.data() as Record<string, any>;
+      if (unitIsTaken(preloadedUnitData)) {
+        refuseUnlessPaid(
+          'unit-taken',
+          new functions.https.HttpsError('failed-precondition', 'Unit is no longer available'),
+        );
+      }
+      unitNotOfferedReason = moveInReviewReasonFor(preloadedUnitData, enabledUnitTypes);
+      const numFromUnit = String(preloadedUnitData.unitNumber || '').trim();
+      if (numFromUnit) {
+        displayUnitNumber = numFromUnit;
+      }
     }
   }
 
@@ -1127,16 +1357,13 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   // Stripe's id for the verified payment, which is the key for its use record.
   let verifiedPaymentIntentId: string | null = null;
   let verifiedAmountReceivedCents = 0;
+  let verifiedPaymentMetadata: Record<string, string> = {};
+  // The facility's connected account, which holds the payment and any refund.
+  const connectAccountId = resolveMoveInPaymentStripeAccountId(facilityPre) || '';
   if (paymentVerified) {
-    if (requiredPaymentCents > 0 && minimumPaymentCents !== requiredPaymentCents) {
-      throw new functions.https.HttpsError(
-        'failed-precondition',
-        'Move-in charges changed since checkout started. Refresh and try again.',
-      );
-    }
+    const chargesChanged = requiredPaymentCents > 0 && minimumPaymentCents !== requiredPaymentCents;
     try {
       const stripe = getStripeClient();
-      const connectAccountId = resolveMoveInPaymentStripeAccountId(facilityPre);
       if (!connectAccountId) {
         throw new functions.https.HttpsError(
           'failed-precondition',
@@ -1148,11 +1375,17 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       });
 
       const requiredCents = Math.max(requiredPaymentCents, minimumPaymentCents);
-      if (paymentIntent.amount_received < requiredCents) {
-        throw new functions.https.HttpsError(
-          'failed-precondition',
-          'Payment not completed or amount mismatch',
-        );
+      const amountReceived = Number(paymentIntent.amount_received) || 0;
+      // Money was taken, if not the amount now owed: refunded below, once the
+      // payment is known to be this reservation's, rather than kept.
+      const tookMoney =
+        paymentIntent.status === 'succeeded' && amountReceived > 0 && String(paymentIntent.id || '').trim() !== '';
+      const amountMismatch = new functions.https.HttpsError(
+        'failed-precondition',
+        'Payment not completed or amount mismatch',
+      );
+      if (amountReceived < requiredCents && !tookMoney) {
+        throw amountMismatch;
       }
 
       if (paymentIntent.status !== 'succeeded' && paymentIntent.status !== 'requires_capture') {
@@ -1179,12 +1412,27 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
           'This payment was made for a different reservation. Contact the facility.',
         );
       }
-
       verifiedPaymentIntentId = String(paymentIntent.id || '').trim();
       if (!verifiedPaymentIntentId) {
         throw new functions.https.HttpsError('internal', 'Failed to validate payment intent');
       }
-      verifiedAmountReceivedCents = paymentIntent.amount_received;
+      verifiedAmountReceivedCents = amountReceived;
+      verifiedPaymentMetadata = (paymentMetadata || {}) as Record<string, string>;
+
+      // The charges were quoted again since Checkout took the payment (the
+      // owner changed a rate or fee), or the payment is short of them. Paying
+      // again on this page would charge twice, so this payment is refunded.
+      if (chargesChanged) {
+        refuseUnlessPaid(
+          'charges-changed',
+          new functions.https.HttpsError(
+            'failed-precondition',
+            'Move-in charges changed since checkout started. Refresh and try again.',
+          ),
+        );
+      } else if (amountReceived < requiredCents) {
+        refuseUnlessPaid('charges-changed', amountMismatch);
+      }
     } catch (err: any) {
       functions.logger.error('Payment intent validation failed', {
         error: err?.message,
@@ -1204,7 +1452,8 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   // Move-ins completed before the one-use record existed left only their
   // payment ledger entry. A failed lookup is logged and let through: the
   // record still stops any payment used from now on, and a renter who has
-  // paid is not turned away by a read error.
+  // paid is not turned away by a read error. It does stop a refund, below.
+  let earlierUseUnknown = false;
   if (verifiedPaymentIntentId) {
     let usedByEarlierMoveIn = false;
     try {
@@ -1219,6 +1468,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
         return entry.type === 'payment' && entry.createdBy === 'publicMoveIn';
       });
     } catch (err: any) {
+      earlierUseUnknown = true;
       functions.logger.error('Public move-in: prior payment lookup failed', {
         error: err?.message || String(err),
         facilityId,
@@ -1233,13 +1483,25 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       });
       throw new functions.https.HttpsError('failed-precondition', PAYMENT_ALREADY_USED_MESSAGE);
     }
+
+    // A refund already decided for this payment (a completion that died
+    // before Stripe answered, or whose refund failed) is finished, not
+    // decided again.
+    const priorUse = await admin.firestore()
+      .collection(PUBLIC_MOVE_IN_PAYMENTS_COLLECTION)
+      .doc(verifiedPaymentIntentId)
+      .get();
+    const priorUseData = (priorUse.data() || {}) as Record<string, any>;
+    if (priorUse.exists && priorUseData.refund) {
+      await resumePaidMoveInRefund({ facilityId, connectAccountId }, verifiedPaymentIntentId, priorUseData);
+    }
   }
 
   // A renter who has paid is never turned away for capacity or for a unit
   // taken off online rental: both were checked when checkout was created, and
   // refusing after Checkout has charged left the renter paid with no tenancy,
   // no refund and nothing said to the owner. A paid move-in into a unit no
-  // longer offered goes ahead and the owner is told (after the transaction).
+  // longer offered goes ahead and the owner is told (in the transaction).
   // A move-in with nothing to pay has no checkout, so it is refused here.
   if (!paymentVerified) {
     if (unitNotOfferedReason) {
@@ -1250,13 +1512,70 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
 
   const verifiedTotalAmount = chargeQuote.totalAmount;
 
-  await assertOnlineRentalNotOnDnrList(admin.firestore(), {
-    name: name.trim(),
-    email: normalizedEmail,
-    phone: phone.trim(),
-  });
+  if (!paidRefusal) {
+    try {
+      await assertOnlineRentalNotOnDnrList(admin.firestore(), {
+        name: name.trim(),
+        email: normalizedEmail,
+        phone: phone.trim(),
+      });
+    } catch (err: any) {
+      if (!paymentVerified) throw err;
+      if (err instanceof functions.https.HttpsError && err.code === 'failed-precondition') {
+        // On the list: not someone the owner will rent to, paid or not.
+        refuseUnlessPaid('do-not-rent', err);
+      } else {
+        // The lookup failed. The renter was screened at the hold and at
+        // checkout, before paying, so a read error does not keep their money.
+        functions.logger.error('Public move-in: Do Not Rent lookup failed after payment; moving in', {
+          facilityId,
+          reservationId,
+          error: err?.message || String(err),
+        });
+      }
+    }
+  }
 
-  const unitTypeRaw = preloadedUnitData ? String(preloadedUnitData.unitType || 'standard') : 'standard';
+  /** The verified payment, for a refusal that refunds it. */
+  const offeredPayment = (): OfferedPayment => ({
+    paymentIntentId: String(verifiedPaymentIntentId),
+    amountReceivedCents: verifiedAmountReceivedCents,
+    metadata: verifiedPaymentMetadata,
+  });
+  /**
+   * Turns away a renter who has paid, refunding them (paidMoveInRefund.ts).
+   * Not while it is unknown whether this payment completed a move-in before
+   * the one-use record existed: refunding that one would give the renter
+   * their money back and leave them the tenancy. Trying again settles it.
+   */
+  const refusePaid = async (
+    refusal: PaidMoveInRefusal,
+    unpaidError: functions.https.HttpsError,
+  ): Promise<never> => {
+    if (earlierUseUnknown) {
+      throw new functions.https.HttpsError(
+        'unavailable',
+        'Your payment could not be checked just now. Please try again in a moment.',
+      );
+    }
+    return refusePaidMoveIn({
+      facilityId,
+      connectAccountId,
+      reservationId: String(reservationId),
+      unitId: unitId || null,
+      unitNumber: displayUnitNumber,
+      renterName: name.trim(),
+      refusal,
+      unpaidError,
+      payment: offeredPayment(),
+    });
+  };
+  if (paidRefusal) {
+    await refusePaid(paidRefusal.refusal, paidRefusal.unpaidError);
+  }
+
+  // As the app reads the type; a type stored blank is shown as standard.
+  const unitTypeRaw = (preloadedUnitData ? unitTypeOf(preloadedUnitData) : '') || 'standard';
   const unitTypeDisplay = humanizeUnitType(unitTypeRaw);
   const unitDescriptionForContext = preloadedUnitData
     ? String(preloadedUnitData.description || '').trim()
@@ -1319,41 +1638,105 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     return Number.isFinite(unitRate) && unitRate > 0 ? unitRate : 0;
   };
 
-  // Perform transactional writes for tenant/contract/unit/reservation/charges
-  const transactionResult = await admin.firestore().runTransaction(async (tx) => {
+  type MoveInTransactionResult =
+    | { kind: 'moved-in'; tenantId: string; contractId: string; reviewReason: MoveInReviewReason | null }
+    | { kind: 'refused'; refusal: PaidMoveInRefusal; unpaidError: functions.https.HttpsError }
+    | { kind: 'refund-decided'; record: Record<string, any> };
+
+  // Perform transactional writes for tenant/contract/unit/reservation/charges.
+  // Everything that decides whether to move in is read again here, where it
+  // cannot change before the writes land: a unit rented or deleted after the
+  // reads above failed the unit update after payment, with no refund.
+  const transactionResult = await admin.firestore().runTransaction(async (tx): Promise<MoveInTransactionResult> => {
+    // Unpaid: refused with the error, as before. Paid: nothing is written,
+    // and the payment is refunded after the transaction.
+    const refuse = (refusal: PaidMoveInRefusal, unpaidError: functions.https.HttpsError): MoveInTransactionResult => {
+      if (!paymentVerified) throw unpaidError;
+      return { kind: 'refused', refusal, unpaidError };
+    };
+
     // Re-check reservation inside transaction
     const freshReservation = await tx.get(reservationRef);
-    if (!freshReservation.exists) {
-      throw new functions.https.HttpsError('not-found', 'Reservation not found');
-    }
-    const freshData = freshReservation.data() as Record<string, any>;
-    if (freshData.moveInToken !== token) {
-      throw new functions.https.HttpsError('permission-denied', 'Invalid token');
-    }
-    if (freshData.status !== 'pending' && freshData.status !== 'confirmed') {
-      throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
-    }
-
     // One PaymentIntent completes one move-in. Read here and written with the
     // tenant, so two completions racing on one payment cannot both succeed.
     const paymentUseRef = verifiedPaymentIntentId
       ? admin.firestore().collection(PUBLIC_MOVE_IN_PAYMENTS_COLLECTION).doc(verifiedPaymentIntentId)
       : null;
-    if (paymentUseRef) {
-      const paymentUseSnap = await tx.get(paymentUseRef);
-      if (paymentUseSnap.exists) {
-        functions.logger.warn('Public move-in: payment already used', {
-          facilityId,
-          reservationId,
-          paymentIntentId: verifiedPaymentIntentId,
-          usedByReservationId: (paymentUseSnap.data() as Record<string, any> | undefined)?.reservationId,
-        });
-        throw new functions.https.HttpsError('failed-precondition', PAYMENT_ALREADY_USED_MESSAGE);
-      }
-    }
-
+    const paymentUseSnap = paymentUseRef ? await tx.get(paymentUseRef) : null;
     const facilityDocRef = admin.firestore().collection('facilities').doc(facilityId);
     const facilitySnap = await tx.get(facilityDocRef);
+    const unitRef = unitId ? facilityDocRef.collection('units').doc(unitId) : null;
+    const unitSnap = unitRef ? await tx.get(unitRef) : null;
+    const holdRef = unitId ? unitHoldRef(facilityId, unitId) : null;
+    const holdSnap = holdRef ? await tx.get(holdRef) : null;
+
+    const freshData = (freshReservation.data() || {}) as Record<string, any>;
+    if (freshReservation.exists && freshData.moveInToken !== token) {
+      throw new functions.https.HttpsError('permission-denied', 'Invalid token');
+    }
+    // Before the reservation's state: a payment that completed this very
+    // reservation is used, not refunded.
+    if (paymentUseSnap?.exists) {
+      const used = (paymentUseSnap.data() || {}) as Record<string, any>;
+      if (used.refund) return { kind: 'refund-decided', record: used };
+      functions.logger.warn('Public move-in: payment already used', {
+        facilityId,
+        reservationId,
+        paymentIntentId: verifiedPaymentIntentId,
+        usedByReservationId: used.reservationId,
+      });
+      throw new functions.https.HttpsError('failed-precondition', PAYMENT_ALREADY_USED_MESSAGE);
+    }
+    if (!freshReservation.exists) {
+      return refuse('reservation-closed', new functions.https.HttpsError('not-found', 'Reservation not found'));
+    }
+    const freshStatus = String(freshData.status || '');
+    if (freshStatus === 'completed' && verifiedPaymentIntentId && freshData.paymentIntentId === verifiedPaymentIntentId) {
+      // Completed with this payment before its use was recorded.
+      throw new functions.https.HttpsError('failed-precondition', PAYMENT_ALREADY_USED_MESSAGE);
+    }
+    if (
+      freshStatus !== 'pending' &&
+      freshStatus !== 'confirmed' &&
+      !(paymentVerified && freshStatus === 'expired')
+    ) {
+      return refuse(
+        'reservation-closed',
+        new functions.https.HttpsError('failed-precondition', 'Reservation is not active'),
+      );
+    }
+
+    if (unitSnap && !unitSnap.exists) {
+      return refuse('unit-missing', new functions.https.HttpsError('not-found', 'Reserved unit not found'));
+    }
+    const freshUnit = (unitSnap?.data() || null) as Record<string, any> | null;
+    if (freshUnit && unitIsTaken(freshUnit)) {
+      return refuse(
+        'unit-taken',
+        new functions.https.HttpsError('failed-precondition', 'Unit is no longer available'),
+      );
+    }
+    // A hold that lapsed (checkout extends it past payment, checkoutHold.ts)
+    // lets another renter hold the unit; theirs is honoured. Read here, not
+    // before the transaction, so it cannot be taken between the check and the
+    // move-in.
+    const hold = (holdSnap?.data() || null) as Record<string, any> | null;
+    const heldUntil = timestampToDate(hold?.expiresAt);
+    const heldByAnother = Boolean(
+      hold && hold.reservationId !== String(reservationId) && heldUntil && heldUntil > new Date(),
+    );
+    const ownHoldLapsed = (timestampToDate(freshData.expiresAt)?.getTime() ?? Infinity) < Date.now();
+    if (ownHoldLapsed && heldByAnother) {
+      return refuse(
+        'unit-taken',
+        new functions.https.HttpsError('failed-precondition', 'Unit is not currently available'),
+      );
+    }
+    const reviewReason = freshUnit ? moveInReviewReasonFor(freshUnit, enabledUnitTypes) : null;
+    if (reviewReason && !paymentVerified) {
+      throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
+    }
+
     const facilityOwnerUid = (facilitySnap.data() as Record<string, any> | undefined)?.ownerUid || 'publicMoveIn';
 
     // If this move-in originated from tenant portal, link the new tenant record
@@ -1375,9 +1758,9 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
         const sourceEmailLower = (sourceTenantData.emailLower || '').toString().trim().toLowerCase();
         const sourcePortalEnabled = sourceTenantData.portalEnabled === true;
         if (!sourcePortalEnabled || sourceEmailLower !== normalizedEmail) {
-          throw new functions.https.HttpsError(
-            'permission-denied',
-            'Portal-linked move-in validation failed',
+          return refuse(
+            'portal-link',
+            new functions.https.HttpsError('permission-denied', 'Portal-linked move-in validation failed'),
           );
         }
         const sourceAccessCode = (sourceTenantData.portalAccessCode || '').toString().trim();
@@ -1558,13 +1941,15 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     });
 
     // Update unit status
-    if (unitId) {
-      const unitRef = admin.firestore()
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('units')
-        .doc(unitId);
-
+    if (unitRef && freshUnit) {
+      // A renter now occupies it, so it must show where rented units show. An
+      // archived unit is left out of Units, the stats and the reports (and
+      // nothing in the app restores one); an internal-use unit is left out of
+      // occupancy and revenue. Either hid a tenant who is being billed.
+      const unitChanges: MoveInUnitChanges = {
+        restored: isArchivedForOnlineRental(freshUnit),
+        internalUseCleared: isInternalUseUnit(freshUnit),
+      };
       tx.update(unitRef, {
         status: 'occupied',
         tenantId: tenantRef.id,
@@ -1572,7 +1957,55 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
         moveInDate: moveInDate,
         updatedAt: nowTs,
         updatedBy: 'publicMoveIn',
+        ...(unitChanges.restored
+          ? {
+            archived: false,
+            isActive: true,
+            archivedAt: admin.firestore.FieldValue.delete(),
+            archivedByUid: admin.firestore.FieldValue.delete(),
+          }
+          : {}),
+        ...(unitChanges.internalUseCleared ? { internalUse: false } : {}),
       });
+      if (unitChanges.internalUseCleared) {
+        // Logged as UnitService.updateUnit logs it: internal use moves
+        // reported occupancy, so the change is on record whoever makes it.
+        tx.set(facilityDocRef.collection('auditLogs').doc(), {
+          eventType: 'unit.internalUseChanged',
+          actorUid: 'system',
+          facilityId,
+          targetType: 'unit',
+          targetId: unitRef.id,
+          tenantId: tenantRef.id,
+          before: { internalUse: true },
+          after: { internalUse: false },
+          metadata: {
+            unitNumber: displayUnitNumber,
+            source: 'publicMoveIn',
+            reservationId: String(reservationId),
+          },
+          timestamp: nowTs,
+        });
+      }
+
+      // Reached only when paid (unpaid ones were refused above). Written with
+      // the tenancy, so the owner cannot miss it.
+      if (reviewReason) {
+        tx.set(
+          onlineMoveInReviewRef(facilityId, String(reservationId)),
+          onlineMoveInReviewAlert({
+            facilityId,
+            tenantId: tenantRef.id,
+            tenantName: name.trim(),
+            unitId: unitRef.id,
+            unitNumber: displayUnitNumber,
+            reason: reviewReason,
+            unitChanges,
+            reservationId: String(reservationId),
+            paymentIntentId: verifiedPaymentIntentId,
+          }),
+        );
+      }
     }
 
     if (paymentUseRef) {
@@ -1588,6 +2021,13 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       });
     }
 
+    // The unit is rented, so this reservation's hold (or a lapsed one) goes
+    // with the move-in, in the same commit. Another renter's live hold is
+    // left for them to end; a delete after the commit removed any hold there.
+    if (holdRef && hold && !heldByAnother) {
+      tx.delete(holdRef);
+    }
+
     // Update reservation status
     tx.update(reservationRef, {
       status: 'completed',
@@ -1600,24 +2040,36 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     });
 
     return {
+      kind: 'moved-in',
       tenantId: tenantRef.id,
       contractId: contractRef.id,
+      reviewReason,
     };
   });
 
-  const { tenantId, contractId } = transactionResult;
+  if (transactionResult.kind === 'refused') {
+    await refusePaid(transactionResult.refusal, transactionResult.unpaidError);
+  }
+  if (transactionResult.kind === 'refund-decided') {
+    // A refund decided by a completion racing this one: finish it.
+    await resumePaidMoveInRefund(
+      { facilityId, connectAccountId },
+      String(verifiedPaymentIntentId),
+      transactionResult.record,
+    );
+  }
+  if (transactionResult.kind !== 'moved-in') {
+    throw new functions.https.HttpsError('internal', 'Move-in could not be completed');
+  }
+  const { tenantId, contractId, reviewReason } = transactionResult;
 
-  // Reached only when paid (unpaid ones were refused above).
-  if (unitNotOfferedReason && unitId) {
-    await notifyOwnerOfMoveInToUnitNotOffered({
+  if (reviewReason) {
+    functions.logger.warn('Paid online move-in completed into a unit no longer offered online', {
       facilityId,
       tenantId,
-      tenantName: name.trim(),
       unitId,
-      unitNumber: displayUnitNumber,
-      reason: unitNotOfferedReason,
-      reservationId: String(reservationId),
-      paymentIntentId: verifiedPaymentIntentId,
+      reason: reviewReason,
+      reservationId,
     });
   }
 
@@ -1686,22 +2138,6 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       );
     } catch (apErr: any) {
       functions.logger.warn('Public move-in: autopay notification failed', { message: apErr?.message });
-    }
-  }
-
-  // Best-effort cleanup of active checkout hold.
-  if (unitId) {
-    const holdRef = admin.firestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .collection('mapEngine')
-      .doc('activeHolds')
-      .collection('items')
-      .doc(unitId);
-    try {
-      await holdRef.delete();
-    } catch (e) {
-      functions.logger.warn('Failed to clear map hold after move-in', { facilityId, unitId });
     }
   }
 

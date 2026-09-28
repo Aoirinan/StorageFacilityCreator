@@ -8,6 +8,7 @@ import {
   enabledOnlineUnitTypes,
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
+  unitTypeOf,
 } from '@sfc/functions-shared';
 import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './secrets';
 import { enforceAppCheckOrThrow, enforceRateLimit, writeAuditLog } from './guardrails';
@@ -440,7 +441,8 @@ export const tenantPortalListAvailableUnits = functions.https.onCall(async (data
     units.push({
       id: doc.id,
       unitNumber: String(d.unitNumber ?? ''),
-      unitType: String(d.unitType ?? 'standard'),
+      // Read as isOfferedToPortalTenant read it, so the type shown is the type checked.
+      unitType: unitTypeOf(d),
       monthlyRate,
     });
   });

@@ -322,6 +322,7 @@ export {
   isUnitTypeOfferedOnline,
   isUnlistedUnit,
   unitNotOfferedOnlineReason,
+  unitTypeOf,
 } from './units/onlineRental';
 
 export type { UnitLabelOptions, UnitLabelStyle } from './units/unitLabel';

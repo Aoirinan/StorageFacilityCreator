@@ -60,9 +60,23 @@ export function enabledOnlineUnitTypes(publicSettings: UnitData | null | undefin
 }
 
 /**
+ * [unit]'s type as the app's UnitModel reads it (textFromField, else
+ * 'standard'): a string as stored, a number or boolean as its text, and
+ * anything else, missing included, 'standard'. This read String(unitType ||
+ * ''), so a unit with no type was '' here and 'standard' in the app: the
+ * app's publish offered it and the hold refused it.
+ */
+export function unitTypeOf(unit: UnitData): string {
+  const raw = unit.unitType;
+  if (typeof raw === 'string') return raw;
+  if (typeof raw === 'number' || typeof raw === 'boolean') return String(raw);
+  return 'standard';
+}
+
+/**
  * Whether [unit]'s type is one the owner rents online. The public map marks
  * other types not rentable, but a direct hold call used to accept them.
  */
 export function isUnitTypeOfferedOnline(unit: UnitData, enabledTypes: string[]): boolean {
-  return enabledTypes.length === 0 || enabledTypes.includes(String(unit.unitType || ''));
+  return enabledTypes.length === 0 || enabledTypes.includes(unitTypeOf(unit));
 }
