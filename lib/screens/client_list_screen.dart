@@ -30,7 +30,11 @@ import 'package:sfcapp/screens/tenant_edit_screen.dart';
 import 'package:sfcapp/services/late_logic_service.dart';
 import 'package:sfcapp/services/permission_service.dart';
 import 'package:sfcapp/models/permission_model.dart';
+import 'package:sfcapp/services/sms_consent_service.dart';
+import 'package:sfcapp/utils/sms_consent.dart';
 import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
+import 'package:sfcapp/widgets/sms_consent_bulk_dialog.dart';
+import 'package:sfcapp/widgets/sms_consent_chip.dart';
 
 /// Grace period for delinquency badge (uses facility Billing Settings when available).
 final _facilityGracePeriodProvider = FutureProvider.family<int, String>((ref, facilityId) async {
@@ -473,7 +477,10 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                           color: cs.primary.withValues(alpha: 0.1),
                           borderRadius: BorderRadius.circular(8),
                         ),
-                        child: Row(
+                        child: Wrap(
+                          spacing: 8,
+                          runSpacing: 4,
+                          crossAxisAlignment: WrapCrossAlignment.center,
                           children: [
                             IconButton(
                               onPressed: () {
@@ -489,7 +496,6 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                               '${_selectedTenantIds.length} selected',
                               style: const TextStyle(fontWeight: FontWeight.bold),
                             ),
-                            const Spacer(),
                             Builder(
                               builder: (context) {
                                 final tenantsAsync = ref.watch(filteredTenantsProvider(_selectedFacilityId));
@@ -527,21 +533,12 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                                 );
                               },
                             ),
-                            const SizedBox(width: 8),
                             OutlinedButton.icon(
                               onPressed: _selectedTenantIds.isEmpty ? null : () => _inviteSelectedTenants(),
                               icon: const Icon(Icons.forward_to_inbox_outlined),
                               label: Text('Email invites (${_selectedTenantIds.length})'),
                             ),
-                            const SizedBox(width: 8),
-                            OutlinedButton.icon(
-                              onPressed: _selectedTenantIds.isEmpty
-                                  ? null
-                                  : () => _recordSmsConsentForSelected(),
-                              icon: const Icon(Icons.sms_outlined),
-                              label: Text('Record SMS consent (${_selectedTenantIds.length})'),
-                            ),
-                            const SizedBox(width: 8),
+                            _smsConsentMenu(),
                             ElevatedButton.icon(
                               onPressed: (_selectedTenantIds.isEmpty || !canDeleteTenant)
                                   ? null
@@ -781,7 +778,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                             );
                           }
 
-                          return ListView.builder(
+                          final list = ListView.builder(
                             itemCount: tenants.length,
                             itemBuilder: (context, index) {
                               final tenant = tenants[index];
@@ -796,6 +793,29 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                                 canDeleteTenant: canDeleteTenant && _selectedFacilityId != 'all',
                               );
                             },
+                          );
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                    AppConstants.spacingM, AppConstants.spacingS, AppConstants.spacingM, 0),
+                                child: Row(
+                                  children: [
+                                    const Icon(Icons.sms_outlined, size: 16, color: AppTheme.textSecondary),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                        smsReachLine(tenants),
+                                        key: const Key('sms-reach-line'),
+                                        style: const TextStyle(color: AppTheme.textSecondary),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Expanded(child: list),
+                            ],
                           );
                         },
                         loading: () => const Center(
@@ -968,6 +988,10 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
               'Rate: \$${tenant.monthlyRate.toStringAsFixed(2)}/month',
               style: const TextStyle(fontWeight: FontWeight.w500),
             ),
+            Padding(
+              padding: const EdgeInsets.only(top: AppConstants.spacingXS),
+              child: SmsConsentChip(tenant: tenant),
+            ),
             if (isLate && daysLate > 0)
               Container(
                 margin: const EdgeInsets.only(top: AppConstants.spacingXS),
@@ -1102,80 +1126,107 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
     );
   }
 
-  /// Records SMS consent against the selected tenants.
+  /// Tenants List > Select Multiple > SMS consent: records ([grant]) or
+  /// removes consent for the selected tenants.
   ///
-  /// For the operator who collected agreement on paper or in their old system
-  /// and has just imported the rent roll: without this they would have to open
-  /// each tenant in turn. The dialog states plainly what is being asserted,
-  /// because this is the record we would stand behind if a carrier or a tenant
-  /// ever asked why we texted them.
-  Future<void> _recordSmsConsentForSelected() async {
-    final tenantIds = _selectedTenantIds.toList();
-    if (tenantIds.isEmpty) return;
+  /// For the owner who collected agreement on leases or forms and now needs
+  /// it on record for everyone at once. Recording asks how and when they
+  /// agreed and has the owner confirm it, because this is the record we
+  /// stand behind if a carrier or a tenant asks why they were texted. A
+  /// tenant's own opt-out is never overridden, tenants with no phone number
+  /// that can take texts are skipped, and a consent already on file keeps its date.
+  Future<void> _changeSmsConsentForSelected({required bool grant}) async {
+    final facilityId = _selectedFacilityId;
+    if (!bulkSmsConsentAvailable(facilityId)) return;
+    final selected = _visibleSelectedTenants();
+    if (selected.isEmpty) return;
+    final facilityName =
+        (await ref.read(facilityProvider(facilityId).future))?.name ?? 'This facility';
+    if (!mounted) return;
 
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text('Record consent for ${tenantIds.length} '
-            '${tenantIds.length == 1 ? 'tenant' : 'tenants'}?'),
-        content: const Text(
-          'Only do this for tenants who have actually agreed to receive text '
-          'messages — on a signed agreement, a move-in form, or in writing. '
-          'It is dated today and is what we rely on if anyone asks why they '
-          'were texted. Tenants with no mobile number on file are skipped.',
+    final plan = planSmsConsentBulk(selected, grant: grant);
+    SmsConsentUpdate? update;
+    if (grant) {
+      update = await showRecordSmsConsentDialog(context, facilityName: facilityName, plan: plan);
+    } else if (await showRemoveSmsConsentDialog(context, facilityName: facilityName, plan: plan)) {
+      update = SmsConsentUpdate.remove(at: DateTime.now());
+    }
+    if (update == null || plan.toUpdate.isEmpty || !mounted) return;
+
+    try {
+      final result = await SmsConsentService.applyBulk(
+        facilityId: facilityId,
+        tenants: selected,
+        update: update,
+      );
+      if (!mounted) return;
+      ref.invalidate(facilityTenantsProvider(facilityId));
+      setState(() {
+        _isSelectionMode = false;
+        _selectedTenantIds.clear();
+      });
+      await showSmsConsentBulkResult(context, plan: result.plan, grant: grant);
+    } catch (e) {
+      if (!mounted) return;
+      // Part of a large selection may have been saved before the failure.
+      ref.invalidate(facilityTenantsProvider(facilityId));
+      final cause = e is SmsConsentPartialFailure ? e.cause : e;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(smsConsentBulkFailureMessage(
+            e, ErrorMessageHelper.getUserFriendlyMessage(cause))),
+        backgroundColor: AppTheme.error,
+        duration: const Duration(seconds: 8),
+      ));
+    }
+  }
+
+  /// The selected tenants the list is showing now. A search or area filter
+  /// can hide tenants that stay selected; bulk SMS consent acts only on
+  /// what the owner can see.
+  List<TenantModel> _visibleSelectedTenants() {
+    final facilityId = _selectedFacilityId;
+    if (!bulkSmsConsentAvailable(facilityId)) return const [];
+    final shown = ref.read(filteredTenantsProvider(facilityId)).value ?? const <TenantModel>[];
+    return visibleSelectedTenants(shown, _selectedTenantIds);
+  }
+
+  /// Selection bar > SMS consent (N): Record / Remove SMS consent. One
+  /// facility at a time: under All Facilities it is disabled and says why.
+  Widget _smsConsentMenu() {
+    final facilityId = _selectedFacilityId;
+    final oneFacility = bulkSmsConsentAvailable(facilityId);
+    final shown = oneFacility
+        ? (ref.watch(filteredTenantsProvider(facilityId)).value ?? const <TenantModel>[])
+        : const <TenantModel>[];
+    final count = visibleSelectedTenants(shown, _selectedTenantIds).length;
+    final menu = MenuAnchor(
+      menuChildren: [
+        MenuItemButton(
+          key: const Key('bulk-sms-consent-record'),
+          leadingIcon: const Icon(Icons.sms_outlined),
+          onPressed: () => _changeSmsConsentForSelected(grant: true),
+          child: const Text('Record SMS consent…'),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Record consent'),
-          ),
-        ],
+        MenuItemButton(
+          key: const Key('bulk-sms-consent-remove'),
+          leadingIcon: const Icon(Icons.sms_failed_outlined),
+          onPressed: () => _changeSmsConsentForSelected(grant: false),
+          child: const Text('Remove SMS consent…'),
+        ),
+      ],
+      builder: (context, controller, _) => OutlinedButton.icon(
+        key: const Key('bulk-sms-consent-menu'),
+        onPressed: !oneFacility || count == 0
+            ? null
+            : () => controller.isOpen ? controller.close() : controller.open(),
+        icon: const Icon(Icons.sms_outlined),
+        label: Text('SMS consent ($count)'),
       ),
     );
-
-    if (confirmed != true || !mounted) return;
-
-    var updated = 0;
-    var skipped = 0;
-    final now = DateTime.now();
-    for (final tenantId in tenantIds) {
-      try {
-        final tenant = await TenantService.getTenantById(_selectedFacilityId, tenantId);
-        final digits = (tenant?.phone ?? '').replaceAll(RegExp(r'[^\d]'), '');
-        if (digits.length < 10) {
-          skipped++;
-          continue;
-        }
-        await TenantService.updateTenant(
-          facilityId: _selectedFacilityId,
-          tenantId: tenantId,
-          // updateTenant clears smsOptOut and its date whenever a consent
-          // date is written, so opting in here cannot leave a stale opt-out.
-          smsOptInDate: now,
-        );
-        updated++;
-      } catch (_) {
-        skipped++;
-      }
-    }
-
-    if (!mounted) return;
-    setState(() {
-      _isSelectionMode = false;
-      _selectedTenantIds.clear();
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(skipped == 0
-            ? 'Consent recorded for $updated '
-                '${updated == 1 ? 'tenant' : 'tenants'}'
-            : 'Consent recorded for $updated; $skipped skipped for having no '
-                'mobile number on file'),
-      ),
+    if (oneFacility) return menu;
+    return Tooltip(
+      message: 'Pick one facility to record or remove SMS consent',
+      child: menu,
     );
   }
 

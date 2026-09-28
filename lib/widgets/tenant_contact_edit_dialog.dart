@@ -5,7 +5,9 @@ import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/utils/sms_consent.dart';
 import 'package:sfcapp/widgets/confirm_free_old_unit_dialog.dart';
+import 'package:sfcapp/widgets/sms_consent_checkbox.dart';
 import 'package:sfcapp/widgets/tenant_facility_unit_picker.dart';
 
 /// The tenant page's Contact Information edit (its pencil): name, email,
@@ -25,7 +27,11 @@ Future<void> editTenantContactInfo(
   final phoneCtrl = TextEditingController(text: tenant.phone);
   final unitCtrl = TextEditingController(text: tenant.unitNumber);
   final rateCtrl = TextEditingController(text: tenant.monthlyRate.toString());
-  bool smsConsent = tenant.smsOptInDate != null && !tenant.smsOptOut;
+  // As saved; the box changes the record only when it is flipped, so a
+  // re-save keeps the date the tenant agreed.
+  final savedConsent = smsConsentState(tenant);
+  bool smsConsent = savedConsent == SmsConsentState.consented;
+  SmsConsentMethod? consentMethod;
   // The unit picked from the list, linked by id; null when typed.
   String? pickedUnitId;
   final formKey = GlobalKey<FormState>();
@@ -70,16 +76,18 @@ Future<void> editTenantContactInfo(
             }),
             const SizedBox(height: 12),
             Consumer(builder: (ctx2, ref2, _) {
-              final facilityName = ref2.watch(facilityProvider(tenant.facilityId)).value?.name ?? 'this facility';
-              return Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(color: AppTheme.backgroundSecondary, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderLight)),
-                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Checkbox(value: smsConsent && !tenant.smsOptOut, onChanged: tenant.smsOptOut ? null : (v) => setS(() => smsConsent = v ?? false)),
-                  Expanded(child: Padding(padding: const EdgeInsets.only(top: 10), child: tenant.smsOptOut
-                      ? Text('Tenant opted out of SMS.', style: TextStyle(fontSize: 12, color: AppTheme.error))
-                      : Text('SMS consent for $facilityName', style: const TextStyle(fontSize: 12)))),
-                ]),
+              final facility = ref2.watch(facilityProvider(tenant.facilityId)).value;
+              final facilityName = facility?.name ?? 'This facility';
+              return SmsConsentCheckbox(
+                compact: true,
+                tenant: tenant,
+                startNumber: textingStartNumber(facility),
+                facilityName: facilityName,
+                savedState: savedConsent,
+                value: smsConsent,
+                onChanged: (v) => setS(() => smsConsent = v),
+                method: consentMethod,
+                onMethodChanged: (m) => setS(() => consentMethod = m),
               );
             }),
           ]),
@@ -99,7 +107,7 @@ Future<void> editTenantContactInfo(
       facilityId: tenant.facilityId, tenantId: tenant.id,
       name: nameCtrl.text.trim(), email: emailCtrl.text.trim(), phone: phoneCtrl.text.trim(),
       unitNumber: unitCtrl.text.trim(), unitId: pickedUnitId, monthlyRate: double.parse(rateCtrl.text.trim()),
-      smsOptInDate: smsConsent && !tenant.smsOptOut ? DateTime.now() : null,
+      smsConsent: smsConsentChange(tenant: tenant, ticked: smsConsent, method: consentMethod),
       // As in Edit Tenant: a different unit asks before freeing the old one.
       confirmFreeOldUnit: (oldUnitNumber) => confirmFreeOldUnitDialog(context,
           tenantName: tenant.name, oldUnitNumber: oldUnitNumber, newUnitNumber: unitCtrl.text.trim()),

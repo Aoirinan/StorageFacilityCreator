@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
+import 'package:sfcapp/utils/sms_consent.dart';
 import 'package:sfcapp/utils/sms_consent_import.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sfcapp/models/unit_model.dart';
@@ -383,11 +384,13 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
 
     var consented = 0;
     var consentedWithoutPhone = 0;
+    var refused = 0;
     for (final row in _parsedRows) {
       final consent = parseSmsConsent(
         consentValue: row['smsConsent'] as String?,
         consentDateValue: row['smsConsentDate'] as String?,
       );
+      if (consent.optedOut) refused++;
       if (!consent.optedIn) continue;
       consented++;
       if (!consentIsUsable(optedIn: true, phone: row['phone'] as String?)) {
@@ -398,7 +401,7 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
     final mappedConsent = (_columnMapping['smsConsent'] ?? '').isNotEmpty ||
         (_columnMapping['smsConsentDate'] ?? '').isNotEmpty;
 
-    final String message;
+    String message;
     if (!mappedConsent) {
       message = 'No SMS consent column mapped, so these tenants are imported as '
           'not opted in and automatic texts will not go to them. That is the '
@@ -409,11 +412,18 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
           'not go to them. Email reminders are unaffected.';
     } else {
       final phoneNote = consentedWithoutPhone > 0
-          ? ' $consentedWithoutPhone of them have no usable mobile number, so '
-              'those still cannot be texted.'
+          ? ' $consentedWithoutPhone of them have no phone number that can take '
+              'texts, so those still cannot be texted.'
           : '';
       message = '$consented of ${_parsedRows.length} tenants record SMS consent '
           'and can receive automatic texts.$phoneNote';
+    }
+    if (refused > 0) {
+      message += ' $refused ${refused == 1 ? 'row says' : 'rows say'} the tenant '
+          'opted out ("opted out", "stop", "declined", ...): imported as opted '
+          'out, and only the tenant can opt back in, by texting START. A plain '
+          '"no" or "N" is imported as not recorded, so consent can still be '
+          'recorded later.';
     }
 
     return Card(
@@ -483,6 +493,8 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
           smsOptInDate: consent.optedIn
               ? (consent.consentedAt ?? DateTime.now())
               : null,
+          smsConsentSource: SmsConsentSources.csvImport,
+          smsRefused: consent.optedOut,
           // Missing contact details are stored as blank. Placeholders like
           // pending@example.com looked harmless but sent that tenant's
           // receipts to a real stranger's mailbox, and made every later

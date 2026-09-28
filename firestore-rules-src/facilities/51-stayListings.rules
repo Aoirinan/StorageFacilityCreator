@@ -1,0 +1,31 @@
+      // Stays listings. List fields (rates, tax lines, checklists) cannot be
+      // checked element by element in rules, so only the callables write them.
+      match /stayListings/{listingId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if false; // staysSaveListing / staysBulkCreateRvSites validate list elements
+      }
+
+      // Wifi, door and gate codes, directions and house rules: staff read,
+      // owners and managers write whitelisted string keys. Never public, never
+      // in the export feed.
+      match /stayListingAccess/{listingId} {
+        function accessStr(k, max) {
+          return request.resource.data.get(k, '') is string && request.resource.data.get(k, '').size() <= max;
+        }
+        allow read: if isFacilityStaff(facilityId);
+        function listingAccessOk() {
+          return isFacilityOwnerOrManager(facilityId)
+            && request.resource.data.keys().hasOnly(['facilityId', 'listingId', 'wifiName', 'wifiPassword', 'staticDoorCode',
+                 'lockboxCode', 'gateCode', 'parkingNotes', 'trashNotes', 'checkoutInstructions', 'directionsUrl', 'houseRules',
+                 'updatedAt', 'updatedBy'])
+            && request.resource.data.facilityId == facilityId && request.resource.data.listingId == listingId
+            && accessStr('wifiName', 100) && accessStr('wifiPassword', 100) && accessStr('staticDoorCode', 40)
+            && accessStr('lockboxCode', 40) && accessStr('gateCode', 40) && accessStr('parkingNotes', 2000)
+            && accessStr('trashNotes', 2000) && accessStr('checkoutInstructions', 4000) && accessStr('directionsUrl', 500)
+            && accessStr('houseRules', 4000)
+            && request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time;
+        }
+        allow create: if listingAccessOk() && stayModuleOn(facilityId);
+        allow update: if listingAccessOk();
+        allow delete: if false;
+      }

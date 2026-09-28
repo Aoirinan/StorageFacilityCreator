@@ -378,7 +378,7 @@ Edit the toll-free verification and replace these fields:
 
 **Production message sample**
 
-> Caprock Storage: Hi Doug, a reminder that rent for unit 2 of $130.00 is due
+> (A customer facility's name): Hi Doug, a reminder that rent for unit 2 of $130.00 is due
 > Oct 1. Reply STOP to opt out, HELP for help.
 
 **Opt-in type / evidence**
@@ -402,7 +402,7 @@ exact unchecked consent checkbox a tenant sees, rather than
 
 **Volume**
 
-1,000 is the current registered figure. One facility of Caprock's size sending
+1,000 is the current registered figure. One customer facility sending
 a monthly rent reminder plus receipts is a few hundred segments a month, so
 this binds at roughly a dozen active facilities. Raise it in the same edit.
 
@@ -413,3 +413,12 @@ then the brand, the campaign and the consent all belong to the business whose
 tenants are being texted. The shared toll-free is the right answer for a trial
 and the wrong answer at scale. The app now asks operators to start their own
 registration during the trial, for exactly this reason.
+
+Since 2026-09-27 (owner decision) the send path no longer stops shared-number
+texting when a trial ends. Any facility whose account is in good standing
+(trialing, active, past-due retry, or billing-exempt) keeps sending on the
+toll-free whether or not it has filed its own registration; cancelled,
+suspended and unapproved accounts are refused. The per-facility monthly cap
+(`appConfig/outbound.sharedNumberMonthlyCapPerFacility`, default 500) and all
+consent/STOP rules still apply. See
+`functions-messaging-twilio/src/sharedNumberPolicy.ts`.

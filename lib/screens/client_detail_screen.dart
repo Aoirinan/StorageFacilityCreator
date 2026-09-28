@@ -25,6 +25,7 @@ import '../providers/payment_provider.dart';
 import '../providers/tenant_provider.dart';
 import '../providers/ledger_provider.dart';
 import 'package:sfcapp/providers/unit_label_provider.dart';
+import 'package:sfcapp/utils/sms_consent.dart';
 import 'package:sfcapp/utils/unit_label.dart';
 import '../models/ledger_entry_model.dart';
 import '../theme/app_theme.dart';
@@ -1092,10 +1093,19 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                       _buildInfoItem(context, icon: Icons.phone_outlined, label: 'Phone', value: _valueOrPlaceholder(tenant.phone)),
                       _buildInfoItem(context, icon: Icons.home_work_outlined, label: 'Unit', value: _valueOrPlaceholder(unitLabel, fallback: 'No unit assigned')),
                       _buildInfoItem(context, icon: Icons.attach_money, label: 'Monthly Rate', value: _formatCurrency(tenant.monthlyRate)),
-                      if (tenant.smsOptOut)
-                        _buildInfoItem(context, icon: Icons.sms_failed_outlined, label: 'SMS', value: 'Opted out', valueColor: AppTheme.error)
-                      else if (tenant.smsOptInDate != null)
-                        _buildInfoItem(context, icon: Icons.sms_outlined, label: 'SMS', value: 'Opted in'),
+                      // Always shown, so the owner can see who cannot be
+                      // texted yet (Edit Contact Information records it).
+                      _buildInfoItem(
+                        context,
+                        icon: canReceiveTexts(tenant) ? Icons.sms_outlined : Icons.sms_failed_outlined,
+                        label: 'SMS',
+                        value: smsConsentSummary(tenant),
+                        valueColor: smsConsentState(tenant) == SmsConsentState.optedOut
+                            ? AppTheme.error
+                            : canReceiveTexts(tenant)
+                                ? null
+                                : AppTheme.textSecondary,
+                      ),
                     ],
                   ),
                 ),

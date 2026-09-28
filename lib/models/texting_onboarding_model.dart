@@ -181,6 +181,12 @@ class TextingOnboardingSnapshot {
     this.campaignPending = false,
   });
 
+  /// Whether "Reserve number & submit" may run. It buys a phone number
+  /// before the brand step, and the brand step refuses a bundle Twilio's
+  /// pre-check flagged, so a flagged bundle would buy a number for nothing.
+  bool get readyToReserveNumber =>
+      bundleReady && (bundleIssues?.trim().isEmpty ?? true);
+
   bool get isUnderReview =>
       status == TextingRegistrationStatus.submitted ||
       status == TextingRegistrationStatus.pending;

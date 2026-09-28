@@ -146,7 +146,7 @@ class DelinquencyAutomationService {
       lienDays: billingSettings['lienDays'] ?? 30,
       lockoutDays: billingSettings['lockoutDays'] ?? 45,
       enableAutoLateFees: billingSettings['enableAutoLateFees'] ?? true,
-      enableAutoNotices: billingSettings['enableAutoNotices'] ?? true,
+      enableAutoNotices: billingSettings['enableAutoNotices'] ?? false,
       enableAutoLockout: billingSettings['enableAutoLockout'] ?? false,
     );
   }
@@ -653,7 +653,7 @@ class DelinquencyRules {
     this.lienDays = 30,
     this.lockoutDays = 45,
     this.enableAutoLateFees = true,
-    this.enableAutoNotices = true,
+    this.enableAutoNotices = false,
     this.enableAutoLockout = false,
   });
 }

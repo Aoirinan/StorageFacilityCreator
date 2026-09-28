@@ -240,6 +240,96 @@ test('tenant docs: only a super admin deletes directly; owners and managers use 
   );
 });
 
+async function seedTenantSms(fields) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('facilities').doc(FACILITY_ID).set({
+      ownerUid: OWNER_UID,
+      roles: { [OWNER_UID]: 'owner', [STAFF_UID]: 'employee' },
+    });
+    await db.collection('facilities').doc(FACILITY_ID).collection('tenants').doc(TENANT_ID).set({
+      facilityId: FACILITY_ID,
+      name: 'Test Tenant',
+      isActive: true,
+      ...fields,
+    });
+  });
+}
+
+const ownerTenant = () =>
+  testEnv
+    .authenticatedContext(OWNER_UID)
+    .firestore()
+    .collection('facilities')
+    .doc(FACILITY_ID)
+    .collection('tenants')
+    .doc(TENANT_ID);
+
+// What the app writes when staff record consent (SmsConsentUpdate.grant).
+const staffGrant = {
+  smsOptOut: false,
+  smsOptOutDate: deleteField(),
+  smsOptInDate: new Date(),
+  smsConsentStatus: 'opted_in',
+  smsConsentSource: 'staff_recorded',
+};
+
+test("tenant SMS: staff cannot reverse a tenant's own opt-out", async () => {
+  // A save built from a copy of the tenant read before their STOP arrived
+  // must not opt them back in. The server's START handler uses the Admin SDK.
+  const tenantOptOuts = [
+    { smsOptOut: true, smsConsentStatus: 'opted_out', smsConsentSource: 'inbound_stop' },
+    // An online move-in that declined texts: no source, no status.
+    { smsOptOut: true },
+    { smsOptOut: true, smsConsentStatus: 'opted_out', smsConsentSource: 'csv_opt_out' },
+    { smsOptOut: false, smsConsentStatus: 'opted_out', smsConsentSource: 'inbound_stop' },
+  ];
+  for (const stored of tenantOptOuts) {
+    await testEnv.clearFirestore();
+    await seedTenantSms(stored);
+    await assertFails(ownerTenant().update(staffGrant));
+    if (stored.smsOptOut) await assertFails(ownerTenant().update({ smsOptOut: false }));
+    if (stored.smsConsentStatus === 'opted_out') {
+      await assertFails(ownerTenant().update({ smsConsentStatus: deleteField() }));
+    }
+    await assertFails(ownerTenant().update({ smsConsentStatus: 'opted_in' }));
+    await assertFails(ownerTenant().update({ smsConsentSource: 'staff_removed' }));
+    if (stored.smsOptOut) await assertFails(ownerTenant().update({ smsOptOut: deleteField() }));
+    // Other edits to the tenant still save.
+    await assertSucceeds(ownerTenant().update({ name: 'Renamed', phone: '9035550100' }));
+  }
+
+  // A super admin can.
+  await testEnv.clearFirestore();
+  await seedTenantSms(tenantOptOuts[0]);
+  await assertSucceeds(
+    testEnv
+      .authenticatedContext('admin-user', { superadmin: true })
+      .firestore()
+      .collection('facilities')
+      .doc(FACILITY_ID)
+      .collection('tenants')
+      .doc(TENANT_ID)
+      .update(staffGrant),
+  );
+});
+
+test('tenant SMS: staff can record consent, remove it, and record it again', async () => {
+  await seedTenantSms({});
+  await assertSucceeds(ownerTenant().update(staffGrant));
+  // Staff removal (SmsConsentUpdate.remove).
+  await assertSucceeds(
+    ownerTenant().update({
+      smsOptOut: true,
+      smsOptOutDate: new Date(),
+      smsConsentStatus: 'opted_out',
+      smsConsentSource: 'staff_removed',
+    }),
+  );
+  // Their own removal is theirs to reverse.
+  await assertSucceeds(ownerTenant().update(staffGrant));
+});
+
 test('facility docs: only a super admin deletes directly; owners use the callable', async () => {
   // The app's own facility delete skipped subcollections it couldn't delete
   // (tenants, now super-admin only) and then deleted the facility doc,

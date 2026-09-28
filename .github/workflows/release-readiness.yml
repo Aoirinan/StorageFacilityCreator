@@ -23,6 +23,13 @@ jobs:
         run: node scripts/build_firestore_rules.cjs --check
       - name: Backfill and migration script planners
         run: node --test scripts/backfill-tenant-unit-id.test.mjs scripts/renumber-units-by-area.test.mjs
+      # Stays code never touches tenants, units, ledgers, payments or
+      # invoices, and never sends anything; the self-test proves the check
+      # still catches each planted violation.
+      - name: Stays isolation check self-test
+        run: node scripts/check_stays_isolation.cjs --self-test
+      - name: Stays isolation check
+        run: node scripts/check_stays_isolation.cjs
 
   email-limits-parity:
     runs-on: ubuntu-latest
@@ -204,6 +211,8 @@ jobs:
           - functions-outbound-email
           - functions-public-website
           - functions-tenant-lifecycle
+          # Stays (short-term rentals): night locks, bookings, channel sync.
+          - functions-stays
           # Not deployed, but its own tests (the permanent tenant delete
           # rules and their Dart parity table among them) ran nowhere else.
           - functions-shared
@@ -239,6 +248,8 @@ jobs:
           - functions-admin
           - functions-integrations
           - functions-tenant-lifecycle
+          # 20 parallel bookings of the same nights: exactly one may win.
+          - functions-stays
     defaults:
       run:
         working-directory: ${{ matrix.package }}

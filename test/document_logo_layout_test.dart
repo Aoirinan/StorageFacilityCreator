@@ -78,7 +78,7 @@ void main() {
   group('FacilityModel.documentLogo', () {
     test('reads the stored map, and defaults when the facility has none', () {
       final withLayout = FacilityModel.fromFirestore(_Snap('with', {
-        'name': 'Caprock Storage',
+        'name': 'Test Storage',
         'ownerUid': 'o',
         'createdAt': Timestamp.now(),
         'documentLogo': {'height': 96, 'position': 'above', 'showName': false},

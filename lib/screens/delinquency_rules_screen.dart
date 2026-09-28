@@ -34,7 +34,9 @@ class _DelinquencyRulesScreenState extends ConsumerState<DelinquencyRulesScreen>
   late TextEditingController _lockoutDaysController;
 
   bool _enableAutoLateFees = true;
-  bool _enableAutoNotices = true;
+  // Off until the operator switches it on; the server reads an unset value
+  // the same way (functions-automation/src/delinquencyNoticePolicy.ts).
+  bool _enableAutoNotices = false;
   bool _enableAutoLockout = false;
 
   @override
@@ -81,7 +83,7 @@ class _DelinquencyRulesScreenState extends ConsumerState<DelinquencyRulesScreen>
           _lienDaysController.text = (settings['lienDays'] ?? 30).toString();
           _lockoutDaysController.text = (settings['lockoutDays'] ?? 45).toString();
           _enableAutoLateFees = settings['enableAutoLateFees'] ?? true;
-          _enableAutoNotices = settings['enableAutoNotices'] ?? true;
+          _enableAutoNotices = settings['enableAutoNotices'] ?? false;
           _enableAutoLockout = settings['enableAutoLockout'] ?? false;
         });
       }

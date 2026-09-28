@@ -203,6 +203,27 @@ const _awaitingApprovalSnapshot = TextingOnboardingSnapshot(
   bundleProductStatus: 'in-review',
 );
 
+/// At "Review and submit" (details and plan saved), by what Twilio's
+/// pre-check said about the business details.
+/// `bundleApproved` defaults to true so these cases isolate the pre-check;
+/// the approval lock has its own test.
+TextingOnboardingSnapshot _atReview({
+  required bool bundleReady,
+  String? bundleIssues,
+  bool bundleApproved = true,
+}) =>
+    TextingOnboardingSnapshot(
+      status: TextingRegistrationStatus.draft,
+      platformApproved: false,
+      businessDetails: _business,
+      useCases: const ['Payment reminders'],
+      consentMethods: const ['online_form'],
+      hasTrustProfile: true,
+      bundleReady: bundleReady,
+      bundleApproved: bundleApproved,
+      bundleIssues: bundleIssues,
+    );
+
 const _rejectedSnapshot = TextingOnboardingSnapshot(
   status: TextingRegistrationStatus.rejected,
   platformApproved: false,
@@ -447,6 +468,70 @@ void main() {
 
       expect(find.text("Enter the representative's first name."), findsOneWidget);
       expect(find.text("Enter the representative's last name."), findsOneWidget);
+    });
+
+    group('Reserve number & submit', () {
+      // It buys a phone number before the brand step, and the brand step
+      // refuses a bundle Twilio's pre-check flagged: pressing it then paid
+      // for a number the facility could not use.
+      Future<_FakeRepository> openReview(
+          WidgetTester tester, TextingOnboardingSnapshot snapshot) async {
+        final repository = _FakeRepository({'facility-1': snapshot});
+        await _pumpScreen(tester, repository);
+        expect(find.byKey(const Key('review-stage')), findsOneWidget);
+        return repository;
+      }
+
+      FilledButton reserve(WidgetTester tester) =>
+          tester.widget<FilledButton>(find.byKey(const Key('primary-stage-action')));
+
+      testWidgets('is locked, with the reason, when the pre-check flagged the details',
+          (tester) async {
+        final repository = await openReview(
+            tester, _atReview(bundleReady: false, bundleIssues: 'Address could not be verified'));
+        expect(find.text('Reserve number & submit'), findsOneWidget);
+        expect(reserve(tester).onPressed, isNull);
+        expect(find.byKey(const Key('reserve-blocked')), findsOneWidget);
+        expect(find.textContaining(reserveNumberBlockedMessage), findsOneWidget);
+        expect(find.textContaining('Flagged: Address could not be verified'), findsOneWidget);
+        expect(repository.provisionCount, 0);
+      });
+
+      testWidgets('is locked while the bundle has not passed the pre-check, and says why',
+          (tester) async {
+        // Also what a Twilio dry-run setup shows: it never sets bundleReady.
+        await openReview(tester, _atReview(bundleReady: false));
+        expect(reserve(tester).onPressed, isNull);
+        expect(find.text(reserveNumberNotCheckedMessage), findsOneWidget);
+        expect(find.textContaining('dry-run'), findsOneWidget);
+      });
+
+      testWidgets('is locked when ready but issues are still listed', (tester) async {
+        await openReview(tester, _atReview(bundleReady: true, bundleIssues: 'EIN mismatch'));
+        expect(reserve(tester).onPressed, isNull);
+      });
+
+      testWidgets('is open once the pre-check passed', (tester) async {
+        await openReview(tester, _atReview(bundleReady: true));
+        expect(reserve(tester).onPressed, isNotNull);
+        expect(find.byKey(const Key('reserve-blocked')), findsNothing);
+      });
+
+      testWidgets('stays locked after the pre-check until Twilio approves both bundles',
+          (tester) async {
+        await openReview(
+            tester, _atReview(bundleReady: true, bundleApproved: false));
+        expect(reserve(tester).onPressed, isNull);
+        expect(find.byKey(const Key('awaiting-bundle-approval')), findsOneWidget);
+        expect(find.byKey(const Key('reserve-blocked')), findsNothing);
+      });
+
+      test('readyToReserveNumber', () {
+        expect(_atReview(bundleReady: true).readyToReserveNumber, isTrue);
+        expect(_atReview(bundleReady: true, bundleIssues: '  ').readyToReserveNumber, isTrue);
+        expect(_atReview(bundleReady: false).readyToReserveNumber, isFalse);
+        expect(_atReview(bundleReady: true, bundleIssues: 'x').readyToReserveNumber, isFalse);
+      });
     });
 
     testWidgets('opens pending registration on status dashboard',

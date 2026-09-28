@@ -1,7 +1,14 @@
 ﻿import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import * as crypto from 'crypto';
-import { formatPhoneNumber, isSuperAdmin, isCustomerRecipientAllowed, getOutboundGateConfig } from '@sfc/functions-shared';
+import {
+  formatPhoneNumber,
+  isSuperAdmin,
+  decideCustomerRecipient,
+  isCustomerRecipientAllowed,
+  getOutboundGateConfig,
+  sendFacilityEmailWithCompliance,
+} from '@sfc/functions-shared';
 import {
   buildA2PRejectionReason,
   computeA2PStatus,
@@ -54,7 +61,6 @@ import {
   SENDGRID_SECRETS,
 } from './secrets';
 import { getA2PTwilioClient, getTwilioClient, isTwilioDryRunEnabled } from './twilioClient';
-import { sendFacilityEmailWithCompliance } from './facilityOutboundEmail';
 import { enforceRateLimit } from './rateLimit';
 import { enforceAppCheckOrThrow } from './appCheck';
 import { isFeatureFlagEnabled } from './featureFlags';
@@ -62,6 +68,7 @@ import { isSMSComplianceFeatureEnabled } from './smsCompliance';
 import { checkQuietHours, checkPerTenantRateLimit, addOptOutFooter } from './smsComplianceHelpers';
 import { SMSUsageState, checkAndIncrementSMSUsage } from './smsUsage';
 import { evaluateSharedNumberSend, recordSharedNumberSend } from './sharedNumberGuard';
+import { decideTenantRecipientConsent, findFacilityTenantsForNumber, tenantOptedOut } from './tenantSmsConsent';
 import type { A2PTwilioClient } from './a2pTwilioTypes';
 
 interface SMSRequest {
@@ -178,52 +185,47 @@ export const sendSMS = functions.runWith({
       );
     }
 
-    // SMS Compliance Checks (if enabled)
-    const complianceEnabled = await isSMSComplianceFeatureEnabled('enhancedOptOut', facilityId);
-    
-    if ((complianceEnabled || textingOnboardingEnabled) && tenantInfo.tenantId) {
-      // Check if tenant is opted out
-      const tenantDoc = await admin.firestore()
+    // Tenant opt-out and consent, enforced for every facility. Any tenant of
+    // this facility whose phone is the recipient number (matched on digits,
+    // as the inbound STOP handler matches) is checked, and neither the
+    // facility's feature settings nor forceSend turn it off: a tenant who
+    // replied STOP, or never consented, is not texted. A number that belongs
+    // to no tenant (staff, a prospect) is not decided here.
+    const numberTenants = await findFacilityTenantsForNumber(facilityId, phoneNumber, tenantInfo.tenantId);
+    const tenantConsent = decideTenantRecipientConsent(numberTenants, tenantInfo.tenantId);
+    let targetOptedOut = false;
+    if (tenantInfo.tenantId && !numberTenants.some((t) => t.id === tenantInfo.tenantId)) {
+      // The client named a tenant whose stored phone is not this number. Their
+      // STOP still counts, as it always did.
+      const targetDoc = await admin.firestore()
         .collection('facilities')
         .doc(facilityId)
         .collection('tenants')
         .doc(tenantInfo.tenantId)
         .get();
-      
-      const tenantData = tenantDoc.data() as Record<string, any> | undefined;
-      if (tenantData?.smsOptOut === true || tenantData?.smsConsentStatus === 'opted_out') {
-        throw new functions.https.HttpsError(
-          'failed-precondition',
-          'Tenant has opted out of SMS messages. Cannot send SMS to this number.',
-        );
-      }
-      // Consent is recorded two ways: the public move-in form and the inbound
-      // START handler write smsConsentStatus 'opted_in', while the operator
-      // screens (tenant create/edit, contact quick-edit) record the same
-      // consent as an smsOptInDate with smsOptOut false. Both are the tenant
-      // ticking the consent box; honour both, or every tenant a facility
-      // signed up in the office is untextable.
-      const consentRecorded =
-        tenantData?.smsConsentStatus === 'opted_in' ||
-        (tenantData?.smsConsentStatus !== 'opted_out' &&
-          tenantData?.smsOptOut !== true &&
-          Boolean(tenantData?.smsOptInDate));
-      if (textingOnboardingEnabled && !consentRecorded && !forceSend) {
-        throw new functions.https.HttpsError(
-          'failed-precondition',
-          'Tenant SMS consent is required before sending messages.',
-        );
-      }
+      targetOptedOut = targetDoc.exists && tenantOptedOut({ id: targetDoc.id, ...targetDoc.data() });
+    }
+    if (targetOptedOut || tenantConsent.refusal === 'opted_out') {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Tenant has opted out of SMS messages. Cannot send SMS to this number.',
+      );
+    }
+    if (tenantConsent.refusal === 'no_consent') {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Tenant SMS consent is required before sending messages.',
+      );
+    }
 
-      // Check facility block list
-      const smsSettings = facilityData?.smsSettings as Record<string, any> | undefined;
-      const blockList = smsSettings?.blockList as string[] | undefined;
-      if (blockList && blockList.includes(phoneNumber)) {
-        throw new functions.https.HttpsError(
-          'failed-precondition',
-          'This phone number is on the facility SMS block list. Cannot send SMS.',
-        );
-      }
+    // Facility block list (STOP adds to it when enhancedOptOut is on).
+    const smsSettings = facilityData?.smsSettings as Record<string, any> | undefined;
+    const blockList = smsSettings?.blockList as string[] | undefined;
+    if (Array.isArray(blockList) && blockList.includes(phoneNumber)) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'This phone number is on the facility SMS block list. Cannot send SMS.',
+      );
     }
 
     // Check quiet hours (if enabled)
@@ -257,24 +259,30 @@ export const sendSMS = functions.runWith({
     const userRecord = await admin.auth().getUser(context.auth.uid);
     const userEmail = userRecord.email;
 
-    // Pre-launch customer contact gate: no text reaches a real customer until
-    // launch. The same appConfig/outbound switch that governs tenant email
-    // governs this. Numbers in allowedTestRecipients (Russell's own number is
-    // already there) still go through so the team can test end to end; at
-    // launch, flipping customerEmailsEnabled opens it for everyone. Checked
-    // before the message log and platform-quota reservation so a blocked send
-    // is a clean no-op. See functions-shared/src/email/customerOutboundGate.ts.
+    // Customer contact gate: the same appConfig/outbound switch that governs
+    // tenant email governs this. A facility in blockedFacilityIds never texts a
+    // customer; any other facility may once customerEmailsEnabled is on.
+    // Numbers in allowedTestRecipients (Russell's own number is already there)
+    // always go through so the team can test end to end. Checked before the
+    // message log and platform-quota reservation so a blocked send is a clean
+    // no-op. See functions-shared/src/email/customerOutboundGate.ts.
     const outboundGate = await getOutboundGateConfig();
-    if (!isCustomerRecipientAllowed(phoneNumber, outboundGate)) {
-      functions.logger.info('[sendSMS] blocked by pre-launch customer contact gate', {
+    if (!isCustomerRecipientAllowed(phoneNumber, { facilityId, channel: 'sms' }, outboundGate)) {
+      const gateReason = decideCustomerRecipient(phoneNumber, { facilityId, channel: 'sms' }, outboundGate).reason;
+      functions.logger.info('[sendSMS] blocked by customer contact gate', {
         facilityId,
+        reason: gateReason,
         toMasked: `${phoneNumber.substring(0, 5)}***${phoneNumber.slice(-2)}`,
       });
       throw new functions.https.HttpsError(
         'failed-precondition',
-        'Customer texting is turned off until launch. This number is not on the test allow-list. ' +
-        'A super admin can allow it by setting customerEmailsEnabled or adding the number to ' +
-        'allowedTestRecipients in appConfig/outbound.',
+        gateReason === 'facility_blocked'
+          ? 'Customer texting is turned off for this facility. This number is not on the test allow-list. ' +
+            'A super admin can allow it by removing the facility from blockedFacilityIds or adding the ' +
+            'number to allowedTestRecipients in appConfig/outbound.'
+          : 'Customer texting is turned off until launch. This number is not on the test allow-list. ' +
+            'A super admin can allow it by setting customerEmailsEnabled or adding the number to ' +
+            'allowedTestRecipients in appConfig/outbound.',
       );
     }
 
@@ -448,11 +456,12 @@ export const sendSMS = functions.runWith({
       ? facilityDedicatedFromNumber
       : twilioPhoneNumber;
 
-    // A facility still on the shared number may only send while it is in
-    // trial or waiting on its own registration, and within a monthly ceiling.
-    // Enforced here as well as in the automated reminder job, so the rule
-    // cannot be sidestepped by sending by hand. forceSend does not override
-    // it: this is a carrier-facing limit, not a convenience check.
+    // A facility on the shared number may send while its account is in good
+    // standing (trialing, active or billing-exempt), whether or not it has
+    // filed its own registration, and within a monthly ceiling. Enforced here
+    // as well as in the automated reminder job, so the rule cannot be
+    // sidestepped by sending by hand. forceSend does not override it: this is
+    // a carrier-facing limit, not a convenience check.
     const sharedDecision = await evaluateSharedNumberSend({
       facilityId,
       facilityData,
@@ -1087,12 +1096,23 @@ async function sendSMSAsEmail(
         functions.logger.warn('releasePlatformOutgoing sms-as-email', err),
       );
       platformEmailReserved = false;
-      functions.logger.warn(`SMS email fallback skipped (unsubscribed): ${emailAddress}`);
+      // The shared helper asks the customer contact gate (email channel, this
+      // facility) before it sends. The local copy this used to call did not,
+      // so the SMS-limit email fallback reached tenants the gate had closed.
+      const blockedByGate = sendResult.blocked === 'prelaunch';
+      functions.logger.warn(
+        blockedByGate
+          ? 'SMS email fallback blocked by customer contact gate'
+          : 'SMS email fallback skipped (unsubscribed)',
+        { facilityId },
+      );
       return {
         success: false,
         fallbackUsed: true,
         usageState: usageCheck.state,
-        usageWarning: 'SMS limit exceeded; email not sent (recipient unsubscribed).',
+        usageWarning: blockedByGate
+          ? 'SMS limit exceeded; email not sent (customer contact is turned off for this facility).'
+          : 'SMS limit exceeded; email not sent (recipient unsubscribed).',
       };
     }
 

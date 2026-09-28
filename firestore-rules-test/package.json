@@ -4,7 +4,7 @@
   "private": true,
   "description": "Firestore security rules unit tests",
   "scripts": {
-    "test:inner": "node --test test/*.test.mjs",
+    "test:inner": "node --test --test-concurrency=1 test/*.test.mjs",
     "test": "node scripts/run-with-firestore-emulator.mjs"
   },
   "devDependencies": {
