@@ -450,6 +450,54 @@ void main() {
       expect(p270.credit, 30);
     });
 
+    test('money that paid a deposit does not buy future rent', () {
+      final deposit = LedgerEntry(
+        id: 'dep',
+        tenantId: 't1',
+        facilityId: 'f1',
+        type: LedgerEntryType.otherCharge,
+        amount: 1000,
+        description: 'Security deposit',
+        entryDate: DateTime(2026, 8, 1),
+        status: LedgerEntryStatus.posted,
+        createdAt: DateTime(2026, 8, 1),
+        createdBy: 'owner',
+      );
+      final charges =
+          proposeHistoryCharges(moveIn: DateTime(2026, 8, 1), monthlyRate: 1000, existing: const [], today: _today).charges;
+      final preview = computeHistoryPreview(
+        existing: [deposit],
+        charges: charges,
+        payments: [
+          HistoryPaymentInput(date: DateTime(2026, 8, 1), amount: 2000),
+          HistoryPaymentInput(date: DateTime(2026, 9, 1), amount: 1000),
+        ],
+        existingPaidThrough: null,
+        monthlyRate: 1000,
+      );
+      expect(preview.balance, 0);
+      expect(preview.resultingPaidThrough, DateTime(2026, 9, 30));
+      expect(preview.prepaidMonths, 0);
+      expect(preview.credit, 0);
+    });
+
+    test('a genuine \$160 credit still buys two months', () {
+      final preview = computeHistoryPreview(
+        existing: const [],
+        charges: exampleCharges(),
+        payments: [
+          ..._examplePayments(),
+          HistoryPaymentInput(date: DateTime(2026, 6, 2), amount: 160),
+          HistoryPaymentInput(date: DateTime(2026, 7, 1), amount: 160),
+        ],
+        existingPaidThrough: null,
+        monthlyRate: 80,
+      );
+      expect(preview.balance, -160);
+      expect(preview.prepaidMonths, 2);
+      expect(preview.resultingPaidThrough, DateTime(2026, 11, 30));
+    });
+
     test('a free trailing month right after paid months counts as paid', () {
       final charges =
           proposeHistoryCharges(moveIn: DateTime(2026, 7, 1), monthlyRate: 80, existing: const [], today: _today).charges;

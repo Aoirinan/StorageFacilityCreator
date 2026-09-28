@@ -839,6 +839,14 @@ class PastHistoryPreviewCard extends StatelessWidget {
                     : 'Credit toward ${historyMonthLabel(unpaid.year, unpaid.month)}',
                 _money(preview.credit),
               ),
+            if (preview.voidsPayment) ...[
+              const SizedBox(height: 8),
+              Text(
+                "The voided payments' rows in the tenant's Payment History are voided too. "
+                'Any row that cannot be matched is named after saving, so you can check it.',
+                style: theme.textTheme.bodySmall,
+              ),
+            ],
             if (invoiceNumbers.isNotEmpty) ...[
               const SizedBox(height: 8),
               Text(
@@ -861,6 +869,7 @@ class PastHistoryPreviewCard extends StatelessWidget {
             ],
             const SizedBox(height: 8),
             Text(
+              'Payments count toward rent first; fees and deposits still show in the balance. '
               'Late fees are not added for past months. Rent from next month on is added by the monthly rent run as usual.',
               style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.textTertiary),
             ),

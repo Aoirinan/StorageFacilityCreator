@@ -276,8 +276,9 @@ PaidThroughChoice defaultPaidThroughChoice({required bool voidsPayment}) =>
 /// * only rent decides paid-through: all money paid is applied to the rent
 ///   months in month order; fees count in the balance only;
 /// * an unticked (free) month right after a paid month counts as paid;
-/// * money left once every charged month is paid buys whole months at
-///   [monthlyRate]; less than a month is a credit.
+/// * months past the last charged month are bought only with real credit
+///   (the whole balance below zero, fees and deposits included), in whole
+///   months at [monthlyRate]; less than a month is a credit.
 HistoryPreview computeHistoryPreview({
   required List<LedgerEntry> existing,
   required List<ProposedHistoryCharge> charges,
@@ -364,11 +365,17 @@ HistoryPreview computeHistoryPreview({
       (firstUnpaid == null || lastCovered + 1 < firstUnpaid)) {
     lastCovered += 1;
   }
+  // Months past the last charged one are bought only with real credit: the
+  // whole balance below zero, fees and deposits included, so money that paid
+  // a deposit or a fee does not buy future rent.
   var prepaidMonths = 0;
-  if (firstUnpaid == null && lastCovered != null && monthlyRate > 0 && pool + 0.005 >= monthlyRate) {
-    prepaidMonths = ((pool + 0.005) / monthlyRate).floor();
-    pool = _cents(pool - prepaidMonths * monthlyRate);
-    lastCovered += prepaidMonths;
+  if (firstUnpaid == null) {
+    final credit = balance < 0 ? _cents(-balance) : 0.0;
+    if (lastCovered != null && monthlyRate > 0) {
+      prepaidMonths = ((credit + 0.005) / monthlyRate).floor();
+      lastCovered += prepaidMonths;
+    }
+    pool = _cents(credit - prepaidMonths * monthlyRate);
   }
 
   final computed = lastCovered == null ? null : DateTime(lastCovered ~/ 12, lastCovered % 12 + 2, 0);
