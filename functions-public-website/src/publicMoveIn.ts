@@ -704,6 +704,9 @@ export const createPublicMoveInCheckout = functions
 
     tx.update(reservationRef, {
       expectedCheckoutAmountCents: chargeQuote.totalCents,
+      // The date that total was priced from, which completePublicMoveIn
+      // prices from again when the renter gave no move-in date.
+      checkoutMoveInDate: admin.firestore.Timestamp.fromDate(moveInDate),
       checkoutUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
       expiresAt: admin.firestore.Timestamp.fromDate(laterExpiry(current.expiresAt, holdUntil)),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1135,7 +1138,13 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   const reservationMetadata = (reservation.metadata as Record<string, any> | undefined) || {};
   const reservationSource = String(reservationMetadata.source || '').trim();
   const portalSourceTenantId = String(reservationMetadata.portalTenantId || '').trim();
-  const moveInDate = (reservation.moveInDate as admin.firestore.Timestamp | undefined)?.toDate() || new Date();
+  // With no move-in date given, the date checkout priced from. Pricing from
+  // today again moved the total at midnight UTC, and a renter who had paid
+  // was refused as "charges changed" below.
+  const moveInDate =
+    (reservation.moveInDate as admin.firestore.Timestamp | undefined)?.toDate() ||
+    (reservation.checkoutMoveInDate as admin.firestore.Timestamp | undefined)?.toDate() ||
+    new Date();
 
   if (!facilityId) {
     throw new functions.https.HttpsError('failed-precondition', 'Reservation missing facilityId');
@@ -1428,6 +1437,19 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     return Number.isFinite(unitRate) && unitRate > 0 ? unitRate : 0;
   };
 
+  const unitDocRef = unitId
+    ? admin.firestore().collection('facilities').doc(facilityId).collection('units').doc(unitId)
+    : null;
+  const unitHoldRef = unitId
+    ? admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('mapEngine')
+      .doc('activeHolds')
+      .collection('items')
+      .doc(unitId)
+    : null;
+
   // Perform transactional writes for tenant/contract/unit/reservation/charges
   const transactionResult = await admin.firestore().runTransaction(async (tx) => {
     // Re-check reservation inside transaction
@@ -1441,6 +1463,31 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     }
     if (freshData.status !== 'pending' && freshData.status !== 'confirmed') {
       throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
+    }
+
+    // The unit checks above ran outside this transaction, and the unit is set
+    // occupied below without reading it, so two paid reservations for one unit
+    // finishing together (both holds lapsed) both passed and both moved in.
+    // Read here, a move-in that commits first makes the other retry and stop.
+    if (unitDocRef) {
+      const freshUnit = await tx.get(unitDocRef);
+      const freshUnitStatus = String((freshUnit.data() as Record<string, any> | undefined)?.status || '').toLowerCase();
+      if (!freshUnit.exists || (freshUnitStatus && freshUnitStatus !== 'available' && freshUnitStatus !== 'reserved')) {
+        throw new functions.https.HttpsError('failed-precondition', 'Unit is no longer available');
+      }
+      if (finishingAfterLapsedHold && unitHoldRef) {
+        const freshHoldSnap = await tx.get(unitHoldRef);
+        const freshHold = freshHoldSnap.exists ? (freshHoldSnap.data() as Record<string, any>) : null;
+        const freshHeldUntil = timestampToDate(freshHold?.expiresAt);
+        if (
+          freshHold &&
+          freshHold.reservationId !== String(reservationId) &&
+          freshHeldUntil &&
+          freshHeldUntil > new Date()
+        ) {
+          throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
+        }
+      }
     }
 
     // One PaymentIntent completes one move-in. Read here and written with the
@@ -1667,14 +1714,8 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     });
 
     // Update unit status
-    if (unitId) {
-      const unitRef = admin.firestore()
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('units')
-        .doc(unitId);
-
-      tx.update(unitRef, {
+    if (unitDocRef) {
+      tx.update(unitDocRef, {
         status: 'occupied',
         tenantId: tenantRef.id,
         tenantName: name,

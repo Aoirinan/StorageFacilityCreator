@@ -48,9 +48,13 @@ type StripeCall = { method: string; params?: Record<string, any> };
 
 /**
  * Loads publicMoveIn against [inMemory], with Stripe replaced by a recorder.
- * [paymentMetadata] is the metadata on the PaymentIntent the renter paid with.
+ * [paymentMetadata] is the metadata on the PaymentIntent the renter paid with,
+ * or a function giving it for each PaymentIntent id.
  */
-function loadPublicMoveIn(inMemory: InMemoryFirestore, paymentMetadata: Record<string, string> = {}) {
+function loadPublicMoveIn(
+  inMemory: InMemoryFirestore,
+  paymentMetadata: Record<string, string> | ((paymentIntentId: string) => Record<string, string>) = {},
+) {
   installInMemoryFirestore(inMemory);
   const stripeCalls: StripeCall[] = [];
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -69,13 +73,13 @@ function loadPublicMoveIn(inMemory: InMemoryFirestore, paymentMetadata: Record<s
           },
         },
         paymentIntents: {
-          retrieve: async () => {
+          retrieve: async (paymentIntentId: string) => {
             stripeCalls.push({ method: 'paymentIntents.retrieve' });
             return {
-              id: 'pi_hold',
+              id: paymentIntentId,
               amount_received: quoteCents(inMemory),
               status: 'succeeded',
-              metadata: paymentMetadata,
+              metadata: typeof paymentMetadata === 'function' ? paymentMetadata(paymentIntentId) : paymentMetadata,
             };
           },
         },
@@ -146,14 +150,24 @@ function seedHold(inMemory: InMemoryFirestore, reservationId: string, expiresAt:
   inMemory.seed(HOLD_PATH, { facilityId: FACILITY, unitId: UNIT, reservationId, status: 'pending', expiresAt });
 }
 
-function quoteCents(inMemory: InMemoryFirestore): number {
+/**
+ * What the reservation's move-in costs from [date], by default the date
+ * checkout would price it from: its move-in date, else the date a checkout
+ * recorded, else today.
+ */
+function quoteCents(inMemory: InMemoryFirestore, date?: Date): number {
   const reservation = inMemory.read(RESERVATION_PATH) as Record<string, unknown>;
+  const recorded = (reservation.moveInDate ?? reservation.checkoutMoveInDate) as Timestamp | undefined;
   return computePublicMoveInCharges({
     reservation,
     unitData: inMemory.read(UNIT_PATH),
     facilityData: FACILITY_DATA,
-    moveInDate: (reservation.moveInDate as Timestamp).toDate(),
+    moveInDate: date ?? recorded?.toDate() ?? new Date(),
   }).totalCents;
+}
+
+function millisOf(value: unknown): number {
+  return value instanceof Date ? value.getTime() : (value as Timestamp).toMillis();
 }
 
 function expiryOf(inMemory: InMemoryFirestore, path: string): number {
@@ -348,6 +362,87 @@ test('a move-in whose hold lapsed is refused without a payment, and left open fo
   assertNoMoveIn(inMemory);
   assert.deepEqual(stripeCalls, []);
   assert.equal(inMemory.read(RESERVATION_PATH)?.status, 'pending');
+});
+
+// A renter who gave no move-in date
+
+test('checkout records the date it priced a move-in with no move-in date from', async () => {
+  const inMemory = new InMemoryFirestore();
+  seed(inMemory, { expiresInMinutes: 10 });
+  inMemory.seed(RESERVATION_PATH, { ...inMemory.read(RESERVATION_PATH), moveInDate: null });
+  const { checkout } = loadPublicMoveIn(inMemory);
+  const before = Date.now();
+
+  await checkout();
+
+  const reservation = inMemory.read(RESERVATION_PATH) as Record<string, unknown>;
+  const priced = millisOf(reservation.checkoutMoveInDate);
+  assert.ok(priced >= before && priced <= Date.now());
+  assert.equal(reservation.expectedCheckoutAmountCents, quoteCents(inMemory, new Date(priced)));
+});
+
+test('a renter with no move-in date who paid finishes after the day changed', async () => {
+  // Completion priced the move-in from today again, so a renter who paid at
+  // 23:50 UTC and finished at 00:10 was refused as "charges changed".
+  const inMemory = new InMemoryFirestore();
+  seed(inMemory, { expiresInMinutes: 30, reservedMinutesAgo: 60, checkoutStarted: true });
+  const today = quoteCents(inMemory, new Date());
+  const pricedOn = [2, 3, 5, 10]
+    .map((days) => new Date(Date.now() - days * 24 * 60 * MINUTE))
+    .find((date) => quoteCents(inMemory, date) !== today);
+  assert.ok(pricedOn, 'no earlier date prices differently from today');
+  inMemory.seed(RESERVATION_PATH, {
+    ...inMemory.read(RESERVATION_PATH),
+    moveInDate: null,
+    checkoutMoveInDate: Timestamp.fromDate(pricedOn),
+    expectedCheckoutAmountCents: quoteCents(inMemory, pricedOn),
+  });
+  const { complete } = loadPublicMoveIn(inMemory, { reservationId: RESERVATION });
+
+  const result = (await complete()) as { success?: boolean };
+
+  assert.equal(result.success, true);
+  assert.equal(inMemory.read(UNIT_PATH)?.status, 'occupied');
+  assert.equal(millisOf(inMemory.read(UNIT_PATH)?.moveInDate), pricedOn.getTime());
+});
+
+// Two paid renters, one unit
+
+test('of two paid renters finishing on one unit at once, one moves in and the other is refused', async () => {
+  // Both holds lapsed after checkout, so both pass the checks made before
+  // the transaction; the unit was set occupied without being read again.
+  const inMemory = new InMemoryFirestore();
+  seed(inMemory, { expiresInMinutes: -40, reservedMinutesAgo: 120, checkoutStarted: true });
+  const other = 'res-hold-other';
+  const otherToken = 'hold-move-in-token-other-0123456789';
+  inMemory.seed(`publicReservations/${other}`, {
+    ...inMemory.read(RESERVATION_PATH),
+    moveInToken: otherToken,
+    name: 'Olly Other',
+    email: 'other@example.com',
+    expiresAt: minutesFromNow(-20),
+  });
+  seedHold(inMemory, other, minutesFromNow(-20));
+  const { complete } = loadPublicMoveIn(inMemory, (id) => ({
+    reservationId: id === 'pi_other' ? other : RESERVATION,
+  }));
+
+  const results = await Promise.allSettled([
+    complete({ paymentIntentId: 'pi_first' }),
+    complete({
+      reservationId: other,
+      token: otherToken,
+      name: 'Olly Other',
+      email: 'other@example.com',
+      paymentIntentId: 'pi_other',
+    }),
+  ]);
+
+  const refused = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+  assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
+  assert.equal(refused.length, 1);
+  assert.equal((refused[0].reason as { message?: string }).message, 'Unit is no longer available');
+  assert.equal(inMemory.listCollection(`facilities/${FACILITY}/tenants`).length, 1);
 });
 
 test.after(() => {
