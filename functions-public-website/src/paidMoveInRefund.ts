@@ -23,6 +23,8 @@ export const PAYMENT_ALREADY_USED_MESSAGE =
 export type PaidMoveInRefusal =
   | 'unit-missing'
   | 'unit-taken'
+  // Their own hold ran out, and another renter who may be paying holds it.
+  | 'unit-held'
   | 'do-not-rent'
   | 'reservation-closed'
   | 'charges-changed'
@@ -33,6 +35,8 @@ const RENTER_TEXT: Record<PaidMoveInRefusal, string> = {
   'unit-missing': 'This unit was removed while you were paying, so your move-in could not be completed.',
   'unit-taken':
     'This unit was rented or taken out of service while you were paying, so your move-in could not be completed.',
+  'unit-held':
+    'Your hold on this unit ran out, and another renter is now paying for it, so your move-in could not be completed.',
   // The screening's own words: the renter is not told they are on a list.
   'do-not-rent': 'Online move-in is not available. Please contact the facility directly.',
   'reservation-closed': 'This reservation was already completed or cancelled, so this payment could not be used.',
@@ -45,6 +49,7 @@ const RENTER_TEXT: Record<PaidMoveInRefusal, string> = {
 const OWNER_TEXT: Record<PaidMoveInRefusal, string> = {
   'unit-missing': 'the unit was deleted',
   'unit-taken': 'the unit was already rented or out of service',
+  'unit-held': 'their hold on the unit ran out and another renter was paying for it',
   'do-not-rent': 'they match a Do Not Rent entry',
   'reservation-closed': 'their reservation had already been completed or cancelled',
   'charges-changed': 'the move-in charges changed while they were paying',

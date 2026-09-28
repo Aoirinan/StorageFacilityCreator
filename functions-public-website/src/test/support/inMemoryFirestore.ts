@@ -28,6 +28,16 @@ function joinPath(...segments: string[]): string {
   return segments.filter(Boolean).join('/');
 }
 
+/** Firestore's default for a transaction whose reads were written before it committed. */
+const MAX_TRANSACTION_ATTEMPTS = 5;
+
+async function someAsync<T>(items: T[], test: (item: T) => Promise<boolean>): Promise<boolean> {
+  for (const item of items) {
+    if (await test(item)) return true;
+  }
+  return false;
+}
+
 export class InMemoryFirestore {
   private readonly store = new Map<string, DocData>();
 
@@ -56,6 +66,26 @@ export class InMemoryFirestore {
    * another request writing between two steps of the code under test would.
    */
   beforeTransaction: ((transactionNumber: number) => void) | null = null;
+
+  /**
+   * Runs as each attempt of a transaction is about to commit, after its
+   * callback has made every read, as another request writing while it ran
+   * would. [readPaths] are the docs it read with `tx.get` (its queries
+   * aside), to tell one transaction from another. A write here to anything
+   * it read with `tx.get`, a query's results included, makes it run again.
+   */
+  beforeCommit: ((commit: { transactionNumber: number; attempt: number; readPaths: string[] }) => void) | null = null;
+
+  /** Transaction attempts rerun because something they read was written before they committed. */
+  transactionRetries = 0;
+
+  /** For generated doc ids, which must differ within one transaction's held writes. */
+  private autoIds = 0;
+
+  nextAutoId(): string {
+    this.autoIds += 1;
+    return `auto_${this.autoIds}`;
+  }
 
   seed(path: string, data: DocData): void {
     this.store.set(path, { ...data });
@@ -268,7 +298,9 @@ export class InMemoryFirestore {
       }
 
       doc(id?: string): DocRef {
-        const docId = id || `auto_${store.size + 1}`;
+        // Not from the store's size: a transaction's writes are held until
+        // it commits, so two new docs in one would get the same id.
+        const docId = id || owner.nextAutoId();
         return new DocRef(joinPath(this.path, docId));
       }
     }
@@ -303,29 +335,82 @@ export class InMemoryFirestore {
         return new WriteBatch();
       },
       /**
-       * Transactions run one at a time. Writes still land as they are made,
-       * so a transaction that throws part way leaves its earlier writes.
+       * Transactions run one at a time, as Firestore's do: reads first (a
+       * read after a write throws), writes held until the callback returns
+       * and then committed together, nothing written when it throws. What a
+       * transaction read through `tx.get` (a doc, or a query's results) is
+       * checked again at commit: a write to any of it since, from
+       * [beforeCommit] or any other writer, reruns the callback, up to
+       * MAX_TRANSACTION_ATTEMPTS times. A read made with a plain `get()`
+       * instead is not checked, so it can go stale, as it can in Firestore.
        */
       runTransaction<T>(fn: (tx: Record<string, unknown>) => Promise<T>): Promise<T> {
-        const tx: Record<string, unknown> = {
-          get: async (ref: DocRef) => ref.get(),
-          set: (ref: DocRef, data: DocData, options?: { merge?: boolean }) => {
-            ref.write(data, options);
-            return tx;
-          },
-          update: (ref: DocRef, data: DocData) => {
-            ref.applyUpdate(data);
-            return tx;
-          },
-          delete: (ref: DocRef) => {
-            store.delete(ref.path);
-            return tx;
-          },
+        const attemptOnce = async (transactionNumber: number, attempt: number): Promise<{ result: T } | null> => {
+          // Each read's doc objects as read: every write replaces a doc's
+          // object, so a different object (or none) means it was written.
+          const docReads: Array<{ path: string; seen: DocData | undefined }> = [];
+          const queryReads: Array<{ query: Query; seen: Map<string, DocData | undefined> }> = [];
+          const writes: Array<() => void> = [];
+          const tx: Record<string, unknown> = {
+            get: async (target: DocRef | Query) => {
+              if (writes.length > 0) {
+                throw new Error('Firestore transactions require all reads to be executed before all writes.');
+              }
+              if (target instanceof DocRef) {
+                docReads.push({ path: target.path, seen: store.get(target.path) });
+                return target.get();
+              }
+              const result = await target.get();
+              queryReads.push({
+                query: target,
+                seen: new Map(result.docs.map((doc) => [doc.ref.path, store.get(doc.ref.path)])),
+              });
+              return result;
+            },
+            set: (ref: DocRef, data: DocData, options?: { merge?: boolean }) => {
+              writes.push(() => ref.write(data, options));
+              return tx;
+            },
+            update: (ref: DocRef, data: DocData) => {
+              writes.push(() => ref.applyUpdate(data));
+              return tx;
+            },
+            delete: (ref: DocRef) => {
+              writes.push(() => store.delete(ref.path));
+              return tx;
+            },
+          };
+          const result = await fn(tx);
+          owner.beforeCommit?.({ transactionNumber, attempt, readPaths: docReads.map((read) => read.path) });
+          const stale =
+            docReads.some((read) => store.get(read.path) !== read.seen) ||
+            await someAsync(queryReads, async (read) => {
+              const now = (await read.query.get()).docs.map((doc) => doc.ref.path);
+              return now.length !== read.seen.size ||
+                now.some((path) => !read.seen.has(path) || read.seen.get(path) !== store.get(path));
+            });
+          if (stale) return null;
+          // All or nothing: an update to a missing doc fails the whole commit.
+          const beforeWrites = new Map(store);
+          try {
+            for (const write of writes) write();
+          } catch (err) {
+            store.clear();
+            for (const [path, data] of beforeWrites) store.set(path, data);
+            throw err;
+          }
+          return { result };
         };
-        const run = owner.transactionTail.then(() => {
+        const run = owner.transactionTail.then(async () => {
           owner.transactionCount += 1;
-          owner.beforeTransaction?.(owner.transactionCount);
-          return fn(tx);
+          const transactionNumber = owner.transactionCount;
+          owner.beforeTransaction?.(transactionNumber);
+          for (let attempt = 1; attempt <= MAX_TRANSACTION_ATTEMPTS; attempt += 1) {
+            const committed = await attemptOnce(transactionNumber, attempt);
+            if (committed) return committed.result;
+            owner.transactionRetries += 1;
+          }
+          throw Object.assign(new Error('10 ABORTED: Too much contention on these documents.'), { code: 10 });
         });
         owner.transactionTail = run.catch(() => undefined);
         return run;

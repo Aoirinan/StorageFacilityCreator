@@ -128,9 +128,10 @@ function loadPublicMoveIn(inMemory: InMemoryFirestore, stub: StripeStub = {}) {
     stripeCalls,
     sessions,
     open: () => testEnv.wrap(moveIn.getPublicReservationByToken)({ token: TOKEN }, callableContext),
-    checkout: () =>
+    /** Checkout for this reservation, or for [as] (priced as this one: seed them alike). */
+    checkout: (as: { reservationId: string; token: string } = { reservationId: RESERVATION, token: TOKEN }) =>
       testEnv.wrap(moveIn.createPublicMoveInCheckout)(
-        { reservationId: RESERVATION, token: TOKEN, amount: quoteCents(inMemory) / 100 },
+        { ...as, amount: quoteCents(inMemory) / 100 },
         callableContext,
       ) as Promise<{ checkoutUrl?: string; sessionId?: string }>,
     confirm: (sessionId: string) =>
@@ -197,6 +198,31 @@ function seed(
 
 function seedHold(inMemory: InMemoryFirestore, reservationId: string, expiresAt: Timestamp) {
   inMemory.seed(HOLD_PATH, { facilityId: FACILITY, unitId: UNIT, reservationId, status: 'pending', expiresAt });
+}
+
+const SOMEONE_ELSE = { reservationId: 'res-someone-else', token: 'someone-else-token-0123456789' };
+
+/**
+ * Another renter's reservation, holding the unit until [expiresAt] and priced
+ * as this one is. [goneToPay]: they have started checkout, so they may be
+ * paying.
+ */
+function seedSomeoneElse(inMemory: InMemoryFirestore, expiresAt: Timestamp, goneToPay: boolean) {
+  inMemory.seed(`publicReservations/${SOMEONE_ELSE.reservationId}`, {
+    facilityId: FACILITY,
+    unitId: UNIT,
+    unitNumber: 'H1',
+    status: 'pending',
+    moveInToken: SOMEONE_ELSE.token,
+    moveInDate: Timestamp.fromDate(new Date(2026, 8, 25)),
+    reservedAt: minutesFromNow(-2),
+    expiresAt,
+    email: 'someone@example.com',
+    name: 'Someone Else',
+    metadata: {},
+    ...(goneToPay ? { checkoutUpdatedAt: minutesFromNow(-1) } : {}),
+  });
+  seedHold(inMemory, SOMEONE_ELSE.reservationId, expiresAt);
 }
 
 /** The reservation's charges as the server quotes them now: for its move-in date, or today. */
@@ -493,11 +519,11 @@ for (const [why, setUp] of [
   });
 }
 
-test('confirming a paid session does not take the unit from a renter who holds it now', async () => {
+test('confirming a paid session does not take the unit from a renter who holds it now and has gone to pay', async () => {
   const inMemory = new InMemoryFirestore();
   seed(inMemory, { expiresInMinutes: -5, checkoutStarted: true });
   const theirs = minutesFromNow(10);
-  seedHold(inMemory, 'res-someone-else', theirs);
+  seedSomeoneElse(inMemory, theirs, true);
   const lapsedAt = expiryOf(inMemory, RESERVATION_PATH);
   const { confirm } = loadPublicMoveIn(inMemory, { sessions: { cs_paid: paidSession() } });
 
@@ -506,9 +532,26 @@ test('confirming a paid session does not take the unit from a renter who holds i
   const result = await confirm('cs_paid');
 
   assert.equal(result.paymentIntentId, 'pi_hold');
-  assert.equal(inMemory.read(HOLD_PATH)?.reservationId, 'res-someone-else');
+  assert.equal(inMemory.read(HOLD_PATH)?.reservationId, SOMEONE_ELSE.reservationId);
   assert.equal(expiryOf(inMemory, HOLD_PATH), theirs.toMillis());
   assert.equal(expiryOf(inMemory, RESERVATION_PATH), lapsedAt);
+});
+
+test('confirming a paid session takes the unit from a holder who has not gone to pay, whose checkout is then refused', async () => {
+  const inMemory = new InMemoryFirestore();
+  seed(inMemory, { expiresInMinutes: -5, checkoutStarted: true });
+  seedSomeoneElse(inMemory, minutesFromNow(10), false);
+  const { confirm, checkout, stripeCalls } = loadPublicMoveIn(inMemory, { sessions: { cs_paid: paidSession() } });
+
+  await confirm('cs_paid');
+
+  // Before: the holder, who had paid nothing, kept the unit; this renter,
+  // who had, was refunded at completion, or both paid and one was refunded.
+  assert.equal(inMemory.read(HOLD_PATH)?.reservationId, RESERVATION);
+  assert.ok(expiryOf(inMemory, HOLD_PATH) > Date.now() + 59 * MINUTE);
+  assert.ok(expiryOf(inMemory, RESERVATION_PATH) > Date.now() + 59 * MINUTE);
+  await assert.rejects(() => checkout(SOMEONE_ELSE), refusedWith(NOT_AVAILABLE));
+  assert.deepEqual(methods(stripeCalls), ['checkout.sessions.retrieve']);
 });
 
 test('confirming an unpaid session holds nothing', async () => {
@@ -612,22 +655,80 @@ test('a payment made for another reservation does not finish a move-in whose hol
   assertNoMoveIn(inMemory);
 });
 
-test('a paid renter whose hold lapsed cannot take a unit someone else now holds, and is refunded', async () => {
+test('a paid renter whose hold lapsed cannot take a unit held by someone paying for it, and is refunded', async () => {
   const inMemory = new InMemoryFirestore();
   seed(inMemory, { expiresInMinutes: -20, reservedMinutesAgo: 120, checkoutStarted: true });
-  seedHold(inMemory, 'res-someone-else', minutesFromNow(10));
+  seedSomeoneElse(inMemory, minutesFromNow(10), true);
   const { complete, stripeCalls } = loadPublicMoveIn(inMemory, { paymentMetadata: TAGGED });
 
   await assert.rejects(() => complete(), (err: any) => {
     assert.equal(err.code, 'failed-precondition');
-    assert.match(err.message, /^This unit was rented or taken out of service while you were paying/);
+    // Before: told the unit had been rented or taken out of service.
+    assert.match(err.message, /^Your hold on this unit ran out, and another renter is now paying for it/);
     return true;
   });
 
   assertNoMoveIn(inMemory);
   assert.deepEqual(methods(stripeCalls), ['paymentIntents.retrieve', 'refunds.create']);
-  assert.equal(inMemory.read(HOLD_PATH)?.reservationId, 'res-someone-else');
+  assert.equal(inMemory.read(HOLD_PATH)?.reservationId, SOMEONE_ELSE.reservationId);
+  const use = inMemory.read('publicMoveInPayments/pi_hold') as Record<string, any>;
+  assert.equal(use.refund.refusal, 'unit-held');
+  const alert = inMemory.read(`facilities/${FACILITY}/Notifications/move-in-refund-pi_hold`) as Record<string, any>;
+  assert.match(alert.message, /because their hold on the unit ran out and another renter was paying for it\./);
 });
+
+test('a paid renter whose hold lapsed moves in over a holder who has not gone to pay, whose checkout is then refused', async () => {
+  const inMemory = new InMemoryFirestore();
+  seed(inMemory, { expiresInMinutes: -20, reservedMinutesAgo: 120, checkoutStarted: true });
+  seedSomeoneElse(inMemory, minutesFromNow(10), false);
+  const { complete, checkout, stripeCalls } = loadPublicMoveIn(inMemory, { paymentMetadata: TAGGED });
+
+  // Before: refunded for a holder who had paid nothing, and the unit sat
+  // empty when they walked away.
+  const result = await complete();
+
+  assert.equal(result.success, true);
+  assert.equal(inMemory.read(UNIT_PATH)?.tenantId, result.tenantId);
+  await assert.rejects(() => checkout(SOMEONE_ELSE), refusedWith(NOT_AVAILABLE));
+  assert.deepEqual(methods(stripeCalls), ['paymentIntents.retrieve']);
+});
+
+test('a paid renter whose hold lapsed moves in over the live hold of a reservation since cancelled', async () => {
+  const inMemory = new InMemoryFirestore();
+  seed(inMemory, { expiresInMinutes: -20, reservedMinutesAgo: 120, checkoutStarted: true });
+  // They went to pay, then gave up; their hold was left behind.
+  seedSomeoneElse(inMemory, minutesFromNow(10), true);
+  const theirs = `publicReservations/${SOMEONE_ELSE.reservationId}`;
+  inMemory.seed(theirs, { ...inMemory.read(theirs), status: 'cancelled' });
+  const { complete } = loadPublicMoveIn(inMemory, { paymentMetadata: TAGGED });
+
+  const result = await complete();
+
+  assert.equal(result.success, true);
+  assert.equal(inMemory.read(UNIT_PATH)?.tenantId, result.tenantId);
+});
+
+for (const [why, hold] of [
+  ['has run out', { expiresAt: minutesFromNow(-5) }],
+  ['has no expiry', {}],
+] as Array<[string, Record<string, unknown>]>) {
+  test(`a paid renter whose hold lapsed moves in when another renter's hold on the unit ${why}`, async () => {
+    const inMemory = new InMemoryFirestore();
+    seed(inMemory, { expiresInMinutes: -20, reservedMinutesAgo: 120, checkoutStarted: true });
+    // They went to pay, but their hold keeps the unit from no one.
+    seedSomeoneElse(inMemory, minutesFromNow(-5), true);
+    inMemory.seed(HOLD_PATH, { facilityId: FACILITY, unitId: UNIT, reservationId: SOMEONE_ELSE.reservationId, ...hold });
+    const { complete, stripeCalls } = loadPublicMoveIn(inMemory, { paymentMetadata: TAGGED });
+
+    const result = await complete();
+
+    assert.equal(result.success, true);
+    assert.equal(inMemory.read(UNIT_PATH)?.tenantId, result.tenantId);
+    assert.deepEqual(methods(stripeCalls), ['paymentIntents.retrieve']);
+    // It goes with the move-in, as this renter's own would.
+    assert.equal(inMemory.read(HOLD_PATH), undefined);
+  });
+}
 
 test('a move-in whose hold lapsed is refused without a payment, and left open for one', async () => {
   const inMemory = new InMemoryFirestore();

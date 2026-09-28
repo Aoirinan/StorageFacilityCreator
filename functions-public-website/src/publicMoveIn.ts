@@ -43,8 +43,11 @@ import {
   CHECKOUT_RUN_OUT_MESSAGE,
   checkoutFieldsOf,
   checkoutHoldWindow,
+  checkoutMayHaveBeenPaid,
   holdForPaidCheckout,
+  holderMayBePaying,
   laterExpiry,
+  readHoldersReservation,
   restoreHoldAfterFailedCheckout,
   timestampToDate,
   unitHoldRef,
@@ -373,21 +376,6 @@ async function readPublicSettings(facilityId: string): Promise<Record<string, un
     .doc('public')
     .get();
   return (snap.data() || {}) as Record<string, unknown>;
-}
-
-/**
- * How long a reservation whose checkout has started stays loadable after its
- * hold runs out. A Checkout Session can be paid for 24 hours, and a hold lasts
- * at most 15 minutes, so a renter slow on the Stripe page came back paid to
- * "Reservation not found or has expired", with no way to finish or be
- * refunded.
- */
-const CHECKOUT_RETURN_WINDOW_MS = 24 * 60 * 60 * 1000;
-
-function checkoutMayHaveBeenPaid(reservation: Record<string, unknown>): boolean {
-  const started = reservation.checkoutUpdatedAt as { toMillis?: () => number } | undefined;
-  return typeof started?.toMillis === 'function' &&
-    Date.now() - started.toMillis() < CHECKOUT_RETURN_WINDOW_MS;
 }
 
 /**
@@ -1089,9 +1077,10 @@ export const confirmPublicMoveInCheckout = functions
 
   // Paid: the renter now re-enters the whole form (Stripe's redirect reloads
   // the page), so the unit is held for them again, whether or not the
-  // checkout's hold has lapsed. Not claimed over another renter's live hold;
-  // completion refunds this renter if that one still has the unit then. A
-  // failure here does not stop them: completion checks the unit itself.
+  // checkout's hold has lapsed. Not claimed over the live hold of another
+  // renter who may be paying for it; completion refunds this renter if that
+  // one still has the unit then. A failure here does not stop them:
+  // completion checks the unit itself.
   try {
     const unitHold = await holdForPaidCheckout({
       reservationRef,
@@ -1797,18 +1786,20 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       );
     }
     // A hold that lapsed (checkout extends it past payment, checkoutHold.ts)
-    // lets another renter hold the unit; theirs is honoured. Read here, not
-    // before the transaction, so it cannot be taken between the check and the
-    // move-in.
+    // lets another renter hold the unit; theirs is honoured if they may be
+    // paying for it (holderMayBePaying). One who has not gone to pay has paid
+    // nothing, so this renter, who has, moves in, and their checkout is then
+    // refused before it takes any money. Both read here, not before the
+    // transaction, so neither can change between the check and the move-in.
     const hold = (holdSnap?.data() || null) as Record<string, any> | null;
     const heldUntil = timestampToDate(hold?.expiresAt);
     const heldByAnother = Boolean(
       hold && hold.reservationId !== String(reservationId) && heldUntil && heldUntil > new Date(),
     );
     const ownHoldLapsed = (timestampToDate(freshData.expiresAt)?.getTime() ?? Infinity) < Date.now();
-    if (ownHoldLapsed && heldByAnother) {
+    if (ownHoldLapsed && heldByAnother && holderMayBePaying(await readHoldersReservation(tx, hold))) {
       return refuse(
-        'unit-taken',
+        'unit-held',
         new functions.https.HttpsError('failed-precondition', 'Unit is not currently available'),
       );
     }

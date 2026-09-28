@@ -229,12 +229,19 @@ function refusedWith(message: string) {
   };
 }
 
-/** The renter was turned away because the unit is taken, and told their payment was refunded. */
-function refundedAsTaken(renter: Renter) {
+/** Why a renter who has paid was refunded, as the renter is told it. */
+const REFUSAL_TEXT = {
+  'unit-taken': /rented or taken out of service while you were paying/,
+  'unit-held': /Your hold on this unit ran out, and another renter is now paying for it/,
+};
+type UnitRefusal = keyof typeof REFUSAL_TEXT;
+
+/** The renter was turned away because the unit is taken ([refusal]), and told their payment was refunded. */
+function refundedAsTaken(renter: Renter, refusal: UnitRefusal = 'unit-taken') {
   return (err: unknown): boolean => {
     const e = err as { code?: string; message?: string; details?: Record<string, unknown> };
     assert.equal(e.code, 'failed-precondition');
-    assert.match(String(e.message), /rented or taken out of service while you were paying/);
+    assert.match(String(e.message), REFUSAL_TEXT[refusal]);
     assert.match(String(e.message), /has been refunded to your card/);
     assert.deepEqual(e.details, { refunded: true, paymentIntentId: renter.paymentIntentId });
     return true;
@@ -242,19 +249,24 @@ function refundedAsTaken(renter: Renter) {
 }
 
 /** One full refund of [renter]'s payment, and the owner told why, as for any unit taken while a renter paid. */
-function assertRefundedAsTaken(inMemory: InMemoryFirestore, harness: Harness, renter: Renter) {
+function assertRefundedAsTaken(
+  inMemory: InMemoryFirestore,
+  harness: Harness,
+  renter: Renter,
+  refusal: UnitRefusal = 'unit-taken',
+) {
   assert.equal(harness.refunds.length, 1);
   assert.equal(harness.refunds[0].params.payment_intent, renter.paymentIntentId);
   assert.equal(harness.refunds[0].options.idempotencyKey, `public_move_in_refund_${renter.paymentIntentId}`);
   const use = inMemory.read(`publicMoveInPayments/${renter.paymentIntentId}`) as Record<string, any>;
   assert.equal(use.tenantId, null);
-  assert.equal(use.refund.refusal, 'unit-taken');
+  assert.equal(use.refund.refusal, refusal);
   assert.equal(use.refund.status, 'refunded');
   const alert = inMemory.read(
     `facilities/${FACILITY}/Notifications/move-in-refund-${renter.paymentIntentId}`,
   ) as Record<string, any>;
   assert.equal(alert.type, 'ONLINE_MOVE_IN_REVIEW');
-  assert.equal(alert.metadata.reason, 'unit-taken');
+  assert.equal(alert.metadata.reason, refusal);
   assert.equal(alert.metadata.refundStatus, 'refunded');
   assert.match(String(alert.message), new RegExp(`${renter.name} paid .* online for unit U7, but was not moved in`));
   assert.equal(inMemory.read(`publicReservations/${renter.reservationId}`)?.status, 'cancelled');
@@ -513,12 +525,61 @@ test('a renter whose hold ran out is refunded while another renter holds the uni
   seedHold(inMemory, SAM, 10);
   const harness = load(inMemory, paidCents);
 
-  await assert.rejects(() => harness.complete(RITA), refundedAsTaken(RITA));
+  // Told that another renter is paying for it, not that it was rented.
+  await assert.rejects(() => harness.complete(RITA), refundedAsTaken(RITA, 'unit-held'));
 
   assert.deepEqual(activeTenantsInU7(inMemory), []);
   assert.equal(inMemory.read(UNIT_PATH)?.tenantId, undefined);
   assert.equal(inMemory.read(HOLD_PATH)?.reservationId, SAM.reservationId);
+  assertRefundedAsTaken(inMemory, harness, RITA, 'unit-held');
+});
+
+// ---------------------------------------------------------------------------
+// Reads that decide are made in the transaction
+// ---------------------------------------------------------------------------
+
+/**
+ * Adds, once, an active tenant in U7 whose unit doc was never linked, just
+ * before the first commit of the transaction that read [path]: the owner
+ * typing a tenant in while the transaction ran. Only a transaction that read
+ * the tenants through `tx.get` sees the write and runs again.
+ */
+function addTenantInU7WhileTransactionReads(inMemory: InMemoryFirestore, path: string) {
+  let added = false;
+  inMemory.beforeCommit = ({ readPaths }) => {
+    if (added || !readPaths.includes(path)) return;
+    added = true;
+    seedTenant(inMemory, 'added-meanwhile', { isActive: true, unitNumber: 'U7' });
+  };
+}
+
+test('an active tenant added in U7 while the move-in transaction runs is seen, and the renter is refunded', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedFacilityAndUnit(inMemory);
+  const paidCents = seedReservation(inMemory, RITA);
+  addTenantInU7WhileTransactionReads(inMemory, UNIT_PATH);
+  const harness = load(inMemory, paidCents);
+
+  // Read with a plain get(), the tenants were not part of the transaction:
+  // it committed, and U7 had two active tenants.
+  await assert.rejects(() => harness.complete(RITA), refundedAsTaken(RITA));
+
+  assert.deepEqual(activeTenantsInU7(inMemory), ['added-meanwhile']);
+  assert.equal(inMemory.read(UNIT_PATH)?.tenantId, undefined);
+  assert.ok(inMemory.transactionRetries >= 1);
   assertRefundedAsTaken(inMemory, harness, RITA);
+});
+
+test('an active tenant added in U7 while the hold transaction runs is seen, and nothing is held', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedFacilityAndUnit(inMemory, { name: 'Claimed Storage' });
+  addTenantInU7WhileTransactionReads(inMemory, UNIT_PATH);
+  const { hold } = load(inMemory);
+
+  await assert.rejects(() => hold(holdRequest()), refusedWith(NOT_AVAILABLE));
+
+  assert.deepEqual(inMemory.listCollection('publicReservations'), []);
+  assert.equal(inMemory.read(HOLD_PATH), undefined);
 });
 
 test('every shared public map case: checkout reaches Stripe for exactly the units the map offers', async () => {
