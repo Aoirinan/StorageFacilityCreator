@@ -15,6 +15,7 @@
 import type {
   CustomerProfilesContextUpdateOptions,
   CustomerProfilesListInstanceCreateOptions,
+  CustomerProfilesListInstanceOptions,
 } from 'twilio/lib/rest/trusthub/v1/customerProfiles';
 import type {
   TrustProductsContextUpdateOptions,
@@ -55,7 +56,8 @@ export interface TrustHubEvaluationRecord {
 }
 
 export interface TrustHubAssignmentList {
-  list(params: { limit?: number }): Promise<Array<{ objectSid: string }>>;
+  (assignmentSid: string): { remove(): Promise<boolean> };
+  list(params: { limit?: number }): Promise<Array<{ sid: string; objectSid: string }>>;
   create(params: { objectSid: string }): Promise<{ sid: string }>;
 }
 
@@ -99,7 +101,7 @@ export interface UsAppToPersonRecord {
 }
 
 export interface UsAppToPersonList {
-  (sid: string): { fetch(): Promise<UsAppToPersonRecord> };
+  (sid: string): { fetch(): Promise<UsAppToPersonRecord>; remove(): Promise<boolean> };
   create(params: UsAppToPersonListInstanceCreateOptions): Promise<UsAppToPersonRecord>;
   list(params: { limit?: number }): Promise<UsAppToPersonRecord[]>;
 }
@@ -110,7 +112,7 @@ export interface A2PTwilioClient {
       customerProfiles: {
         (sid: string): CustomerProfileContext;
         create(params: CustomerProfilesListInstanceCreateOptions): Promise<TrustHubBundleRecord>;
-        list(params: { limit?: number }): Promise<TrustHubBundleRecord[]>;
+        list(params: CustomerProfilesListInstanceOptions): Promise<TrustHubBundleRecord[]>;
       };
       trustProducts: {
         (sid: string): TrustProductContext;

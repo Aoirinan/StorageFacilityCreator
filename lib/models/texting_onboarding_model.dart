@@ -15,6 +15,25 @@ enum TextingRegistrationStatus {
   }
 }
 
+/// How a facility's tenants agree to texts. Keys must match CONSENT_METHODS in
+/// functions-messaging-twilio/src/a2pCampaign.ts; the campaign filed with the
+/// carriers describes only the methods the owner selects here.
+class TextingConsentMethod {
+  static const onlineForm = 'online_form';
+  static const leaseClause = 'lease_clause';
+  static const signedForm = 'signed_form';
+  static const verbalRecorded = 'verbal_recorded';
+  static const textStart = 'text_start';
+
+  static const labels = <String, String>{
+    onlineForm: 'Checkbox on our online rental form',
+    leaseClause: 'Optional SMS clause in our written rental agreement',
+    signedForm: 'Separate SMS consent form signed at the office',
+    verbalRecorded: 'In person at the office, recorded by staff',
+    textStart: 'Tenant texts START to our number',
+  };
+}
+
 class TextingBusinessDetails {
   final String legalBusinessName;
   final String? dba;
@@ -129,6 +148,12 @@ class TextingOnboardingSnapshot {
   final String? bundleProfileStatus;
   /// Twilio's status for the A2P messaging registration (trust product).
   final String? bundleProductStatus;
+  /// How tenants agree to texts (keys in [TextingConsentMethod]).
+  final List<String> consentMethods;
+  /// The name every text and filed sample opens with, chosen by the server.
+  final String? senderName;
+  /// Registration filed but the campaign waits for the brand to be approved.
+  final bool campaignPending;
 
   const TextingOnboardingSnapshot({
     required this.status,
@@ -151,6 +176,9 @@ class TextingOnboardingSnapshot {
     this.bundleIssues,
     this.bundleProfileStatus,
     this.bundleProductStatus,
+    this.consentMethods = const [],
+    this.senderName,
+    this.campaignPending = false,
   });
 
   bool get isUnderReview =>
@@ -167,7 +195,7 @@ class TextingOnboardingSnapshot {
 
   int get resumeStep {
     if (!hasTrustProfile || businessDetails?.isComplete != true) return 0;
-    if (useCases.isEmpty) return 1;
+    if (useCases.isEmpty || consentMethods.isEmpty) return 1;
     return 2;
   }
 
@@ -202,6 +230,9 @@ class TextingOnboardingSnapshot {
       bundleIssues: _nonEmpty(map['bundleIssues']),
       bundleProfileStatus: _nonEmpty(map['bundleProfileStatus']),
       bundleProductStatus: _nonEmpty(map['bundleProductStatus']),
+      consentMethods: _stringList(map['consentMethods']),
+      senderName: _nonEmpty(map['senderName']),
+      campaignPending: map['campaignPending'] == true,
     );
   }
 

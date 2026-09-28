@@ -70,6 +70,10 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
 
   bool get _isSoleProp => _businessType == 'Sole Prop';
 
+  // How tenants agree to texts. Only these are described to the carriers, so
+  // nothing is preselected: the owner must say what the facility really does.
+  final Set<String> _consentMethods = <String>{};
+
   final Map<String, bool> _useCases = {
     'Payment reminders': true,
     'Past-due notices': true,
@@ -159,6 +163,10 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
       _repLastName.text = details.representativeLastName ?? '';
       _repTitle.text = details.representativeBusinessTitle ?? '';
     }
+    _consentMethods
+      ..clear()
+      ..addAll(snapshot.consentMethods
+          .where(TextingConsentMethod.labels.containsKey));
     if (snapshot.useCases.isNotEmpty) {
       final savedUseCases = snapshot.useCases.map((useCase) {
         return switch (useCase) {
@@ -703,6 +711,45 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
           ),
         ],
         const SizedBox(height: 20),
+        _SectionLabel('How your tenants agree to texts'),
+        const SizedBox(height: 4),
+        Text(
+          'Tick every way this facility really collects consent. Carriers '
+          'check this against what tenants experience, so do not tick a '
+          'method you do not use.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 8),
+        ...TextingConsentMethod.labels.entries.map(
+          (entry) => CheckboxListTile(
+            key: Key('consent-method-${entry.key}'),
+            value: _consentMethods.contains(entry.key),
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            title: Text(entry.value),
+            onChanged: _controller.isWorking
+                ? null
+                : (value) => setState(() {
+                      if (value == true) {
+                        _consentMethods.add(entry.key);
+                      } else {
+                        _consentMethods.remove(entry.key);
+                      }
+                    }),
+          ),
+        ),
+        if (_consentMethods.isEmpty) ...[
+          const SizedBox(height: 2),
+          Text(
+            'Choose at least one way tenants agree to texts.',
+            key: const Key('consent-method-error'),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.error,
+              fontSize: 12,
+            ),
+          ),
+        ],
+        const SizedBox(height: 20),
         _SectionLabel('Carrier message previews'),
         const SizedBox(height: 10),
         ...samples.map(
@@ -724,7 +771,7 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
           primaryLabel: 'Continue to review',
           onBack: () => _controller.goToStep(0),
           onPrimary: () {
-            if (!_useCases.containsValue(true)) {
+            if (!_useCases.containsValue(true) || _consentMethods.isEmpty) {
               setState(() {});
               return;
             }
@@ -736,6 +783,11 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
   }
 
   Widget _buildReviewStage() {
+    // Nothing is bought until Twilio has approved both the business profile
+    // and the A2P messaging registration; the server enforces this too, but
+    // the button says so up front instead of failing.
+    final snapshot = _controller.snapshot;
+    final bundlesApproved = snapshot?.bundleApproved == true;
     return Form(
       key: _reviewFormKey,
       child: Column(
@@ -764,6 +816,9 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
             title: 'Messaging plan',
             rows: {
               'Use cases': _selectedUseCases().join(', '),
+              'Tenant consent': _consentMethods
+                  .map((m) => TextingConsentMethod.labels[m] ?? m)
+                  .join('; '),
               'Review time': 'Typically 10–15 business days',
             },
             onEdit: () => _controller.goToStep(1),
@@ -798,6 +853,20 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
                 ? const Text('Required before registration can be submitted.')
                 : null,
           ),
+          if (!bundlesApproved) ...[
+            const SizedBox(height: 10),
+            _InfoCallout(
+              key: const Key('awaiting-bundle-approval'),
+              icon: Icons.hourglass_top_rounded,
+              title: 'Waiting for Twilio to approve your business profile',
+              message:
+                  'Business profile: ${TextingOnboardingSnapshot.describeBundleStatus(snapshot?.bundleProfileStatus)}. '
+                  'A2P messaging registration: ${TextingOnboardingSnapshot.describeBundleStatus(snapshot?.bundleProductStatus)}. '
+                  'You can reserve your number and submit once both are '
+                  'approved, usually about a business day after they are '
+                  'submitted. Nothing is bought or charged until then.',
+            ),
+          ],
           const SizedBox(height: 10),
           const _InfoCallout(
             icon: Icons.schedule_outlined,
@@ -809,6 +878,7 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
           _StageActions(
             busy: _controller.isWorking,
             primaryLabel: 'Reserve number & submit',
+            primaryEnabled: bundlesApproved,
             onBack: () => _controller.goToStep(1),
             onPrimary: _submit,
           ),
@@ -996,10 +1066,17 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
       setState(() {});
       return;
     }
+    if (_consentMethods.isEmpty) {
+      _controller.goToStep(1);
+      return;
+    }
     await _controller.provisionAndSubmit(
       areaCode: _emptyToNull(_digits(_areaCode.text)),
       useCases: _selectedUseCases(),
       sampleMessages: _sampleMessages(),
+      consentMethods: TextingConsentMethod.labels.keys
+          .where(_consentMethods.contains)
+          .toList(growable: false),
     );
   }
 
@@ -1009,7 +1086,8 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Review registration details?'),
         content: const Text(
-          'This resets the carrier brand and campaign submission so you can review the messaging plan before submitting again.',
+          'This clears the part of the registration the carrier rejected so you can fix it and submit again. '
+          'An approved brand is kept; a rejected campaign is withdrawn first.',
         ),
         actions: [
           TextButton(
@@ -1064,6 +1142,10 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
   }
 
   String _brandName() {
+    // The server's sender name is what live texts open with; samples must
+    // match it.
+    final senderName = _controller.snapshot?.senderName;
+    if (senderName != null && senderName.isNotEmpty) return senderName;
     if (_dba.text.trim().isNotEmpty) return _dba.text.trim();
     if (_legalName.text.trim().isNotEmpty) return _legalName.text.trim();
     return 'Your storage facility';
@@ -1363,12 +1445,14 @@ class _StageActions extends StatelessWidget {
   final String primaryLabel;
   final VoidCallback onPrimary;
   final VoidCallback? onBack;
+  final bool primaryEnabled;
 
   const _StageActions({
     required this.busy,
     required this.primaryLabel,
     required this.onPrimary,
     this.onBack,
+    this.primaryEnabled = true,
   });
 
   @override
@@ -1384,7 +1468,7 @@ class _StageActions extends StatelessWidget {
         const Spacer(),
         FilledButton.icon(
           key: const Key('primary-stage-action'),
-          onPressed: busy ? null : onPrimary,
+          onPressed: busy || !primaryEnabled ? null : onPrimary,
           icon: busy
               ? const SizedBox(
                   width: 16,

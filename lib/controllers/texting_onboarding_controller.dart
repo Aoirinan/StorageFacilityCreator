@@ -61,22 +61,24 @@ class TextingOnboardingController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// One server call reserves the number and files the registration. It used
+  /// to call provisionPhoneNumber first, which bought a number before the
+  /// server had checked that the business profile was approved.
   Future<bool> provisionAndSubmit({
     required String? areaCode,
     required List<String> useCases,
     required List<String> sampleMessages,
+    required List<String> consentMethods,
   }) async {
     final id = facilityId;
     if (id == null) return false;
     return _runAction(() async {
-      snapshot = await repository.provisionPhoneNumber(
-        facilityId: id,
-        areaCode: areaCode,
-      );
       snapshot = await repository.submitOnboarding(
         facilityId: id,
         useCases: useCases,
         sampleMessages: sampleMessages,
+        consentMethods: consentMethods,
+        areaCode: areaCode,
       );
     });
   }

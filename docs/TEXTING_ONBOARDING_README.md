@@ -18,10 +18,14 @@ flow. The `messageFlow` and `description` submitted with every campaign are buil
 `buildCampaignMessageFlow` / `buildCampaignDescription` in
 `functions-messaging-twilio/src/a2pCampaign.ts` and must always include:
 
-1. Every opt-in path the facility actually uses, named to the facility (DBA or legal name): the
-   written consent the tenant gives at rental (online rental form checkbox, or the signed rental
-   agreement / move-in form in the office), recorded by staff in the software before any text,
-   and the START keyword. The quoted checkbox language must match `/sms-terms`.
+1. Every opt-in path the facility actually uses, named to the facility, with the exact consent
+   checkbox language where a checkbox is involved (must match `/sms-terms`). Do not describe
+   opt-in paths (e.g., in-person/paper) that a facility does not really offer. The owner picks
+   the facility's methods on the Messaging plan step ("How your tenants agree to texts":
+   online rental form checkbox, SMS clause in the written rental agreement, signed consent form,
+   in person recorded by staff, texting START), stored as `textingConsentMethods`, and the
+   message flow describes only those. Keyword opt-in (`optInKeywords: ['START']` plus the opt-in
+   message) is filed only when "texting START" is selected.
 2. The disclosures: unchecked-by-default, consent not a condition of service, message frequency
    varies, "message and data rates may apply", STOP/HELP.
 3. Publicly reviewable URLs (the live opt-in form is behind login, so reviewers need these):
@@ -51,8 +55,10 @@ case; the `textingUseCases` the owner ticks in the wizard are the facility's own
 message categories and are unrelated.
 
 As of 2026-09-27 (branch `fix/a2p-registration-pipeline`) the campaign also
-carries `optInKeywords: ['START']` with an opt-in message naming the facility,
-`privacyPolicyUrl` / `termsAndConditionsUrl`, and `hasEmbeddedLinks` /
+carries the opt-in message (when START is selected) built by
+`buildTenantOptInConfirmation` in functions-shared, the same sentence the
+START reply sends (PR #16's `buildStartReply` produces identical text; a test
+pins it), `privacyPolicyUrl` / `termsAndConditionsUrl`, and `hasEmbeddedLinks` /
 `hasEmbeddedPhone` computed from the samples. Samples are validated server-side
 (2-5, each at least 20 characters) and prefixed with the facility's name.
 Campaigns are filed with `messaging.v1.services(MG).usAppToPerson.create`; the
@@ -60,6 +66,18 @@ Campaigns are filed with `messaging.v1.services(MG).usAppToPerson.create`; the
 as `twilioCampaignId`. If the brand is not yet `APPROVED` when the owner
 submits, nothing is filed: `a2pCampaignPending` is set and the hourly
 `pollA2PRegistrationStatus` files the campaign once the brand clears.
+
+The message flow states that the software does not text a tenant without
+recorded consent. That is true once PR #16 (consent that `forceSend` cannot
+override) is merged; deploy the two together.
+
+Every outbound text opens with the facility's name (`withSenderPrefix`), on the
+shared number and on a facility's own number alike, so live traffic matches the
+filed samples.
+
+Brands are filed with `skipAutomaticSecVet: true` when the campaign will be
+LOW_VOLUME (every non-sole-proprietor facility): secondary vetting buys
+throughput Low Volume Mixed cannot use and costs about $40 per brand.
 
 Follow-up: the terms/privacy URLs are the platform's pages. A per-facility
 public SMS terms page would match the brand better, but the facility public
@@ -85,13 +103,36 @@ Consent-text sources that must stay in sync:
 ## Facility phone numbers and A2P compliance (timing)
 
 **When the facility gets a number (Twilio purchase + Firestore):** The final
-**Reserve number & submit** action first calls `provisionPhoneNumber`, which
-buys a US local SMS-capable number (optional area code), stores
-`twilioPhoneNumberSid` and `twilioPhoneNumberE164` on
-`facilities/{facilityId}`, ensures a per-facility Messaging Service, and
-attaches that number to the service. `submitTextingOnboarding` calls the same
-provisioning helper again; if a number already exists, it is reused. If
-campaign submission fails after purchase, retrying reuses the reserved number.
+**Reserve number & submit** action makes one call, `submitTextingOnboarding`
+(the area code travels in `campaignData.areaCode`). It is enabled only once
+`bundleApproved` is true. Before anything is bought, the server
+(`assertReadyForPaidSubmission`, `a2pSubmission.ts`) re-reads both TrustHub
+bundles from Twilio and requires both `twilio-approved`, 2-5 valid samples, at
+least one consent method, confirmed consent and saved business details. Every
+callable that can spend money (`provisionPhoneNumber`, `submitBrandRegistration`,
+`submitCampaign`, `submitTextingOnboarding`) runs the same check.
+
+Paid steps (messaging service, number, brand, campaign — and the hourly poll's
+deferred campaign filing) run under a per-facility lease,
+`facilities/{id}.a2pSubmitLease { holder, expiresAtMs }`, taken in a Firestore
+transaction, so two tabs, two devices or a tab and the poll cannot both buy a
+number or file a campaign. A second caller gets "another registration step is
+already running". The facility is re-read before each step, so anything an
+earlier run already bought is reused. A lease left by a crashed call expires
+after 10 minutes.
+
+If the brand is not approved yet when the owner submits, the campaign is left
+pending (`a2pCampaignPending`) and the hourly poll files it. Each failed attempt
+is written to `a2pLastError` and counted in `a2pCampaignFilingFailures`; after
+3 the poll stops and marks the registration rejected with the reason.
+
+**Reset after rejection (`resubmitTextingOnboarding`):** allowed only when
+`a2pStatus` is `rejected`, and only for the facility owner or a super admin.
+It reads Twilio to see what was rejected: a failed brand is dropped (with any
+campaign under it); a failed campaign under an approved brand is removed from
+the messaging service (`usAppToPerson(sid).remove()`) and the brand is kept; a
+campaign whose deferred filing gave up keeps the brand. It refuses when Twilio
+shows nothing rejected.
 
 **When outbound SMS uses that number as `From`:** Only when **all** of the following hold: the global feature flag is on, the facility has `textingOnboardingEnabled === true`, `a2pStatus` is `approved`, `textingPlatformApproved` is `true` (superadmin), and `twilioPhoneNumberE164` is set. Otherwise `sendSMS` either blocks or uses the legacy global `TWILIO_PHONE_NUMBER` when the per-facility onboarding path is not active for that facility.
 
@@ -162,7 +203,8 @@ Stored in `facilities/{facilityId}`:
 - `twilioPhoneNumberSid`, `twilioPhoneNumberE164`
 - `textingPlatformApproved` (bool), `textingPlatformApprovedAt`, `textingPlatformApprovedBy` (superadmin gate for sending when onboarding is enabled)
 - `textingBusinessData` (safe resumable profile; only `einLast4`, never a full EIN)
-- `textingUseCases`, `textingSampleMessages`, `textingConsentConfirmedAt`
+- `textingUseCases`, `textingSampleMessages`, `textingConsentMethods`, `textingConsentConfirmedAt`
+- `a2pSubmitLease` (`{ holder, acquiredAtMs, expiresAtMs }` or null), `a2pCampaignFilingFailures`, `a2pLastResetOf`
 
 `getTextingOnboardingStatus` returns these safe saved values plus completion
 signals so the Flutter flow can resume at the first incomplete stage. The form

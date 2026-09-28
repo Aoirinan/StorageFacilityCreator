@@ -15,10 +15,15 @@ abstract class TextingOnboardingRepository {
     String? areaCode,
   });
 
+  /// Reserves the number, files the brand and the campaign in one server
+  /// call. The server refuses to buy anything until Twilio has approved both
+  /// business bundles and the samples and consent methods are valid.
   Future<TextingOnboardingSnapshot> submitOnboarding({
     required String facilityId,
     required List<String> useCases,
     required List<String> sampleMessages,
+    List<String> consentMethods = const [],
+    String? areaCode,
   });
 
   Future<TextingOnboardingSnapshot> refreshStatus(String facilityId);
@@ -77,13 +82,17 @@ class FirebaseTextingOnboardingRepository
     required String facilityId,
     required List<String> useCases,
     required List<String> sampleMessages,
+    List<String> consentMethods = const [],
+    String? areaCode,
   }) async {
     await _functions.httpsCallable('submitTextingOnboarding').call({
       'facilityId': facilityId,
       'campaignData': {
         'useCases': useCases,
         'sampleMessages': sampleMessages,
+        'consentMethods': consentMethods,
         'consentConfirmed': true,
+        if (areaCode != null && areaCode.isNotEmpty) 'areaCode': areaCode,
       },
     });
     return getStatus(facilityId);
@@ -147,11 +156,15 @@ class TextingOnboardingService {
     required String facilityId,
     required List<String> useCases,
     required List<String> sampleMessages,
+    List<String> consentMethods = const [],
+    String? areaCode,
   }) =>
       _repository.submitOnboarding(
         facilityId: facilityId,
         useCases: useCases,
         sampleMessages: sampleMessages,
+        consentMethods: consentMethods,
+        areaCode: areaCode,
       );
 
   static Future<TextingOnboardingSnapshot> refreshStatus(String facilityId) =>

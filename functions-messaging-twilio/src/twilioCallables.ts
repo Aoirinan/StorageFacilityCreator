@@ -24,11 +24,23 @@ import {
 import {
   buildBrandRegistrationParams,
   campaignFilingFields,
+  facilityDisplayName,
   fetchUsAppToPersonCampaign,
   fileCampaignWhenBrandApproved,
-  prepareCampaignSamples,
+  normalizeConsentMethods,
+  planRegistrationReset,
+  withSenderPrefix,
   type CampaignFilingResult,
 } from './a2pCampaign';
+import {
+  assertReadyForPaidSubmission,
+  resolvePaidSubmissionInput,
+  runPaidSubmission,
+  withA2PSubmitLease,
+  type LeaseDb,
+  type PaidStep,
+  type PaidSubmissionReadiness,
+} from './a2pSubmission';
 import { reservePlatformOutgoing, releasePlatformOutgoing } from './platformOutgoing';
 import { createOrUpdateMessageLog } from './messageLog';
 import { getTenantInfo } from './tenantInfo';
@@ -457,16 +469,11 @@ export const sendSMS = functions.runWith({
       );
     }
 
-    // The shared platform number sends on behalf of many facilities, so the
-    // recipient cannot tell who is texting from the number alone. Prefix the
-    // facility name, as the samples registered with carriers do. A facility's
-    // own registered number already identifies it, so no prefix there.
-    if (resolvedFromNumber === twilioPhoneNumber) {
-      const senderLabel = ((facilityData.name as string | undefined) || '').trim();
-      if (senderLabel && !finalMessage.toLowerCase().startsWith(senderLabel.toLowerCase())) {
-        finalMessage = `${senderLabel}: ${finalMessage}`;
-      }
-    }
+    // Every text opens with the facility's name. On the shared platform number
+    // that is the only way the recipient can tell who is texting; on a
+    // facility's own registered number it keeps live traffic identical to the
+    // samples filed with the facility's campaign, which all open with the name.
+    finalMessage = withSenderPrefix(facilityData, finalMessage);
 
     // Safe debug logging (masked for security)
     // #region agent log
@@ -1173,6 +1180,10 @@ interface CampaignData {
   useCases: string[];
   sampleMessages: string[];
   consentConfirmed: boolean;
+  /** How tenants agree to texts; see CONSENT_METHODS in a2pCampaign.ts. */
+  consentMethods?: string[];
+  /** Preferred area code for the facility's number. */
+  areaCode?: string;
 }
 
 interface TextingOnboardingState {
@@ -1588,7 +1599,8 @@ async function submitBrandRegistrationInternal(
 async function submitCampaignInternal(
   facilityRef: admin.firestore.DocumentReference,
   facilityData: Record<string, any>,
-  campaignData: CampaignData,
+  campaignData: Pick<CampaignData, 'useCases' | 'consentConfirmed'>,
+  readiness: PaidSubmissionReadiness,
 ): Promise<string> {
   if (facilityData.twilioCampaignSid) return facilityData.twilioCampaignSid as string;
   if (!facilityData.twilioBrandSid || !facilityData.twilioMessagingServiceSid || !facilityData.twilioPhoneNumberSid) {
@@ -1598,10 +1610,10 @@ async function submitCampaignInternal(
     );
   }
 
-  // Validated before anything is filed: Twilio needs 2-5 samples of 20+
-  // characters, and each opens with the facility's name.
-  const sampleMessages = prepareCampaignSamples(facilityData, campaignData?.sampleMessages);
-
+  // Samples and consent methods were validated by assertReadyForPaidSubmission
+  // before anything was bought; they are stored so a deferred filing by the
+  // hourly poll uses exactly what the owner submitted.
+  const withMethods = { ...facilityData, textingConsentMethods: readiness.consentMethods };
   const dryRun = isTwilioDryRunEnabled();
   const filing: CampaignFilingResult = dryRun
     ? {
@@ -1611,19 +1623,22 @@ async function submitCampaignInternal(
         campaignId: buildTwilioDryRunSid('CM', facilityRef.id),
         campaignStatus: 'VERIFIED',
       }
-    : await fileCampaignWhenBrandApproved(getA2PTwilioClient(), facilityData, sampleMessages);
+    : await fileCampaignWhenBrandApproved(getA2PTwilioClient(), withMethods, readiness.samples);
 
   await facilityRef.set({
     ...campaignFilingFields(filing),
-    textingUseCases: campaignData.useCases,
-    textingSampleMessages: sampleMessages,
+    a2pCampaignFilingFailures: 0,
+    a2pLastError: null,
+    textingUseCases: Array.isArray(campaignData.useCases) ? campaignData.useCases : [],
+    textingSampleMessages: readiness.samples,
+    textingConsentMethods: readiness.consentMethods,
     textingConsentConfirmedAt: campaignData.consentConfirmed ? admin.firestore.FieldValue.serverTimestamp() : null,
     a2pStatus: dryRun ? 'approved' : filing.filed ? 'pending' : 'submitted',
     textingPlatformApproved: false,
     textingPlatformApprovedAt: null,
     textingPlatformApprovedBy: null,
     a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    ...(isTwilioDryRunEnabled() ? { a2pApprovedAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
+    ...(dryRun ? { a2pApprovedAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
   }, { merge: true });
 
   if (!dryRun) {
@@ -1634,6 +1649,87 @@ async function submitCampaignInternal(
   }
 
   return filing.sid ?? '';
+}
+
+function leaseDb(): LeaseDb {
+  return admin.firestore() as unknown as LeaseDb;
+}
+
+async function readFacilityData(ref: admin.firestore.DocumentReference): Promise<Record<string, any>> {
+  const data = (await ref.get()).data();
+  if (!data) throw new functions.https.HttpsError('not-found', 'Facility not found');
+  return data;
+}
+
+type PaidScope = 'service' | 'number' | 'brand' | 'campaign' | 'all';
+
+/**
+ * Run a paid texting-registration sequence for one facility.
+ *
+ * Holds the facility's submission lease for the whole sequence, checks every
+ * prerequisite (live bundle approval, samples, consent) before the first
+ * purchase, and re-reads the facility before each step so a number or brand
+ * bought by an earlier run is reused rather than bought again. Creating the
+ * messaging service alone is free and skips the readiness check.
+ */
+async function runGatedPaidSubmission(
+  ref: admin.firestore.DocumentReference,
+  uid: string,
+  scope: PaidScope,
+  campaignData: Partial<CampaignData> | undefined,
+): Promise<{ requestId: string; facility: Record<string, any> }> {
+  const requestId = crypto.randomUUID();
+  const holder = `${uid}:${requestId}`;
+  const facility = await withA2PSubmitLease(leaseDb(), ref, holder, async () => {
+    const first = await readFacilityData(ref);
+    const readiness =
+      scope === 'service'
+        ? null
+        : await assertReadyForPaidSubmission(
+            isTwilioDryRunEnabled() ? null : getA2PTwilioClient(),
+            first,
+            resolvePaidSubmissionInput(campaignData, first),
+          );
+
+    const wants = (step: PaidScope) => scope === 'all' || scope === step;
+    const steps: PaidStep[] = [];
+    if (scope !== 'brand') {
+      steps.push(async (d) => {
+        await ensureMessagingServiceForFacility(ref, d, requestId);
+      });
+    }
+    if (wants('number')) {
+      steps.push(async (d) => {
+        await provisionFacilityPhoneNumber(ref, d, campaignData?.areaCode, requestId);
+      });
+      steps.push(async (d) => {
+        await attachPhoneNumberToMessagingService(
+          String(d.twilioMessagingServiceSid),
+          String(d.twilioPhoneNumberSid),
+        );
+      });
+    }
+    if (wants('brand')) {
+      steps.push(async (d) => {
+        await submitBrandRegistrationInternal(ref, d);
+      });
+    }
+    if (wants('campaign') && readiness) {
+      steps.push(async (d) => {
+        await submitCampaignInternal(
+          ref,
+          d,
+          {
+            useCases: campaignData?.useCases ?? d.textingUseCases ?? [],
+            consentConfirmed: resolvePaidSubmissionInput(campaignData, d).consentConfirmed === true,
+          },
+          readiness,
+        );
+      });
+    }
+    return runPaidSubmission(() => readFacilityData(ref), steps);
+  });
+  return { requestId, facility };
 }
 
 function getTextingOnboardingState(facilityData: Record<string, any>): TextingOnboardingState {
@@ -1704,6 +1800,10 @@ export const getTextingOnboardingStatus = functions.https.onCall(async (data: { 
     bundleProfileStatus: facilityData.a2pBundleProfileStatus || null,
     bundleProductStatus: facilityData.a2pBundleProductStatus || null,
     twilioCampaignId: facilityData.twilioCampaignId || null,
+    campaignPending: facilityData.a2pCampaignPending === true,
+    consentMethods: normalizeConsentMethods(facilityData.textingConsentMethods),
+    // The name every text and filed sample opens with.
+    senderName: facilityDisplayName(facilityData),
     hasPhoneNumber: Boolean(facilityData.twilioPhoneNumberSid && facilityData.twilioPhoneNumberE164),
     submittedAt: facilityData.a2pSubmittedAt || null,
     approvedAt: facilityData.a2pApprovedAt || null,
@@ -1749,10 +1849,9 @@ export const ensureMessagingService = functions.runWith({ secrets: TWILIO_SECRET
       const { facilityId } = data || {};
       if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
       await assertTextingOnboardingEnabled(facilityId);
-      const requestId = crypto.randomUUID();
-      const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-      const result = await ensureMessagingServiceForFacility(ref, facilityData, requestId);
-      return { success: true, requestId, ...result };
+      const { ref } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+      const { requestId, facility } = await runGatedPaidSubmission(ref, context.auth.uid, 'service', undefined);
+      return { success: true, requestId, messagingServiceSid: facility.twilioMessagingServiceSid || null };
     } catch (error: unknown) {
       throw mapTextingOnboardingError('ensureMessagingService', error);
     }
@@ -1821,25 +1920,27 @@ export const setTextingPlatformApproval = functions.https.onCall(
   },
 );
 
+/**
+ * Reserve the facility's own number. Buys a number, so it runs the full
+ * readiness check first (both bundles approved, samples, consent); the client
+ * now reserves the number through submitTextingOnboarding instead, and this
+ * stays for older clients with the same guard.
+ */
 export const provisionPhoneNumber = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
-  async (data: { facilityId: string; areaCode?: string }, context) => {
+  async (data: { facilityId: string; areaCode?: string } & Partial<CampaignData>, context) => {
     try {
       if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
-      const { facilityId, areaCode } = data || {};
+      const { facilityId } = data || {};
       if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
       await assertTextingOnboardingEnabled(facilityId);
-      const requestId = crypto.randomUUID();
-      const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-      const ms = await ensureMessagingServiceForFacility(ref, facilityData, requestId);
-      const phone = await provisionFacilityPhoneNumber(ref, facilityData, areaCode, requestId);
-      await attachPhoneNumberToMessagingService(ms.messagingServiceSid, phone.phoneNumberSid);
+      const { ref } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+      const { requestId, facility } = await runGatedPaidSubmission(ref, context.auth.uid, 'number', data);
       return {
         success: true,
         requestId,
-        messagingServiceSid: ms.messagingServiceSid,
-        phoneNumberSid: phone.phoneNumberSid,
-        phoneNumberE164: phone.phoneNumberE164,
-        reusedExisting: !phone.created,
+        messagingServiceSid: facility.twilioMessagingServiceSid || null,
+        phoneNumberSid: facility.twilioPhoneNumberSid || null,
+        phoneNumberE164: facility.twilioPhoneNumberE164 || null,
       };
     } catch (error: unknown) {
       throw mapTextingOnboardingError('provisionPhoneNumber', error);
@@ -1856,40 +1957,22 @@ export const submitTextingOnboarding = functions.runWith({ secrets: TWILIO_SECRE
         throw new functions.https.HttpsError('invalid-argument', 'facilityId and consent confirmation are required');
       }
       await assertTextingOnboardingEnabled(facilityId);
-      const requestId = crypto.randomUUID();
-      const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-      const baseState = getTextingOnboardingState(facilityData);
-      if (!baseState.twilioTrustProfileSid || !baseState.twilioTrustProductSid) {
-        throw new functions.https.HttpsError('failed-precondition', 'Business profile is incomplete. Save business info first.');
-      }
-      // Check the samples before anything paid (number, brand) happens; the
-      // campaign step would otherwise reject them after the fees are spent.
-      prepareCampaignSamples(facilityData, campaignData.sampleMessages);
-      const ms = await ensureMessagingServiceForFacility(ref, facilityData, requestId);
-      const pn = await provisionFacilityPhoneNumber(ref, facilityData, undefined, requestId);
-      await attachPhoneNumberToMessagingService(ms.messagingServiceSid, pn.phoneNumberSid);
-
-      const latest = (await ref.get()).data() as Record<string, any>;
-      const brandSid = await submitBrandRegistrationInternal(ref, latest);
-      const latestAfterBrand = (await ref.get()).data() as Record<string, any>;
-      const campaignSid = await submitCampaignInternal(ref, {
-        ...latestAfterBrand,
-        twilioBrandSid: brandSid,
-        twilioMessagingServiceSid: latestAfterBrand.twilioMessagingServiceSid || ms.messagingServiceSid,
-        twilioPhoneNumberSid: latestAfterBrand.twilioPhoneNumberSid || pn.phoneNumberSid,
-      }, campaignData);
+      const { ref } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+      // Messaging service, number, brand, campaign — in that order, under the
+      // facility's lease, and only after every prerequisite has been checked.
+      const { requestId, facility } = await runGatedPaidSubmission(ref, context.auth.uid, 'all', campaignData);
 
       return {
         success: true,
         requestId,
         // Without a campaign SID the brand is still in review and the hourly
         // poll files the campaign once it clears.
-        a2pStatus: isTwilioDryRunEnabled() ? 'approved' : campaignSid ? 'pending' : 'submitted',
-        twilioBrandSid: brandSid,
-        twilioCampaignSid: campaignSid || null,
-        twilioMessagingServiceSid: ms.messagingServiceSid,
-        twilioPhoneNumberSid: pn.phoneNumberSid,
-        twilioPhoneNumberE164: pn.phoneNumberE164,
+        a2pStatus: facility.a2pStatus || 'submitted',
+        twilioBrandSid: facility.twilioBrandSid || null,
+        twilioCampaignSid: facility.twilioCampaignSid || null,
+        twilioMessagingServiceSid: facility.twilioMessagingServiceSid || null,
+        twilioPhoneNumberSid: facility.twilioPhoneNumberSid || null,
+        twilioPhoneNumberE164: facility.twilioPhoneNumberE164 || null,
       };
     } catch (error: unknown) {
       throw mapTextingOnboardingError('submitTextingOnboarding', error);
@@ -1904,9 +1987,9 @@ export const submitBrandRegistration = functions.runWith({ secrets: TWILIO_SECRE
       const { facilityId } = data || {};
       if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
       await assertTextingOnboardingEnabled(facilityId);
-      const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-      const sid = await submitBrandRegistrationInternal(ref, facilityData);
-      return { success: true, brandSid: sid };
+      const { ref } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+      const { facility } = await runGatedPaidSubmission(ref, context.auth.uid, 'brand', undefined);
+      return { success: true, brandSid: facility.twilioBrandSid || null };
     } catch (error: unknown) {
       throw mapTextingOnboardingError('submitBrandRegistration', error);
     }
@@ -1979,9 +2062,9 @@ export const submitCampaign = functions.runWith({ secrets: TWILIO_SECRETS }).htt
         throw new functions.https.HttpsError('invalid-argument', 'facilityId and campaignData are required');
       }
       await assertTextingOnboardingEnabled(facilityId);
-      const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-      const sid = await submitCampaignInternal(ref, facilityData, campaignData);
-      return { success: true, campaignSid: sid };
+      const { ref } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+      const { facility } = await runGatedPaidSubmission(ref, context.auth.uid, 'campaign', campaignData);
+      return { success: true, campaignSid: facility.twilioCampaignSid || null };
     } catch (error: unknown) {
       throw mapTextingOnboardingError('submitCampaign', error);
     }
@@ -2079,6 +2162,14 @@ export const refreshTextingOnboardingStatus = functions.runWith({ secrets: TWILI
   },
 );
 
+/**
+ * Reset a rejected registration so the owner can fix it and submit again.
+ *
+ * Only for a registration Twilio actually rejected, and only by the facility
+ * owner or a super admin: it discards filed (paid) work. It clears only what
+ * was rejected — an approved brand is kept, and a failed campaign is removed
+ * from the messaging service so the refiled one is the only campaign there.
+ */
 export const resubmitTextingOnboarding = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
   async (data: { facilityId: string }, context) => {
     try {
@@ -2086,21 +2177,83 @@ export const resubmitTextingOnboarding = functions.runWith({ secrets: TWILIO_SEC
       const { facilityId } = data || {};
       if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
       await assertTextingOnboardingEnabled(facilityId);
-      const { ref } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-      await ref.set({
-        twilioBrandSid: admin.firestore.FieldValue.delete(),
-        twilioCampaignSid: admin.firestore.FieldValue.delete(),
-        twilioCampaignId: admin.firestore.FieldValue.delete(),
-        a2pCampaignStatus: admin.firestore.FieldValue.delete(),
-        a2pStatus: 'draft',
-        textingPlatformApproved: false,
-        textingPlatformApprovedAt: null,
-        textingPlatformApprovedBy: null,
-        a2pLastError: null,
-        a2pRejectionReason: null,
-        a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-      return { success: true };
+
+      const ref = admin.firestore().collection('facilities').doc(facilityId);
+      const initial = await readFacilityData(ref);
+      const callerEmail = context.auth.token?.email as string | undefined;
+      if (initial.ownerUid !== context.auth.uid && !isSuperAdmin(callerEmail)) {
+        throw new functions.https.HttpsError(
+          'permission-denied',
+          'Only the facility owner can reset a carrier registration.',
+        );
+      }
+
+      const holder = `${context.auth.uid}:${crypto.randomUUID()}`;
+      const result = await withA2PSubmitLease(leaseDb(), ref, holder, async () => {
+        const facilityData = await readFacilityData(ref);
+        if (String(facilityData.a2pStatus || '').toLowerCase() !== 'rejected') {
+          throw new functions.https.HttpsError(
+            'failed-precondition',
+            'Only a rejected registration can be reset.',
+          );
+        }
+
+        const brandSid = String(facilityData.twilioBrandSid || '').trim();
+        const campaignSid = String(facilityData.twilioCampaignSid || '').trim();
+        const messagingServiceSid = String(facilityData.twilioMessagingServiceSid || '').trim();
+        let brandStatus = '';
+        let campaignStatus = '';
+        let liveCampaignSid = '';
+        const dryRun = isTwilioDryRunEnabled();
+        const twilio = dryRun ? null : getA2PTwilioClient();
+        if (twilio && brandSid) {
+          brandStatus = String((await twilio.messaging.v1.brandRegistrations(brandSid).fetch()).status || '');
+        }
+        if (twilio && campaignSid && messagingServiceSid) {
+          const campaign = await fetchUsAppToPersonCampaign(twilio, messagingServiceSid, campaignSid);
+          campaignStatus = String(campaign?.campaignStatus || '');
+          liveCampaignSid = campaign?.sid || '';
+        }
+
+        const plan = dryRun
+          ? { rejected: 'campaign' as const, keepBrand: false, removeCampaign: false }
+          : planRegistrationReset({
+              hasBrand: Boolean(brandSid),
+              brandStatus,
+              hasCampaign: Boolean(campaignSid),
+              campaignStatus,
+            });
+
+        if (twilio && plan.removeCampaign && liveCampaignSid && messagingServiceSid) {
+          await twilio.messaging.v1.services(messagingServiceSid).usAppToPerson(liveCampaignSid).remove();
+          functions.logger.info('Removed rejected A2P campaign before refiling', {
+            facilityId,
+            usAppToPersonSid: liveCampaignSid,
+            campaignStatus,
+          });
+        }
+
+        const del = admin.firestore.FieldValue.delete();
+        await ref.set({
+          ...(plan.keepBrand ? {} : { twilioBrandSid: del, a2pBrandStatus: del }),
+          twilioCampaignSid: del,
+          twilioCampaignId: del,
+          a2pCampaignStatus: del,
+          a2pCampaignPending: del,
+          a2pCampaignFilingFailures: del,
+          a2pStatus: 'draft',
+          textingPlatformApproved: false,
+          textingPlatformApprovedAt: null,
+          textingPlatformApprovedBy: null,
+          a2pLastError: null,
+          a2pRejectionReason: null,
+          a2pRejectedAt: null,
+          a2pLastResetOf: plan.rejected,
+          a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+        return plan;
+      });
+      return { success: true, reset: result.rejected, keptBrand: result.keepBrand };
     } catch (error: unknown) {
       throw mapTextingOnboardingError('resubmitTextingOnboarding', error);
     }

@@ -22,6 +22,21 @@ export function isHelpKeyword(input: string): boolean {
 }
 
 /**
+ * The confirmation a tenant gets after opting in, e.g. by texting START.
+ *
+ * The same sentence is filed with each facility's A2P campaign as its opt-in
+ * message, so the live reply and the filing must not drift: carriers compare
+ * them. The keyword webhook's START reply (inboundKeywordReplies.ts, PR #16)
+ * produces this exact text for a single facility; a test pins the wording.
+ */
+export function buildTenantOptInConfirmation(senderName: string): string {
+  return (
+    `${senderName.trim()}: you're opted in to account texts about your storage unit. ` +
+    'Msg frequency varies. Msg & data rates may apply. Reply HELP for help, STOP to opt out.'
+  );
+}
+
+/**
  * Fold Twilio's brand and campaign states into the facility's A2P status.
  *
  * Twilio reports a brand as PENDING / IN_REVIEW / APPROVED / FAILED and a

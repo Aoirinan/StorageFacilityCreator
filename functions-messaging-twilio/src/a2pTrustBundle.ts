@@ -135,7 +135,13 @@ export async function resolvePrimaryCustomerProfileSid(twilio: A2PTwilioClient):
   if (override) return override;
   if (cachedPrimaryProfileSid) return cachedPrimaryProfileSid;
 
-  const profiles = await twilio.trusthub.v1.customerProfiles.list({ limit: 100 });
+  // Filtered server-side: scanning the first page of every customer profile on
+  // the account would miss the primary once facility profiles outnumber it.
+  const profiles = await twilio.trusthub.v1.customerProfiles.list({
+    policySid: PRIMARY_CUSTOMER_PROFILE_POLICY_SID,
+    status: 'twilio-approved',
+    limit: 20,
+  });
   const approved = profiles.find(
     (p) =>
       p?.policySid === PRIMARY_CUSTOMER_PROFILE_POLICY_SID &&
@@ -381,27 +387,50 @@ async function upsertEndUser(
 }
 
 /**
- * Assign an object to a bundle, treating "already assigned" as success.
+ * Make a bundle's assignments exactly `expected`.
  *
- * Re-running the build must be safe, and Twilio rejects a duplicate assignment
- * rather than ignoring it.
+ * Only called on bundles this run is allowed to write (new, draft or
+ * rejected). A reused bundle can carry leftovers — an abandoned customer
+ * profile, a replaced end user, a duplicate A2P end user — and TrustHub
+ * evaluates everything assigned, so extras are removed, not just missing items
+ * added. "Already assigned" on create counts as success: Twilio rejects a
+ * duplicate assignment rather than ignoring it.
  */
-async function ensureAssignment(
+async function reconcileAssignments(
   assignmentList: TrustHubAssignmentList,
-  objectSid: string,
+  expected: string[],
   bundleSid: string,
 ): Promise<void> {
+  const wanted = new Set(expected);
   const existing = await assignmentList.list({ limit: 100 });
-  if (existing.some((a) => a.objectSid === objectSid)) return;
-  try {
-    await assignmentList.create({ objectSid });
-  } catch (error: any) {
-    const message = String(error?.message || '');
-    if (/already/i.test(message)) return;
-    throw new functions.https.HttpsError(
-      'internal',
-      `Could not attach ${objectSid} to ${bundleSid}: ${message}`,
-    );
+  for (const assignment of existing) {
+    if (wanted.has(assignment.objectSid)) continue;
+    try {
+      await assignmentList(assignment.sid).remove();
+      functions.logger.info('A2P bundle: removed unexpected assignment', {
+        bundleSid,
+        objectSid: assignment.objectSid,
+      });
+    } catch (error: any) {
+      throw new functions.https.HttpsError(
+        'internal',
+        `Could not detach ${assignment.objectSid} from ${bundleSid}: ${error?.message}`,
+      );
+    }
+  }
+  const present = new Set(existing.map((a) => a.objectSid));
+  for (const objectSid of expected) {
+    if (present.has(objectSid)) continue;
+    try {
+      await assignmentList.create({ objectSid });
+    } catch (error: any) {
+      const message = String(error?.message || '');
+      if (/already/i.test(message)) continue;
+      throw new functions.https.HttpsError(
+        'internal',
+        `Could not attach ${objectSid} to ${bundleSid}: ${message}`,
+      );
+    }
   }
 }
 
@@ -571,14 +600,11 @@ export async function buildAndEvaluateTrustBundle(
     const primaryProfileSid = await resolvePrimaryCustomerProfileSid(twilio);
 
     const profileContext = twilio.trusthub.v1.customerProfiles(trustProfileSid);
-    for (const objectSid of [
-      businessInfoEndUserSid,
-      authorizedRepEndUserSid,
-      addressDocumentSid,
-      primaryProfileSid,
-    ]) {
-      await ensureAssignment(profileContext.customerProfilesEntityAssignments, objectSid, trustProfileSid);
-    }
+    await reconcileAssignments(
+      profileContext.customerProfilesEntityAssignments,
+      [businessInfoEndUserSid, authorizedRepEndUserSid, addressDocumentSid, primaryProfileSid],
+      trustProfileSid,
+    );
 
     // Order matters. The A2P trust product's policy requires the secondary
     // customer profile to be "at least in review state", so the profile has
@@ -643,9 +669,11 @@ export async function buildAndEvaluateTrustBundle(
     // The trust product holds exactly two things: the secondary customer
     // profile and the A2P messaging end user.
     const productContext = twilio.trusthub.v1.trustProducts(trustProductSid);
-    for (const objectSid of [trustProfileSid, a2pProfileEndUserSid]) {
-      await ensureAssignment(productContext.trustProductsEntityAssignments, objectSid, trustProductSid);
-    }
+    await reconcileAssignments(
+      productContext.trustProductsEntityAssignments,
+      [trustProfileSid, a2pProfileEndUserSid],
+      trustProductSid,
+    );
 
     if (isBundleWithTwilio(profileStatus)) {
       trustProductEvaluation = summarizeEvaluation(

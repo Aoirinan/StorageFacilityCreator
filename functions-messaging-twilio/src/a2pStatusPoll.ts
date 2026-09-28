@@ -10,10 +10,12 @@ import { TWILIO_SECRETS } from './secrets';
 import { fetchTrustBundleState } from './a2pTrustBundle';
 import {
   campaignFilingFields,
+  deferredFilingFailureFields,
   fetchUsAppToPersonCampaign,
   fileCampaignWhenBrandApproved,
   prepareCampaignSamples,
 } from './a2pCampaign';
+import { A2PLeaseHeldError, withA2PSubmitLease, type LeaseDb } from './a2pSubmission';
 import type { A2PTwilioClient } from './a2pTwilioTypes';
 
 /**
@@ -98,6 +100,77 @@ async function pollTrustBundleReviews(
   return checked;
 }
 
+/**
+ * File a campaign the owner asked for while the brand was still in review.
+ *
+ * Runs under the facility's submission lease (so a tab submitting at the same
+ * moment cannot file a second campaign) and re-reads the facility inside it.
+ * A failure is written to `a2pLastError` and counted; after
+ * MAX_DEFERRED_FILING_FAILURES the poll stops retrying and marks the
+ * registration rejected so the owner sees why.
+ */
+async function fileDeferredCampaign(
+  twilio: A2PTwilioClient,
+  ref: admin.firestore.DocumentReference,
+  facilityId: string,
+): Promise<{ stopped: boolean; campaignStatus?: string }> {
+  const db = admin.firestore() as unknown as LeaseDb;
+  try {
+    return await withA2PSubmitLease(db, ref, `poller:${facilityId}:${Date.now()}`, async () => {
+      const fresh = (await ref.get()).data() || {};
+      if (fresh.twilioCampaignSid || fresh.a2pCampaignPending !== true) {
+        return { stopped: false, campaignStatus: undefined };
+      }
+      try {
+        const filing = await fileCampaignWhenBrandApproved(
+          twilio,
+          fresh,
+          prepareCampaignSamples(fresh, fresh.textingSampleMessages),
+        );
+        await ref.set(
+          {
+            ...campaignFilingFields(filing),
+            ...(filing.filed ? { a2pLastError: null } : {}),
+            a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+        functions.logger.info(`A2P poll: facility ${facilityId} deferred campaign filed=${filing.filed}`);
+        return { stopped: false, campaignStatus: filing.campaignStatus ?? undefined };
+      } catch (error: any) {
+        const fields = deferredFilingFailureFields(fresh, error);
+        await ref.set(
+          {
+            ...fields,
+            ...(fields.a2pStatus === 'rejected'
+              ? {
+                  a2pRejectedAt: admin.firestore.FieldValue.serverTimestamp(),
+                  textingPlatformApproved: false,
+                  textingPlatformApprovedAt: null,
+                  textingPlatformApprovedBy: null,
+                }
+              : {}),
+            a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+        functions.logger.error(`A2P poll: deferred campaign filing failed for facility ${facilityId}`, {
+          attempt: fields.a2pCampaignFilingFailures,
+          error: String(error?.message || error),
+        });
+        return { stopped: fields.a2pStatus === 'rejected' };
+      }
+    });
+  } catch (error) {
+    if (error instanceof A2PLeaseHeldError) {
+      // Someone is submitting right now; try again next hour.
+      functions.logger.info(`A2P poll: facility ${facilityId} busy (lease held); deferred filing skipped`);
+      return { stopped: false };
+    }
+    throw error;
+  }
+}
+
 export const pollA2PRegistrationStatus = functions
   .runWith({ secrets: TWILIO_SECRETS, timeoutSeconds: 540, memory: '256MB' })
   .pubsub.schedule('15 * * * *')
@@ -175,23 +248,13 @@ export const pollA2PRegistrationStatus = functions
         ) {
           // The owner submitted while the brand was still in review; file the
           // campaign they asked for now that the brand has cleared.
-          const samples = Array.isArray(facilityData.textingSampleMessages)
-            ? (facilityData.textingSampleMessages as string[])
-            : [];
-          const filing = await fileCampaignWhenBrandApproved(
-            twilio,
-            facilityData,
-            prepareCampaignSamples(facilityData, samples),
-          );
-          await doc.ref.set(
-            {
-              ...campaignFilingFields(filing),
-              a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-            },
-            { merge: true },
-          );
-          campaignStatus = filing.campaignStatus ?? undefined;
-          functions.logger.info(`A2P poll: facility ${doc.id} deferred campaign filed=${filing.filed}`);
+          const outcome = await fileDeferredCampaign(twilio, doc.ref, doc.id);
+          if (outcome.stopped) {
+            // Marked rejected with the reason; the owner resubmits from the page.
+            changed += 1;
+            continue;
+          }
+          campaignStatus = outcome.campaignStatus;
         }
 
         const current = ((facilityData.a2pStatus as string) || 'draft') as A2PStatus;

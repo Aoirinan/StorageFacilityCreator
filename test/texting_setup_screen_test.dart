@@ -14,6 +14,8 @@ class _FakeRepository implements TextingOnboardingRepository {
   int refreshCount = 0;
   int resetCount = 0;
   List<String>? submittedSamples;
+  List<String>? submittedConsentMethods;
+  int provisionCount = 0;
 
   _FakeRepository(this.snapshots);
 
@@ -27,6 +29,7 @@ class _FakeRepository implements TextingOnboardingRepository {
     required String facilityId,
     String? areaCode,
   }) async {
+    provisionCount++;
     return snapshots[facilityId]!;
   }
 
@@ -69,8 +72,11 @@ class _FakeRepository implements TextingOnboardingRepository {
     required String facilityId,
     required List<String> useCases,
     required List<String> sampleMessages,
+    List<String> consentMethods = const [],
+    String? areaCode,
   }) async {
     submittedSamples = sampleMessages;
+    submittedConsentMethods = consentMethods;
     return snapshots[facilityId]!;
   }
 }
@@ -168,13 +174,33 @@ const _profileInReviewSnapshot = TextingOnboardingSnapshot(
   bundleIssues: 'A2P Messaging Profile Information - Company Type: invalid',
 );
 
-/// Saved details and a single message type chosen: resumes at review.
+/// Saved details and a single message type chosen, bundles approved by
+/// Twilio: resumes at review with the submit button enabled.
 const _oneUseCaseSnapshot = TextingOnboardingSnapshot(
   status: TextingRegistrationStatus.draft,
   platformApproved: false,
   businessDetails: _business,
   useCases: ['Payment reminders'],
+  consentMethods: ['online_form'],
+  senderName: 'Example Self Storage',
   hasTrustProfile: true,
+  bundleReady: true,
+  bundleApproved: true,
+  bundleProfileStatus: 'twilio-approved',
+  bundleProductStatus: 'twilio-approved',
+);
+
+/// Same, but Twilio is still reviewing the A2P messaging registration.
+const _awaitingApprovalSnapshot = TextingOnboardingSnapshot(
+  status: TextingRegistrationStatus.draft,
+  platformApproved: false,
+  businessDetails: _business,
+  useCases: ['Payment reminders'],
+  consentMethods: ['online_form'],
+  hasTrustProfile: true,
+  bundleReady: true,
+  bundleProfileStatus: 'twilio-approved',
+  bundleProductStatus: 'in-review',
 );
 
 const _rejectedSnapshot = TextingOnboardingSnapshot(
@@ -345,9 +371,62 @@ void main() {
       expect(samples.length, greaterThanOrEqualTo(2));
       expect(samples.toSet().length, samples.length);
       for (final sample in samples) {
-        expect(sample, startsWith('Example Storage LLC:'));
+        // The server's sender name, which live texts also open with.
+        expect(sample, startsWith('Example Self Storage:'));
         expect(sample.length, greaterThanOrEqualTo(20));
       }
+      expect(repository.submittedConsentMethods, ['online_form']);
+      // The number is reserved inside the one submit call, after the server's
+      // checks, never by a separate provisionPhoneNumber call first.
+      expect(repository.provisionCount, 0);
+    });
+
+    testWidgets('submit stays disabled until Twilio approves both bundles',
+        (tester) async {
+      final repository =
+          _FakeRepository({'facility-1': _awaitingApprovalSnapshot});
+      await _pumpScreen(tester, repository);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('review-stage')), findsOneWidget);
+      expect(find.byKey(const Key('awaiting-bundle-approval')), findsOneWidget);
+      expect(find.textContaining('A2P messaging registration: In review at Twilio'),
+          findsOneWidget);
+      final button = tester
+          .widget<FilledButton>(find.byKey(const Key('primary-stage-action')));
+      expect(button.onPressed, isNull);
+      expect(repository.submittedSamples, isNull);
+      expect(repository.provisionCount, 0);
+    });
+
+    testWidgets('messaging plan requires a consent method', (tester) async {
+      await _pumpScreen(
+          tester,
+          _FakeRepository({
+            'facility-1': _savedDraftSnapshot,
+          }));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('messaging-plan-stage')), findsOneWidget);
+      expect(find.byKey(const Key('consent-method-error')), findsOneWidget);
+      tester
+          .widget<FilledButton>(find.byKey(const Key('primary-stage-action')))
+          .onPressed!();
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('messaging-plan-stage')), findsOneWidget,
+          reason: 'cannot continue without a consent method');
+
+      tester
+          .widget<CheckboxListTile>(
+              find.byKey(const Key('consent-method-signed_form')))
+          .onChanged!(true);
+      await tester.pump();
+      expect(find.byKey(const Key('consent-method-error')), findsNothing);
+      tester
+          .widget<FilledButton>(find.byKey(const Key('primary-stage-action')))
+          .onPressed!();
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('review-stage')), findsOneWidget);
     });
 
     testWidgets('requires a named authorized representative', (tester) async {

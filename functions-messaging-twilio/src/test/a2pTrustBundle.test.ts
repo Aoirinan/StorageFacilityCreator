@@ -22,191 +22,8 @@ import {
 import type { A2PTwilioClient } from '../a2pTwilioTypes';
 import type { TrustBundleInput } from '@sfc/functions-shared';
 
-// --- fake Twilio -------------------------------------------------------------
-//
-// Records every call so tests can assert exactly what would have been sent.
-// Only the surface in A2PTwilioClient exists; anything else (for example the
-// policies list the old code searched by name) is a decoy that must never be
-// consulted.
+import { fakeTwilio, ops, type Call } from './fakeTwilio';
 
-type Call = { op: string; target?: string; params?: any };
-
-interface Bundle {
-  sid: string;
-  status: string;
-  policySid: string;
-  assignments: string[];
-}
-
-interface FakeOptions {
-  profile?: Partial<Bundle> & { sid: string };
-  product?: Partial<Bundle> & { sid: string };
-  profileEvaluation?: { status: string; results: any[] };
-  productEvaluation?: { status: string; results: any[] };
-  brandStatus?: string;
-}
-
-const PRIMARY_POLICY = 'RN6433641899984f951173ef1738c3bdd0';
-
-function fakeTwilio(options: FakeOptions = {}) {
-  const calls: Call[] = [];
-  let counter = 0;
-  const nextSid = (prefix: string) => `${prefix}${String(++counter).padStart(32, '0')}`;
-  const profiles = new Map<string, Bundle>();
-  const products = new Map<string, Bundle>();
-  if (options.profile) {
-    profiles.set(options.profile.sid, {
-      status: 'draft',
-      policySid: SECONDARY_CUSTOMER_PROFILE_POLICY_SID,
-      assignments: [],
-      ...options.profile,
-    });
-  }
-  if (options.product) {
-    products.set(options.product.sid, {
-      status: 'draft',
-      policySid: A2P_TRUST_PRODUCT_POLICY_SID,
-      assignments: [],
-      ...options.product,
-    });
-  }
-
-  const bundleContext = (kind: 'profile' | 'product', map: Map<string, Bundle>, sid: string) => {
-    const bundle = () => {
-      const b = map.get(sid);
-      if (!b) throw Object.assign(new Error(`${sid} not found`), { status: 404 });
-      return b;
-    };
-    const assignments = {
-      list: async () => bundle().assignments.map((objectSid) => ({ objectSid })),
-      create: async ({ objectSid }: { objectSid: string }) => {
-        calls.push({ op: `${kind}.assign`, target: sid, params: objectSid });
-        bundle().assignments.push(objectSid);
-        return { sid: nextSid('BV') };
-      },
-    };
-    const evaluations = {
-      create: async ({ policySid }: { policySid: string }) => {
-        calls.push({ op: `${kind}.evaluate`, target: sid, params: policySid });
-        const ev =
-          (kind === 'profile' ? options.profileEvaluation : options.productEvaluation) ??
-          { status: 'compliant', results: [] };
-        return { sid: nextSid('EL'), policySid, ...ev };
-      },
-    };
-    const ctx: any = {
-      fetch: async () => ({ sid, status: bundle().status, policySid: bundle().policySid }),
-      update: async (params: any) => {
-        calls.push({ op: `${kind}.update`, target: sid, params });
-        if (params.status) bundle().status = params.status;
-        return { sid, status: bundle().status, policySid: bundle().policySid };
-      },
-    };
-    if (kind === 'profile') {
-      ctx.customerProfilesEntityAssignments = assignments;
-      ctx.customerProfilesEvaluations = evaluations;
-    } else {
-      ctx.trustProductsEntityAssignments = assignments;
-      ctx.trustProductsEvaluations = evaluations;
-    }
-    return ctx;
-  };
-
-  const customerProfiles: any = (sid: string) => bundleContext('profile', profiles, sid);
-  customerProfiles.create = async (params: any) => {
-    calls.push({ op: 'profile.create', params });
-    const sid = nextSid('BU');
-    profiles.set(sid, { sid, status: 'draft', policySid: params.policySid, assignments: [] });
-    return { sid, status: 'draft', policySid: params.policySid };
-  };
-  customerProfiles.list = async () => [
-    { sid: 'BUprimary0000000000000000000000000', status: 'twilio-approved', policySid: PRIMARY_POLICY },
-  ];
-
-  const trustProducts: any = (sid: string) => bundleContext('product', products, sid);
-  trustProducts.create = async (params: any) => {
-    calls.push({ op: 'product.create', params });
-    const sid = nextSid('BU');
-    products.set(sid, { sid, status: 'draft', policySid: params.policySid, assignments: [] });
-    return { sid, status: 'draft', policySid: params.policySid };
-  };
-
-  const endUsers: any = (sid: string) => ({
-    update: async (params: any) => {
-      calls.push({ op: 'endUser.update', target: sid, params });
-      return { sid };
-    },
-  });
-  endUsers.create = async (params: any) => {
-    calls.push({ op: 'endUser.create', params });
-    return { sid: nextSid('IT') };
-  };
-
-  const supportingDocuments: any = (sid: string) => ({
-    update: async (params: any) => {
-      calls.push({ op: 'document.update', target: sid, params });
-      return { sid };
-    },
-  });
-  supportingDocuments.create = async (params: any) => {
-    calls.push({ op: 'document.create', params });
-    return { sid: nextSid('RD') };
-  };
-
-  const addresses: any = (sid: string) => ({
-    update: async (params: any) => {
-      calls.push({ op: 'address.update', target: sid, params });
-      return { sid };
-    },
-  });
-  addresses.create = async (params: any) => {
-    calls.push({ op: 'address.create', params });
-    return { sid: nextSid('AD') };
-  };
-
-  const brandRegistrations: any = (sid: string) => ({
-    fetch: async () => ({ sid, status: options.brandStatus ?? 'APPROVED', errors: [], failureReason: '' }),
-  });
-  brandRegistrations.create = async (params: any) => {
-    calls.push({ op: 'brand.create', params });
-    return { sid: nextSid('BN') };
-  };
-
-  const services = (mg: string) => {
-    const usAppToPerson: any = (qe: string) => ({
-      fetch: async () => {
-        calls.push({ op: 'campaign.fetch', target: `${mg}/${qe}` });
-        return { sid: qe, campaignId: 'CM' + '1'.repeat(32), campaignStatus: 'VERIFIED', errors: [] };
-      },
-    });
-    usAppToPerson.create = async (params: any) => {
-      calls.push({ op: 'campaign.create', target: mg, params });
-      return { sid: 'QE' + '2'.repeat(32), campaignId: 'CM' + '3'.repeat(32), campaignStatus: 'PENDING', errors: [] };
-    };
-    usAppToPerson.list = async () => [
-      { sid: 'QE' + '4'.repeat(32), campaignId: 'CMlegacy', campaignStatus: 'IN_PROGRESS', errors: [] },
-    ];
-    return { usAppToPerson };
-  };
-
-  // A decoy the old name-matching resolver would have picked first.
-  const policies = {
-    list: async () => {
-      calls.push({ op: 'policies.list' });
-      return [
-        { sid: 'RN' + 'd'.repeat(32), friendlyName: 'A2P Messaging: Starter Brand (decoy)' },
-        { sid: 'RN' + 'e'.repeat(32), friendlyName: 'Secondary Customer Profile of a Business (decoy)' },
-      ];
-    },
-  };
-
-  const client = {
-    trusthub: { v1: { customerProfiles, trustProducts, endUsers, supportingDocuments, policies } },
-    addresses,
-    messaging: { v1: { brandRegistrations, services } },
-  };
-  return { client: client as unknown as A2PTwilioClient, calls, profiles, products };
-}
 
 function facilityRef(id = 'facility123'): FacilityDocRef & { writes: Record<string, any>[] } {
   const writes: Record<string, any>[] = [];
@@ -236,7 +53,6 @@ const INPUT: TrustBundleInput = {
 
 const POLICIES = resolveA2PPolicySids({});
 
-const ops = (calls: Call[], op: string) => calls.filter((c) => c.op === op);
 
 test.beforeEach(() => {
   resetPrimaryCustomerProfileCache();
@@ -255,6 +71,12 @@ test('policy SIDs are the documented ISV policies, whatever policies.list return
   await buildAndEvaluateTrustBundle(client, facilityRef(), {}, INPUT, POLICIES);
 
   assert.equal(ops(calls, 'policies.list').length, 0, 'policies must not be looked up by name');
+  // The primary profile is found by a filtered list, not by scanning a page.
+  assert.deepEqual(ops(calls, 'profile.list')[0].params, {
+    policySid: 'RN6433641899984f951173ef1738c3bdd0',
+    status: 'twilio-approved',
+    limit: 20,
+  });
   assert.equal(ops(calls, 'profile.create')[0].params.policySid, SECONDARY_CUSTOMER_PROFILE_POLICY_SID);
   assert.equal(ops(calls, 'product.create')[0].params.policySid, A2P_TRUST_PRODUCT_POLICY_SID);
   assert.equal(ops(calls, 'profile.evaluate')[0].params, SECONDARY_CUSTOMER_PROFILE_POLICY_SID);
@@ -469,6 +291,46 @@ test('a product under the right policy is reused', async () => {
   assert.equal(ops(calls, 'product.create').length, 0);
 });
 
+test('a reused draft bundle is reconciled to exactly the expected assignments', async () => {
+  const { client, calls, profiles, products } = fakeTwilio({
+    profile: {
+      sid: 'BUprofile',
+      status: 'draft',
+      assignments: ['ITbusiness', 'ITstaleRep', 'ITrep'],
+    },
+    product: {
+      sid: 'BUproduct',
+      status: 'twilio-rejected',
+      assignments: ['BUdeadProfile', 'ITa2p', 'ITa2pDuplicate'],
+    },
+  });
+  await buildAndEvaluateTrustBundle(
+    client,
+    facilityRef(),
+    {
+      twilioTrustProfileSid: 'BUprofile',
+      twilioTrustProductSid: 'BUproduct',
+      twilioBusinessInfoEndUserSid: 'ITbusiness',
+      twilioAuthorizedRepEndUserSid: 'ITrep',
+      twilioA2pProfileEndUserSid: 'ITa2p',
+      twilioAddressSid: 'ADaddress',
+      twilioAddressDocumentSid: 'RDdoc',
+    },
+    INPUT,
+    POLICIES,
+  );
+  assert.deepEqual(
+    [...profiles.get('BUprofile')!.assignments].sort(),
+    ['BUprimary0000000000000000000000000', 'ITbusiness', 'ITrep', 'RDdoc'].sort(),
+  );
+  assert.deepEqual([...products.get('BUproduct')!.assignments].sort(), ['BUprofile', 'ITa2p']);
+  assert.deepEqual(
+    ops(calls, 'product.unassign').map((c) => c.params).sort(),
+    ['BUdeadProfile', 'ITa2pDuplicate'],
+  );
+  assert.deepEqual(ops(calls, 'profile.unassign').map((c) => c.params), ['ITstaleRep']);
+});
+
 // --- failed evaluation -------------------------------------------------------
 
 test('a noncompliant product is stored with its field failures and evaluation/policy SIDs', async () => {
@@ -568,6 +430,8 @@ test('brand registration sends a2PProfileBundleSid (SDK spelling)', () => {
     customerProfileBundleSid: 'BUprofile',
     a2PProfileBundleSid: 'BUproduct',
     brandType: 'STANDARD',
+    // LOW_VOLUME campaign: automatic secondary vetting buys nothing.
+    skipAutomaticSecVet: true,
   });
   assert.equal('a2pProfileBundleSid' in params, false);
 });
@@ -575,6 +439,7 @@ test('brand registration sends a2PProfileBundleSid (SDK spelling)', () => {
 // --- campaign ----------------------------------------------------------------
 
 const FACILITY = {
+  textingConsentMethods: ['online_form', 'text_start'],
   twilioBrandSid: 'BNbrand',
   twilioMessagingServiceSid: 'MGservice',
   textingBusinessData: {
@@ -669,18 +534,50 @@ test('embedded link / phone flags are computed from the samples', () => {
   assert.equal(detectEmbeddedContent(['Rent of $130.00 for unit 12 is due']).hasEmbeddedPhone, false);
 });
 
-test('message flow names the facility, its website, written consent, START and public terms', () => {
+test('message flow names the facility, its website and only the selected consent methods', () => {
   const flow = buildCampaignMessageFlow(FACILITY);
   assert.match(flow, /^Example Self Storage \(Example Storage LLC\)/);
-  assert.match(flow, /written consent/);
-  assert.match(flow, /staff then record that consent/);
+  assert.match(flow, /online rental form/);
   assert.match(flow, /texting START/);
+  assert.match(flow, /records each tenant's consent/);
   assert.match(flow, /https:\/\/example\.com/);
   assert.match(flow, /https:\/\/www\.storagefacilitycreator\.com\/sms-terms/);
   assert.match(flow, /https:\/\/www\.storagefacilitycreator\.com\/sms-consent-demo/);
   assert.match(flow, /Reply STOP to opt out, HELP for help/);
+  // Not selected, so not claimed.
+  assert.doesNotMatch(flow, /rental agreement|consent form|in person/);
   // The old copy pointed reviewers at the operator app, which they cannot use.
   assert.doesNotMatch(flow, /app\.storagefacilitycreator\.com/);
   assert.ok(flow.length >= 40 && flow.length <= 2048);
-  assert.match(buildOptInMessage(FACILITY), /^Example Self Storage: /);
+
+  const paperOnly = buildCampaignMessageFlow(FACILITY, ['signed_form', 'verbal_recorded']);
+  assert.match(paperOnly, /signing a separate SMS consent form/);
+  assert.match(paperOnly, /agreeing in person/);
+  assert.doesNotMatch(paperOnly, /START|online rental form|sms-consent-demo/);
+
+  assert.throws(() => buildCampaignMessageFlow(FACILITY, []), /how your tenants agree/);
+});
+
+test('opt-in keyword and message are filed only when tenants text START', async () => {
+  const withStart = fakeTwilio({ brandStatus: 'APPROVED' });
+  await fileCampaignWhenBrandApproved(withStart.client, FACILITY, SAMPLES);
+  const filed = ops(withStart.calls, 'campaign.create')[0].params;
+  assert.deepEqual(filed.optInKeywords, ['START']);
+  // Identical to the live START reply (PR #16 inboundKeywordReplies.buildStartReply).
+  assert.equal(
+    filed.optInMessage,
+    "Example Self Storage: you're opted in to account texts about your storage unit. " +
+      'Msg frequency varies. Msg & data rates may apply. Reply HELP for help, STOP to opt out.',
+  );
+  assert.equal(buildOptInMessage(FACILITY), filed.optInMessage);
+
+  const noStart = fakeTwilio({ brandStatus: 'APPROVED' });
+  await fileCampaignWhenBrandApproved(
+    noStart.client,
+    { ...FACILITY, textingConsentMethods: ['lease_clause'] },
+    SAMPLES,
+  );
+  const params = ops(noStart.calls, 'campaign.create')[0].params;
+  assert.equal('optInKeywords' in params, false);
+  assert.equal('optInMessage' in params, false);
 });
