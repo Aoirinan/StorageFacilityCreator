@@ -49,7 +49,7 @@ export const startTrial = functions.https.onCall(async (data: any, context) => {
     // One trial per account, ever. Expired trials are now moved out of
     // `trialing` by the nightly sweep, so the status check above no longer
     // blocks a second grant on its own.
-    if (accountData.subscriptionTrialEnd) {
+    if (accountData.subscriptionTrialEnd || accountData.platformTrialUsedAt) {
       throw new functions.https.HttpsError(
         'failed-precondition',
         'This account has already used its free trial. Choose a plan to continue.',
@@ -65,6 +65,8 @@ export const startTrial = functions.https.onCall(async (data: any, context) => {
       subscriptionTrialEnd: admin.firestore.Timestamp.fromDate(trialEnd),
       subscriptionCurrentPeriodStart: admin.firestore.Timestamp.fromDate(now),
       subscriptionCurrentPeriodEnd: admin.firestore.Timestamp.fromDate(trialEnd),
+      // Permanent: checkout reads this so the owner never gets a second trial.
+      platformTrialUsedAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 

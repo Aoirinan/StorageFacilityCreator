@@ -632,6 +632,28 @@ test('account owners cannot write subscription entitlements', async () => {
   await assertSucceeds(accountRef.update({ facilityIds: [FACILITY_ID] }));
 });
 
+test('account owners cannot clear or forge the once-per-owner offer markers', async () => {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilityCreatorAccounts').doc('account-markers').set({
+      ownerUid: OWNER_UID,
+      ownerEmail: 'owner@example.com',
+      ownerName: 'Owner',
+      subscriptionStatus: 'cancelled',
+      facilityIds: [],
+      platformTrialUsedAt: serverTimestamp(),
+      platformFirstMonthFreeUsedAt: serverTimestamp(),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  });
+
+  const owner = testEnv.authenticatedContext(OWNER_UID);
+  const accountRef = owner.firestore().collection('facilityCreatorAccounts').doc('account-markers');
+  await assertFails(accountRef.update({ platformTrialUsedAt: null }));
+  await assertFails(accountRef.update({ platformFirstMonthFreeUsedAt: deleteField() }));
+  await assertSucceeds(accountRef.update({ facilityIds: [FACILITY_ID] }));
+});
+
 test('new accounts must start pending approval without server-owned billing fields', async () => {
   const owner = testEnv.authenticatedContext(OWNER_UID);
   const accounts = owner.firestore().collection('facilityCreatorAccounts');

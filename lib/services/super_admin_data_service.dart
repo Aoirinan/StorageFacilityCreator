@@ -1373,6 +1373,8 @@ class SuperAdminDataService {
       'subscriptionTrialEnd': Timestamp.fromDate(trialEnd),
       'subscriptionCurrentPeriodStart': Timestamp.fromDate(now),
       'subscriptionCurrentPeriodEnd': Timestamp.fromDate(trialEnd),
+      // Checkout reads this so the owner never gets a second Stripe trial.
+      'platformTrialUsedAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
   }
@@ -1413,6 +1415,8 @@ class SuperAdminDataService {
       'subscriptionCurrentPeriodStart': Timestamp.fromDate(now),
       'subscriptionCurrentPeriodEnd': Timestamp.fromDate(trialEnd),
       'approvedAt': FieldValue.serverTimestamp(),
+      // Checkout reads this so the owner never gets a second Stripe trial.
+      'platformTrialUsedAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
   }

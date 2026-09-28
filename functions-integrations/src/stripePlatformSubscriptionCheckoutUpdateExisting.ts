@@ -22,6 +22,9 @@ export async function tryUpdateExistingSubscriptionInsteadOfCheckout(options: {
   basePriceId: string;
   addOnPriceId: string;
   uid: string;
+  /** Tests pass fakes; production uses the Admin SDK and the real audit log. */
+  db?: FirebaseFirestore.Firestore;
+  auditLog?: typeof writeAuditLog;
 }): Promise<SubscriptionUpdatedInsteadOfCheckout | null> {
   const {
     stripe,
@@ -67,7 +70,7 @@ export async function tryUpdateExistingSubscriptionInsteadOfCheckout(options: {
       updates.items!.push({ id: addOnItem.id, deleted: true });
     }
     await stripe.subscriptions.update(subscriptionId, updates);
-    await admin.firestore().collection('facilityCreatorAccounts').doc(accountId).update({
+    await (options.db ?? admin.firestore()).collection('facilityCreatorAccounts').doc(accountId).update({
       subscriptionCancelAtPeriodEnd: false,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
@@ -76,7 +79,7 @@ export async function tryUpdateExistingSubscriptionInsteadOfCheckout(options: {
       facilityCount,
       additionalFacilityCount,
     });
-    await writeAuditLog(accountId, {
+    await (options.auditLog ?? writeAuditLog)(accountId, {
       action: 'subscription_updated_instead_of_checkout',
       userId: uid,
       facilityCount,

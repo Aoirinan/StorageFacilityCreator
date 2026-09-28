@@ -153,15 +153,22 @@ export { getOrCreateBasePriceId, getOrCreateAddOnPriceId } from './stripe/subscr
 export { FIRST_MONTH_FREE_COUPON_ID, getOrCreateFirstMonthFreeCouponId } from './stripe/firstMonthFreeCoupon';
 export {
   DEFAULT_PLATFORM_TRIAL_DAYS,
+  FIRST_MONTH_FREE_METADATA_KEY,
   STRIPE_CHECKOUT_MIN_TRIAL_END_LEAD_MS,
   TRIAL_END_SAFETY_MARGIN_MS,
-  decidePlatformCheckoutTrial,
+  assessPlatformOfferHistory,
+  decidePlatformCheckoutOffer,
   platformCheckoutTrialSubscriptionData,
+  platformOfferMarkerUpdates,
+  platformOfferUsageFromSubscription,
   trialEndToMillis,
 } from './stripe/platformCheckoutTrial';
 export type {
+  PlatformCheckoutOffer,
+  PlatformCheckoutOfferInput,
   PlatformCheckoutTrialDecision,
-  PlatformCheckoutTrialInput,
+  PlatformOfferHistory,
+  PlatformOfferHistoryInput,
 } from './stripe/platformCheckoutTrial';
 export { computeAccountRollup, isLocalTrialExpired } from './subscription/accountRollup';
 export type {

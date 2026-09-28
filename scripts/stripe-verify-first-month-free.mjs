@@ -51,8 +51,9 @@ function unquote(s) {
 
 /**
  * Pulls the test-mode key for `projectName` out of `stripe config --list` output.
- * The CLI prints either just that project's keys, or (for the default profile) the whole
- * config file with one [section] per project. Never falls back to another section's key.
+ * For a named project the CLI prints a `[<name>]` header and that profile's keys; for the
+ * default profile it prints the whole config file, one [section] per project. Only a key
+ * under a header matching `projectName` is accepted; output with no headers is refused.
  */
 export function parseTestKeyForProject(output, projectName) {
   const entries = [];
@@ -69,24 +70,23 @@ export function parseTestKeyForProject(output, projectName) {
     const kv = line.match(/^test_mode_api_key\s*=\s*(.+)$/);
     if (kv) entries.push({ section, key: unquote(kv[1]) });
   }
-  if (sections.size > 0) {
-    const mine = entries.filter((e) => e.section === projectName);
-    if (mine.length !== 1) {
-      throw new Error(
-        `No single test_mode_api_key for project "${projectName}" in the Stripe CLI config ` +
-          `(sections found: ${[...sections].join(', ') || 'none'}). ` +
-          `Run: stripe login --project-name "${projectName}"`,
-      );
-    }
-    return mine[0].key;
-  }
-  if (entries.length !== 1) {
+  // Without a [section] header there is no proof the key belongs to this project (the
+  // CLI may have fallen back to another profile), so refuse rather than guess.
+  if (sections.size === 0) {
     throw new Error(
-      `Expected exactly one test_mode_api_key for project "${projectName}", found ${entries.length}. ` +
+      `The Stripe CLI output has no [section] headers, so the key cannot be tied to project "${projectName}". ` +
+        `Refusing. Check: stripe config --list --project-name "${projectName}"`,
+    );
+  }
+  const mine = entries.filter((e) => e.section === projectName);
+  if (mine.length !== 1) {
+    throw new Error(
+      `No single test_mode_api_key for project "${projectName}" in the Stripe CLI config ` +
+        `(sections found: ${[...sections].join(', ')}). ` +
         `Run: stripe login --project-name "${projectName}"`,
     );
   }
-  return entries[0].key;
+  return mine[0].key;
 }
 
 function readTestKey(projectName) {

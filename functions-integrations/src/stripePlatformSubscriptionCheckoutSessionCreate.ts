@@ -1,6 +1,7 @@
 import * as functions from 'firebase-functions/v1';
 import type Stripe from 'stripe';
 import {
+  FIRST_MONTH_FREE_METADATA_KEY,
   getOrCreateFirstMonthFreeCouponId,
   platformCheckoutTrialSubscriptionData,
   writeAuditLog,
@@ -9,15 +10,15 @@ import {
 
 /**
  * Pure: the Checkout Session params for an account-level platform subscription.
- * The trial comes from `decidePlatformCheckoutTrial` so an owner already inside the
- * app trial is not handed a second one; the first-month-free coupon is always attached.
+ * Trial and coupon come from `decidePlatformCheckoutOffer`: one trial and one free
+ * month per owner, ever. `firstMonthFreeCouponId` is null when the coupon is not offered.
  */
 export function buildAccountSubscriptionCheckoutParams(options: {
   accountId: string;
   customerId: string;
   facilityCount: number;
   lineItems: Stripe.Checkout.SessionCreateParams.LineItem[];
-  firstMonthFreeCouponId: string;
+  firstMonthFreeCouponId: string | null;
   trial: PlatformCheckoutTrialDecision;
   successUrl?: string;
   cancelUrl?: string;
@@ -25,17 +26,17 @@ export function buildAccountSubscriptionCheckoutParams(options: {
 }): Stripe.Checkout.SessionCreateParams {
   const { accountId, customerId, facilityCount, lineItems, firstMonthFreeCouponId, trial, successUrl, cancelUrl, ownerUid } =
     options;
-  return {
+  const params: Stripe.Checkout.SessionCreateParams = {
     customer: customerId,
     mode: 'subscription',
     line_items: lineItems,
-    discounts: [{ coupon: firstMonthFreeCouponId }],
     success_url: successUrl || 'https://app.storagefacilitycreator.com/subscription/success?session_id={CHECKOUT_SESSION_ID}',
     cancel_url: cancelUrl || 'https://app.storagefacilitycreator.com/subscription/cancel',
     metadata: {
       accountId: accountId,
       ownerUid,
       facilityCount: facilityCount.toString(),
+      [FIRST_MONTH_FREE_METADATA_KEY]: String(!!firstMonthFreeCouponId),
     },
     subscription_data: {
       ...platformCheckoutTrialSubscriptionData(trial),
@@ -43,9 +44,12 @@ export function buildAccountSubscriptionCheckoutParams(options: {
         accountId: accountId,
         facilityCount: facilityCount.toString(),
         trialDecision: trial.kind,
+        [FIRST_MONTH_FREE_METADATA_KEY]: String(!!firstMonthFreeCouponId),
       },
     },
   };
+  if (firstMonthFreeCouponId) params.discounts = [{ coupon: firstMonthFreeCouponId }];
+  return params;
 }
 
 export async function createSubscriptionCheckoutSessionAndAudit(options: {
@@ -59,8 +63,10 @@ export async function createSubscriptionCheckoutSessionAndAudit(options: {
   successUrl?: string;
   cancelUrl?: string;
   ownerUid: string;
-  /** From `decidePlatformCheckoutTrial` on the account document. */
+  /** From `decidePlatformCheckoutOffer`. */
   trial: PlatformCheckoutTrialDecision;
+  attachFirstMonthFree: boolean;
+  auditLog?: typeof writeAuditLog;
 }): Promise<{ checkoutUrl: string | null; sessionId: string }> {
   const {
     stripe,
@@ -74,7 +80,9 @@ export async function createSubscriptionCheckoutSessionAndAudit(options: {
     cancelUrl,
     ownerUid,
     trial,
+    attachFirstMonthFree,
   } = options;
+  const auditLog = options.auditLog ?? writeAuditLog;
 
   const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = [
     {
@@ -99,9 +107,10 @@ export async function createSubscriptionCheckoutSessionAndAudit(options: {
       lineItemsCount: lineItems.length,
       trialDecision: trial.kind,
       trialReason: trial.reason,
+      attachFirstMonthFree,
     });
-    // Public offer: 30-day trial, then the first paid month is free (two months in total).
-    const firstMonthFreeCouponId = await getOrCreateFirstMonthFreeCouponId(stripe);
+    // Public offer: 30-day trial, then the first paid month is free, once per owner.
+    const firstMonthFreeCouponId = attachFirstMonthFree ? await getOrCreateFirstMonthFreeCouponId(stripe) : null;
     const session = await stripe.checkout.sessions.create(
       buildAccountSubscriptionCheckoutParams({
         accountId,
@@ -124,7 +133,7 @@ export async function createSubscriptionCheckoutSessionAndAudit(options: {
       checkoutUrl: session.url,
       sessionId: session.id,
     };
-    await writeAuditLog(accountId, {
+    await auditLog(accountId, {
       action: 'subscription_checkout_created',
       userId: ownerUid,
       checkoutSessionId: session.id,

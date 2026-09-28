@@ -1,7 +1,11 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
-import { getStripeClient } from '@sfc/functions-shared';
+import {
+  getStripeClient,
+  platformOfferMarkerUpdates,
+  platformOfferUsageFromSubscription,
+} from '@sfc/functions-shared';
 
 // Stripe v20 types: Subscription/Invoice may have stricter Expandable types; these fields exist at runtime
 type SubscriptionWithPeriod = Stripe.Subscription & { current_period_end?: number; current_period_start?: number };
@@ -126,15 +130,55 @@ export async function updateFacilityFromWebsiteSubscription(
   });
 }
 
-export async function updateFacilityFromPlatformSubscription(facilityId: string, subscriptionId: string) {
+/** Tests pass a fake Firestore and Stripe client; webhooks pass nothing. */
+export type PlatformSubscriptionWebhookDeps = {
+  db?: FirebaseFirestore.Firestore;
+  stripe?: Stripe;
+};
+
+/**
+ * Records, once and for good, that this owner used the trial and/or the first free
+ * month. Markers already set are left alone, and nothing here ever clears one.
+ */
+export async function recordPlatformOfferUsage(
+  db: FirebaseFirestore.Firestore,
+  accountId: string,
+  usage: { trialUsed: boolean; firstMonthFreeUsed: boolean },
+): Promise<void> {
+  if (!accountId || (!usage.trialUsed && !usage.firstMonthFreeUsed)) return;
+  const accountRef = db.collection('facilityCreatorAccounts').doc(accountId);
+  const written = await db.runTransaction(async (transaction) => {
+    const snap = await transaction.get(accountRef);
+    if (!snap.exists) return null;
+    const markers = platformOfferMarkerUpdates(
+      (snap.data() ?? {}) as Record<string, unknown>,
+      usage,
+      admin.firestore.FieldValue.serverTimestamp(),
+    );
+    if (Object.keys(markers).length === 0) return {};
+    transaction.update(accountRef, markers);
+    return markers;
+  });
+  if (written && Object.keys(written).length > 0) {
+    functions.logger.info('Recorded platform offer usage', { accountId, markers: Object.keys(written) });
+  }
+}
+
+export async function updateFacilityFromPlatformSubscription(
+  facilityId: string,
+  subscriptionId: string,
+  deps: PlatformSubscriptionWebhookDeps = {},
+) {
   try {
-    const facilityRef = admin.firestore().collection('facilities').doc(facilityId);
+    const db = deps.db ?? admin.firestore();
+    const facilityRef = db.collection('facilities').doc(facilityId);
     // Deleted: nothing to update, so no Stripe read and no NOT_FOUND error.
-    if (!(await facilityRef.get()).exists) {
+    const facilitySnap = await facilityRef.get();
+    if (!facilitySnap.exists) {
       functions.logger.info(`Platform subscription ${subscriptionId} event for deleted facility ${facilityId}; nothing to update`);
       return;
     }
-    const stripe = getStripeClient();
+    const stripe = deps.stripe ?? getStripeClient();
     const subscription = await stripe.subscriptions.retrieve(subscriptionId);
     const status = mapSubscriptionStatus(subscription.status);
 
@@ -148,9 +192,10 @@ export async function updateFacilityFromPlatformSubscription(facilityId: string,
         ? admin.firestore.Timestamp.fromMillis(subPeriodEnd(subscription)! * 1000)
         : null,
       platformSubscriptionCancelAtPeriodEnd: subscription.cancel_at_period_end,
-      platformSubscriptionTrialEnd: subscription.trial_end
-        ? admin.firestore.Timestamp.fromMillis(subscription.trial_end * 1000)
-        : null,
+      // Never null an existing trial end: it is this facility's record that its trial happened.
+      ...(subscription.trial_end
+        ? { platformSubscriptionTrialEnd: admin.firestore.Timestamp.fromMillis(subscription.trial_end * 1000) }
+        : {}),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     functions.logger.info(
@@ -158,41 +203,80 @@ export async function updateFacilityFromPlatformSubscription(facilityId: string,
         ? `Facility ${facilityId} updated from platform subscription ${subscriptionId}`
         : `Facility ${facilityId} deleted while platform subscription ${subscriptionId} was read; nothing updated`,
     );
+    const accountId =
+      (subscription.metadata?.accountId as string | undefined) ||
+      (facilitySnap.get('facilityCreatorAccountId') as string | undefined) ||
+      '';
+    if (!accountId) {
+      functions.logger.warn('Platform subscription has no account to record offer usage on', { facilityId, subscriptionId });
+    }
+    await recordPlatformOfferUsage(db, accountId, platformOfferUsageFromSubscription(subscription));
   } catch (error: any) {
     functions.logger.error(`Error updating facility from subscription: ${error.message}`, error);
   }
 }
 
-export async function updateAccountFromSubscription(accountId: string, subscriptionId: string) {
+/**
+ * Account fields mirrored from an account-level platform subscription, plus the offer
+ * markers. A subscription without a trial never nulls an existing
+ * `subscriptionTrialEnd`: that date is the record that the owner's one trial happened.
+ */
+export function accountUpdateFromPlatformSubscription(
+  subscription: Stripe.Subscription,
+  existingAccount: Record<string, unknown>,
+): Record<string, unknown> {
+  const update: Record<string, unknown> = {
+    subscriptionStatus: mapSubscriptionStatus(subscription.status),
+    stripeSubscriptionId: subscription.id,
+    subscriptionCurrentPeriodStart: subPeriodStart(subscription)
+      ? admin.firestore.Timestamp.fromMillis(subPeriodStart(subscription)! * 1000)
+      : null,
+    subscriptionCurrentPeriodEnd: subPeriodEnd(subscription)
+      ? admin.firestore.Timestamp.fromMillis(subPeriodEnd(subscription)! * 1000)
+      : null,
+    subscriptionCancelAtPeriodEnd: subscription.cancel_at_period_end,
+    subscriptionCanceledAt: subscription.canceled_at
+      ? admin.firestore.Timestamp.fromMillis(subscription.canceled_at * 1000)
+      : null,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    ...platformOfferMarkerUpdates(
+      existingAccount,
+      platformOfferUsageFromSubscription(subscription),
+      admin.firestore.FieldValue.serverTimestamp(),
+    ),
+  };
+  if (subscription.trial_end) {
+    update.subscriptionTrialEnd = admin.firestore.Timestamp.fromMillis(subscription.trial_end * 1000);
+  }
+  return update;
+}
+
+export async function updateAccountFromSubscription(
+  accountId: string,
+  subscriptionId: string,
+  deps: PlatformSubscriptionWebhookDeps = {},
+) {
   try {
-    const stripe = getStripeClient();
+    const db = deps.db ?? admin.firestore();
+    const stripe = deps.stripe ?? getStripeClient();
     const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-    const status = mapSubscriptionStatus(subscription.status);
+    const accountRef = db.collection('facilityCreatorAccounts').doc(accountId);
 
-    await admin
-      .firestore()
-      .collection('facilityCreatorAccounts')
-      .doc(accountId)
-      .update({
-        subscriptionStatus: status,
-        stripeSubscriptionId: subscriptionId,
-        subscriptionCurrentPeriodStart: subPeriodStart(subscription)
-          ? admin.firestore.Timestamp.fromMillis(subPeriodStart(subscription)! * 1000)
-          : null,
-        subscriptionCurrentPeriodEnd: subPeriodEnd(subscription)
-          ? admin.firestore.Timestamp.fromMillis(subPeriodEnd(subscription)! * 1000)
-          : null,
-        subscriptionCancelAtPeriodEnd: subscription.cancel_at_period_end,
-        subscriptionCanceledAt: subscription.canceled_at
-          ? admin.firestore.Timestamp.fromMillis(subscription.canceled_at * 1000)
-          : null,
-        subscriptionTrialEnd: subscription.trial_end
-          ? admin.firestore.Timestamp.fromMillis(subscription.trial_end * 1000)
-          : null,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+    const updated = await db.runTransaction(async (transaction) => {
+      const snap = await transaction.get(accountRef);
+      if (!snap.exists) return false;
+      transaction.update(
+        accountRef,
+        accountUpdateFromPlatformSubscription(subscription, (snap.data() ?? {}) as Record<string, unknown>),
+      );
+      return true;
+    });
 
-    functions.logger.info(`Account ${accountId} updated from subscription ${subscriptionId}`);
+    functions.logger.info(
+      updated
+        ? `Account ${accountId} updated from subscription ${subscriptionId}`
+        : `Account ${accountId} not found for subscription ${subscriptionId}; nothing updated`,
+    );
   } catch (error: any) {
     functions.logger.error(`Error updating account from subscription: ${error.message}`, error);
   }
