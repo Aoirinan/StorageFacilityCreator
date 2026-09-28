@@ -79,17 +79,21 @@
       // and managers write. Codes may be null.
       match /stayAccess/{stayId} {
         allow read: if isFacilityStaff(facilityId);
-        allow create, update: if isFacilityOwnerOrManager(facilityId)
-          && request.resource.data.keys().hasOnly(['facilityId', 'stayId', 'doorCode', 'gateCode', 'accessNotes', 'source',
-               'updatedAt', 'updatedBy'])
-          && request.resource.data.facilityId == facilityId && request.resource.data.stayId == stayId
-          && (request.resource.data.get('doorCode', null) == null
-              || (request.resource.data.doorCode is string && request.resource.data.doorCode.size() <= 40))
-          && (request.resource.data.get('gateCode', null) == null
-              || (request.resource.data.gateCode is string && request.resource.data.gateCode.size() <= 40))
-          && request.resource.data.get('accessNotes', '') is string && request.resource.data.get('accessNotes', '').size() <= 1000
-          && request.resource.data.get('source', 'manual') in ['manual', 'phone_last4', 'static']
-          && request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time;
+        function stayAccessOk() {
+          return isFacilityOwnerOrManager(facilityId)
+            && request.resource.data.keys().hasOnly(['facilityId', 'stayId', 'doorCode', 'gateCode', 'accessNotes', 'source',
+                 'updatedAt', 'updatedBy'])
+            && request.resource.data.facilityId == facilityId && request.resource.data.stayId == stayId
+            && (request.resource.data.get('doorCode', null) == null
+                || (request.resource.data.doorCode is string && request.resource.data.doorCode.size() <= 40))
+            && (request.resource.data.get('gateCode', null) == null
+                || (request.resource.data.gateCode is string && request.resource.data.gateCode.size() <= 40))
+            && request.resource.data.get('accessNotes', '') is string && request.resource.data.get('accessNotes', '').size() <= 1000
+            && request.resource.data.get('source', 'manual') in ['manual', 'phone_last4', 'static']
+            && request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time;
+        }
+        allow create: if stayAccessOk() && stayModuleOn(facilityId);
+        allow update: if stayAccessOk();
         allow delete: if isFacilityOwnerOrManager(facilityId);
       }
 

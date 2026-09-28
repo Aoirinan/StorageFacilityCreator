@@ -55,7 +55,7 @@
                 : (d.get('completedBy', null) == null && d.get('completedAt', null) == null));
         }
         allow read: if canReadFacilityCalendarAndLists(facilityId);
-        allow create: if isFacilityOwnerOrManager(facilityId) && !taskId.matches('^turnover_.*')
+        allow create: if isFacilityOwnerOrManager(facilityId) && stayModuleOn(facilityId) && !taskId.matches('^turnover_.*')
           && request.resource.data.get('facilityId', null) == facilityId
           && request.resource.data.keys().hasAll(['facilityId', 'category', 'title', 'status', 'dueDate', 'createdBy',
                'createdAt', 'updatedAt', 'updatedBy'])

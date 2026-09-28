@@ -17,7 +17,7 @@
             && d.get('updatedAt', null) == request.time;
         }
         allow read: if isFacilityStaff(facilityId);
-        allow create: if isFacilityOwnerOrManager(facilityId) && templateOk()
+        allow create: if isFacilityOwnerOrManager(facilityId) && stayModuleOn(facilityId) && templateOk()
           && request.resource.data.get('seeded', false) == false
           && request.resource.data.get('createdBy', null) == request.auth.uid
           && request.resource.data.get('createdAt', null) == request.time;

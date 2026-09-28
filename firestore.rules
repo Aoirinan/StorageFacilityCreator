@@ -1423,6 +1423,14 @@ service cloud.firestore {
         allow read: if canReadFacilityCalendarAndLists(facilityId);
         allow write: if false; // staysSetControls only
       }
+
+      // True only once staysSetControls has switched Stays on for this
+      // facility. Client creates of Stays docs require it, so nothing Stays
+      // can be written from the app while the module is off.
+      function stayModuleOn(facilityId) {
+        let controls = /databases/$(database)/documents/facilities/$(facilityId)/stayControls/current;
+        return exists(controls) && get(controls).data.get('moduleEnabled', false) == true;
+      }
       // Stays listings. List fields (rates, tax lines, checklists) cannot be
       // checked element by element in rules, so only the callables write them.
       match /stayListings/{listingId} {
@@ -1438,16 +1446,20 @@ service cloud.firestore {
           return request.resource.data.get(k, '') is string && request.resource.data.get(k, '').size() <= max;
         }
         allow read: if isFacilityStaff(facilityId);
-        allow create, update: if isFacilityOwnerOrManager(facilityId)
-          && request.resource.data.keys().hasOnly(['facilityId', 'listingId', 'wifiName', 'wifiPassword', 'staticDoorCode',
-               'lockboxCode', 'gateCode', 'parkingNotes', 'trashNotes', 'checkoutInstructions', 'directionsUrl', 'houseRules',
-               'updatedAt', 'updatedBy'])
-          && request.resource.data.facilityId == facilityId && request.resource.data.listingId == listingId
-          && accessStr('wifiName', 100) && accessStr('wifiPassword', 100) && accessStr('staticDoorCode', 40)
-          && accessStr('lockboxCode', 40) && accessStr('gateCode', 40) && accessStr('parkingNotes', 2000)
-          && accessStr('trashNotes', 2000) && accessStr('checkoutInstructions', 4000) && accessStr('directionsUrl', 500)
-          && accessStr('houseRules', 4000)
-          && request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time;
+        function listingAccessOk() {
+          return isFacilityOwnerOrManager(facilityId)
+            && request.resource.data.keys().hasOnly(['facilityId', 'listingId', 'wifiName', 'wifiPassword', 'staticDoorCode',
+                 'lockboxCode', 'gateCode', 'parkingNotes', 'trashNotes', 'checkoutInstructions', 'directionsUrl', 'houseRules',
+                 'updatedAt', 'updatedBy'])
+            && request.resource.data.facilityId == facilityId && request.resource.data.listingId == listingId
+            && accessStr('wifiName', 100) && accessStr('wifiPassword', 100) && accessStr('staticDoorCode', 40)
+            && accessStr('lockboxCode', 40) && accessStr('gateCode', 40) && accessStr('parkingNotes', 2000)
+            && accessStr('trashNotes', 2000) && accessStr('checkoutInstructions', 4000) && accessStr('directionsUrl', 500)
+            && accessStr('houseRules', 4000)
+            && request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time;
+        }
+        allow create: if listingAccessOk() && stayModuleOn(facilityId);
+        allow update: if listingAccessOk();
         allow delete: if false;
       }
       // Stays channel feeds and export links. The feed URL and the raw export
@@ -1556,17 +1568,21 @@ service cloud.firestore {
       // and managers write. Codes may be null.
       match /stayAccess/{stayId} {
         allow read: if isFacilityStaff(facilityId);
-        allow create, update: if isFacilityOwnerOrManager(facilityId)
-          && request.resource.data.keys().hasOnly(['facilityId', 'stayId', 'doorCode', 'gateCode', 'accessNotes', 'source',
-               'updatedAt', 'updatedBy'])
-          && request.resource.data.facilityId == facilityId && request.resource.data.stayId == stayId
-          && (request.resource.data.get('doorCode', null) == null
-              || (request.resource.data.doorCode is string && request.resource.data.doorCode.size() <= 40))
-          && (request.resource.data.get('gateCode', null) == null
-              || (request.resource.data.gateCode is string && request.resource.data.gateCode.size() <= 40))
-          && request.resource.data.get('accessNotes', '') is string && request.resource.data.get('accessNotes', '').size() <= 1000
-          && request.resource.data.get('source', 'manual') in ['manual', 'phone_last4', 'static']
-          && request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time;
+        function stayAccessOk() {
+          return isFacilityOwnerOrManager(facilityId)
+            && request.resource.data.keys().hasOnly(['facilityId', 'stayId', 'doorCode', 'gateCode', 'accessNotes', 'source',
+                 'updatedAt', 'updatedBy'])
+            && request.resource.data.facilityId == facilityId && request.resource.data.stayId == stayId
+            && (request.resource.data.get('doorCode', null) == null
+                || (request.resource.data.doorCode is string && request.resource.data.doorCode.size() <= 40))
+            && (request.resource.data.get('gateCode', null) == null
+                || (request.resource.data.gateCode is string && request.resource.data.gateCode.size() <= 40))
+            && request.resource.data.get('accessNotes', '') is string && request.resource.data.get('accessNotes', '').size() <= 1000
+            && request.resource.data.get('source', 'manual') in ['manual', 'phone_last4', 'static']
+            && request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time;
+        }
+        allow create: if stayAccessOk() && stayModuleOn(facilityId);
+        allow update: if stayAccessOk();
         allow delete: if isFacilityOwnerOrManager(facilityId);
       }
 
@@ -1637,7 +1653,7 @@ service cloud.firestore {
                 : (d.get('completedBy', null) == null && d.get('completedAt', null) == null));
         }
         allow read: if canReadFacilityCalendarAndLists(facilityId);
-        allow create: if isFacilityOwnerOrManager(facilityId) && !taskId.matches('^turnover_.*')
+        allow create: if isFacilityOwnerOrManager(facilityId) && stayModuleOn(facilityId) && !taskId.matches('^turnover_.*')
           && request.resource.data.get('facilityId', null) == facilityId
           && request.resource.data.keys().hasAll(['facilityId', 'category', 'title', 'status', 'dueDate', 'createdBy',
                'createdAt', 'updatedAt', 'updatedBy'])
@@ -1710,7 +1726,7 @@ service cloud.firestore {
             && c.get('recordedAt', null) == request.time && c.get('recordedBy', null) == request.auth.uid);
         }
         allow read, delete: if isFacilityOwnerOrManager(facilityId);
-        allow create: if isFacilityOwnerOrManager(facilityId) && keysOk() && valuesOk()
+        allow create: if isFacilityOwnerOrManager(facilityId) && stayModuleOn(facilityId) && keysOk() && valuesOk()
           && request.resource.data.get('stayCount', 0) == 0
           && request.resource.data.get('lastStayAt', null) == null
           && request.resource.data.get('createdBy', null) == request.auth.uid
@@ -1741,7 +1757,7 @@ service cloud.firestore {
             && d.get('updatedAt', null) == request.time;
         }
         allow read: if isFacilityStaff(facilityId);
-        allow create: if isFacilityOwnerOrManager(facilityId) && templateOk()
+        allow create: if isFacilityOwnerOrManager(facilityId) && stayModuleOn(facilityId) && templateOk()
           && request.resource.data.get('seeded', false) == false
           && request.resource.data.get('createdBy', null) == request.auth.uid
           && request.resource.data.get('createdAt', null) == request.time;

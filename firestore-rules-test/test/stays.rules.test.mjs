@@ -612,6 +612,104 @@ test('guest profiles: stamped consent, server-owned counts, deletable by owners 
   await assertSucceeds(existing.delete());
 });
 
+// --- Module off: no client creates ------------------------------------------------
+
+/** One valid client create per collection the app may create docs in. */
+function clientCreates(uid) {
+  const db = as(uid);
+  return {
+    stayListingAccess: () =>
+      db.doc('stayListingAccess/lst_off').set({
+        facilityId: FAC,
+        listingId: 'lst_off',
+        wifiName: 'Guest',
+        wifiPassword: 'pw',
+        staticDoorCode: '',
+        lockboxCode: '',
+        gateCode: '',
+        parkingNotes: '',
+        trashNotes: '',
+        checkoutInstructions: '',
+        directionsUrl: '',
+        houseRules: '',
+        ...stamp(uid),
+      }),
+    stayAccess: () =>
+      db.doc('stayAccess/s_off').set({
+        facilityId: FAC,
+        stayId: 's_off',
+        doorCode: null,
+        gateCode: null,
+        accessNotes: '',
+        source: 'manual',
+        ...stamp(uid),
+      }),
+    stayTasks: () =>
+      db
+        .doc('stayTasks/manual_off')
+        .set(taskDoc({ category: 'maintenance', stayId: null, createdBy: uid, createdAt: serverTimestamp(), ...stamp(uid) })),
+    stayGuestProfiles: () =>
+      db.doc('stayGuestProfiles/gp_off').set({
+        facilityId: FAC,
+        name: 'Rick Rover',
+        nameLower: 'rick rover',
+        phoneE164: null,
+        email: null,
+        vehicle: null,
+        notes: '',
+        doNotRent: false,
+        doNotRentReason: null,
+        consent: null,
+        stayCount: 0,
+        lastStayAt: null,
+        createdAt: serverTimestamp(),
+        createdBy: uid,
+        ...stamp(uid),
+      }),
+    stayMessageTemplates: () =>
+      db.doc('stayMessageTemplates/tpl_off').set({
+        facilityId: FAC,
+        key: 'checkout_reminder',
+        name: 'Checkout reminder',
+        body: 'Checkout is {{checkOutTime}}.',
+        channelHint: 'sms',
+        listingIds: [],
+        kind: 'copy',
+        seeded: false,
+        createdAt: serverTimestamp(),
+        createdBy: uid,
+        ...stamp(uid),
+      }),
+  };
+}
+
+/** Replaces stayControls/current; null deletes it. */
+async function setControls(data) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const ref = facilityScope(context.firestore()).doc(DOCS.stayControls);
+    if (data === null) await ref.delete();
+    else await ref.set({ facilityId: FAC, timeZone: 'America/Denver', version: 1, ...data });
+  });
+}
+
+test('with Stays off or never set up, the app creates no Stays docs; existing ones stay editable', async () => {
+  for (const state of [{ moduleEnabled: false }, {}, null]) {
+    await setControls(state);
+    for (const create of Object.values(clientCreates(OWNER))) {
+      await assertFails(create());
+    }
+  }
+  // Switching the module off does not lock owners out of what already exists.
+  await assertSucceeds(as(MANAGER).doc(DOCS.stayListingAccess).update({ wifiPassword: 'changed', ...stamp(MANAGER) }));
+  await assertSucceeds(as(MANAGER).doc(DOCS.stayAccess).update({ doorCode: '5555', ...stamp(MANAGER) }));
+
+  // The same creates are accepted once the module is on.
+  await setControls({ moduleEnabled: true });
+  for (const create of Object.values(clientCreates(OWNER))) {
+    await assertSucceeds(create());
+  }
+});
+
 // --- Storage: turnover photos ------------------------------------------------------
 
 function photoRef(uid, name) {
@@ -625,7 +723,7 @@ function photoRef(uid, name) {
  * there too. The runner runs test files one at a time, so the other file's
  * clearFirestore() cannot remove it mid-test.
  */
-async function seedFacilityForStorageRules() {
+async function seedFacilityForStorageRules({ moduleEnabled = true } = {}) {
   const projectId = process.env.GCLOUD_PROJECT || 'sfc-rules-test';
   const firestore = hostPort('FIRESTORE_EMULATOR_HOST', 'localhost:8080');
   const lookupEnv = await initializeTestEnvironment({
@@ -633,21 +731,63 @@ async function seedFacilityForStorageRules() {
     firestore: { host: firestore.host, port: firestore.port },
   });
   await lookupEnv.withSecurityRulesDisabled(async (context) => {
-    await context.firestore().collection('facilities').doc(FAC).set({
+    const db = context.firestore();
+    await db.collection('facilities').doc(FAC).set({
       name: 'Test Park',
       ownerUid: OWNER,
-      roles: { [OWNER]: 'owner', [MANAGER]: 'manager', [EMPLOYEE]: 'employee', [VIEWER]: 'viewer' },
+      roles: { [OWNER]: 'owner', [MANAGER]: 'manager', [EMPLOYEE]: 'employee', [EMPLOYEE2]: 'employee', [VIEWER]: 'viewer' },
     });
+    // Uploads need Stays on and the task to exist (storage.rules).
+    await db.doc(`facilities/${FAC}/stayControls/current`).set({ facilityId: FAC, moduleEnabled, version: 1 });
+    await db.doc(`facilities/${FAC}/stayTasks/t_mine`).set(taskDoc({ assigneeUid: EMPLOYEE, assigneeName: 'Emp' }));
+    await db.doc(`facilities/${FAC}/stayTasks/t_unassigned`).set(taskDoc());
+    await db.doc(`facilities/${FAC}/stayTasks/t_other`).set(taskDoc({ assigneeUid: EMPLOYEE2, assigneeName: 'Other' }));
   });
   return lookupEnv;
 }
 
+const STORAGE_SEED_DOCS = ['stayControls/current', 'stayTasks/t_mine', 'stayTasks/t_unassigned', 'stayTasks/t_other'];
+
+async function removeStorageSeed(lookupEnv) {
+  await lookupEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    for (const path of STORAGE_SEED_DOCS) await db.doc(`facilities/${FAC}/${path}`).delete();
+    await db.collection('facilities').doc(FAC).delete();
+  });
+  await lookupEnv.cleanup();
+}
+
+function taskPhotoRef(uid, taskId, name) {
+  return storageRef(testEnv.authenticatedContext(uid).storage(), `facilities/${FAC}/stayTaskPhotos/${taskId}/${name}`);
+}
+
+test('turnover photos go only on a task that exists and is unassigned or the employee’s own', async (t) => {
+  const lookupEnv = await seedFacilityForStorageRules();
+  t.after(() => removeStorageSeed(lookupEnv));
+  const small = new Uint8Array(1024);
+  const jpeg = { contentType: 'image/jpeg' };
+  await assertSucceeds(uploadBytes(taskPhotoRef(EMPLOYEE, 't_unassigned', 'a.jpg'), small, jpeg));
+  await assertFails(uploadBytes(taskPhotoRef(EMPLOYEE, 't_other', 'a.jpg'), small, jpeg));
+  await assertFails(uploadBytes(taskPhotoRef(EMPLOYEE, 't_missing', 'a.jpg'), small, jpeg));
+  // The task's own assignee may.
+  await assertSucceeds(uploadBytes(taskPhotoRef(EMPLOYEE2, 't_other', 'b.jpg'), small, jpeg));
+});
+
+test('with Stays off, employees upload no turnover photos', async (t) => {
+  const lookupEnv = await seedFacilityForStorageRules({ moduleEnabled: false });
+  t.after(() => removeStorageSeed(lookupEnv));
+  const small = new Uint8Array(1024);
+  const jpeg = { contentType: 'image/jpeg' };
+  await assertFails(uploadBytes(photoRef(EMPLOYEE, 'off.jpg'), small, jpeg));
+  await assertFails(uploadBytes(taskPhotoRef(EMPLOYEE, 't_unassigned', 'off.jpg'), small, jpeg));
+  // No stayControls doc at all is off too.
+  await lookupEnv.withSecurityRulesDisabled((context) => context.firestore().doc(`facilities/${FAC}/stayControls/current`).delete());
+  await assertFails(uploadBytes(photoRef(EMPLOYEE, 'none.jpg'), small, jpeg));
+});
+
 test('employees upload turnover photos: images under 10 MB only', async (t) => {
   const lookupEnv = await seedFacilityForStorageRules();
-  t.after(async () => {
-    await lookupEnv.withSecurityRulesDisabled((context) => context.firestore().collection('facilities').doc(FAC).delete());
-    await lookupEnv.cleanup();
-  });
+  t.after(() => removeStorageSeed(lookupEnv));
   const small = new Uint8Array(1024);
   await assertSucceeds(uploadBytes(photoRef(EMPLOYEE, 'ok.jpg'), small, { contentType: 'image/jpeg' }));
   await assertSucceeds(getBytes(photoRef(EMPLOYEE, 'ok.jpg')));

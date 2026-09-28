@@ -5,3 +5,11 @@
         allow read: if canReadFacilityCalendarAndLists(facilityId);
         allow write: if false; // staysSetControls only
       }
+
+      // True only once staysSetControls has switched Stays on for this
+      // facility. Client creates of Stays docs require it, so nothing Stays
+      // can be written from the app while the module is off.
+      function stayModuleOn(facilityId) {
+        let controls = /databases/$(database)/documents/facilities/$(facilityId)/stayControls/current;
+        return exists(controls) && get(controls).data.get('moduleEnabled', false) == true;
+      }

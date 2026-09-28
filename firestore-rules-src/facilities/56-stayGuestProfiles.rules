@@ -36,7 +36,7 @@
             && c.get('recordedAt', null) == request.time && c.get('recordedBy', null) == request.auth.uid);
         }
         allow read, delete: if isFacilityOwnerOrManager(facilityId);
-        allow create: if isFacilityOwnerOrManager(facilityId) && keysOk() && valuesOk()
+        allow create: if isFacilityOwnerOrManager(facilityId) && stayModuleOn(facilityId) && keysOk() && valuesOk()
           && request.resource.data.get('stayCount', 0) == 0
           && request.resource.data.get('lastStayAt', null) == null
           && request.resource.data.get('createdBy', null) == request.auth.uid

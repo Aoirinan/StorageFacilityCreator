@@ -16,7 +16,7 @@ It is kept apart from the storage side of the app. Guests are not tenants, and s
 Everything is off by default. Two separate gates must both be opened before anything shows or runs.
 
 1. **App UI: the `shortTermRentals` feature flag** (`appConfig/featureFlags`), default `false`. While it is off or still loading, every Stays URL shows "Page not found", nothing links to Stays, and the Stays permissions are hidden from the Roles tab.
-2. **Server: `staysServerConfig/current`** (super admin only, set in the console). If the doc is missing or cannot be read, the gate fails closed. `staysGetAvailability` answers "not available", every other callable refuses with `module_not_available`, the 30-minute scheduler enqueues nothing, the sync worker and triggers do nothing, and `/api/ical/**` returns 404 (no export links exist) or 503. A facility also needs `stayControls/current.moduleEnabled == true`, which only the setup flow sets once the server gate allows that facility.
+2. **Server: `staysServerConfig/current`** (super admin only, set in the console). If the doc is missing or cannot be read, the gate fails closed. `staysGetAvailability` answers "not available", every other callable refuses with `module_not_available`, the 30-minute scheduler enqueues nothing, the sync worker and triggers do nothing, and `/api/ical/**` returns 404 (no export links exist) or 503. A facility also needs `stayControls/current.moduleEnabled == true`, which only the setup flow sets once the server gate allows that facility. Until then the Firestore and Storage rules refuse every client create of a Stays doc or turnover photo.
 
 `staysServerConfig/current.killSwitch = true` pauses everything without a deploy.
 

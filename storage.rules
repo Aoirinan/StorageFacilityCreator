@@ -125,11 +125,28 @@ service firebase.storage {
     function isFacilityStaffStorage(facilityId) {
       return isFacilityOwnerOrManager(facilityId) || facilityRole(facilityId) == 'employee';
     }
+    // Uploads need Stays switched on for the facility and the task to exist
+    // (same doc paths as the Firestore rules). An employee may add photos
+    // only to a task that is unassigned or assigned to them, as in
+    // 54-stayTasks.rules. Owners and managers also reach this path through
+    // the facility-wide match above.
+    function stayModuleOnStorage(facilityId) {
+      let controls = /databases/(default)/documents/facilities/$(facilityId)/stayControls/current;
+      return firestore.exists(controls) && firestore.get(controls).data.get('moduleEnabled', false) == true;
+    }
+    function stayTaskOpenToUploader(facilityId, taskId) {
+      let task = /databases/(default)/documents/facilities/$(facilityId)/stayTasks/$(taskId);
+      return firestore.exists(task)
+        && (isFacilityOwnerOrManager(facilityId)
+            || firestore.get(task).data.get('assigneeUid', null) in [null, request.auth.uid]);
+    }
     // Photos only: raster types phones and browsers produce, not SVG (a
     // document that can carry script).
     match /facilities/{facilityId}/stayTaskPhotos/{taskId}/{fileName} {
       allow read: if isSuperAdmin() || isFacilityStaffStorage(facilityId);
       allow create: if isFacilityStaffStorage(facilityId)
+        && stayModuleOnStorage(facilityId)
+        && stayTaskOpenToUploader(facilityId, taskId)
         && request.resource.size < 10 * 1024 * 1024
         && request.resource.contentType.matches('image/(jpeg|png|webp|gif|heic|heif)');
       allow update, delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
