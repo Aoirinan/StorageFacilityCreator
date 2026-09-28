@@ -71,30 +71,41 @@ function isMissingSession(error) {
  * be, or has already been, paid. A link whose session is complete but not
  * yet marked paid (checkout.session.completed unsubscribed or not yet
  * processed) would otherwise charge the tenant twice. So each session is
- * looked up on the facility's account: a complete one skips the link for a
+ * looked up on the facility's accounts: a complete one skips the link for a
  * person to settle, an open one is expired before rotating, and anything
  * that cannot be checked skips the link rather than guessing.
+ *
+ * [accountIds] is the facility's current account, then the one it was
+ * connected to before (stripeConnectPreviousAccountId). A link started
+ * before a reconnect has its sessions on the old account; looked up only on
+ * the new one they read as missing, and a paid link was rotated.
  */
-async function planLinkRotation(link, { stripe, facilityAccountId }) {
+async function planLinkRotation(link, { stripe, accountIds }) {
   const sessionIds = linkSessionIds(link);
-  if (sessionIds.length === 0) return { rotate: true, openSessionIds: [] };
+  if (sessionIds.length === 0) return { rotate: true, openSessions: [] };
   if (!stripe) return { rotate: false, reason: 'stripe_not_checked', sessionIds };
-  if (!facilityAccountId) return { rotate: false, reason: 'facility_has_no_stripe_account', sessionIds };
-  const openSessionIds = [];
+  const accounts = [...new Set((accountIds || []).filter((id) => typeof id === 'string' && id))];
+  if (accounts.length === 0) return { rotate: false, reason: 'facility_has_no_stripe_account', sessionIds };
+  const openSessions = [];
   for (const id of sessionIds) {
-    let session;
-    try {
-      session = await stripe.checkout.sessions.retrieve(id, {}, { stripeAccount: facilityAccountId });
-    } catch (error) {
-      if (isMissingSession(error)) continue;
-      return { rotate: false, reason: 'session_lookup_failed', sessionId: id, error: String(error && error.message) };
+    for (const account of accounts) {
+      let session;
+      try {
+        session = await stripe.checkout.sessions.retrieve(id, {}, { stripeAccount: account });
+      } catch (error) {
+        // Not on this account: try the other. Missing on every account
+        // means there is no session to pay.
+        if (isMissingSession(error)) continue;
+        return { rotate: false, reason: 'session_lookup_failed', sessionId: id, account, error: String(error && error.message) };
+      }
+      if (session.status === 'complete' || session.payment_status === 'paid') {
+        return { rotate: false, reason: 'session_completed', sessionId: id, account };
+      }
+      if (session.status === 'open') openSessions.push({ id, account });
+      break;
     }
-    if (session.status === 'complete' || session.payment_status === 'paid') {
-      return { rotate: false, reason: 'session_completed', sessionId: id };
-    }
-    if (session.status === 'open') openSessionIds.push(id);
   }
-  return { rotate: true, openSessionIds };
+  return { rotate: true, openSessions };
 }
 
 /**
@@ -113,24 +124,29 @@ async function rotatePendingPaymentLinks({ db, stripe, apply, report, fieldValue
     const facilityId = link.facilityId || null;
     if (facilityId && !facilityAccounts.has(facilityId)) {
       const facility = await db.collection('facilities').doc(facilityId).get();
-      facilityAccounts.set(facilityId, (facility.exists && facility.get('stripeConnectAccountId')) || null);
+      facilityAccounts.set(
+        facilityId,
+        facility.exists ? [facility.get('stripeConnectAccountId'), facility.get('stripeConnectPreviousAccountId')] : [],
+      );
     }
-    const facilityAccountId = facilityId ? facilityAccounts.get(facilityId) : null;
+    const accountIds = facilityId ? facilityAccounts.get(facilityId) : [];
     const entry = { oldToken: doc.id, facilityId, tenantId: link.tenantId || null };
-    const plan = await planLinkRotation(link, { stripe, facilityAccountId });
+    const plan = await planLinkRotation(link, { stripe, accountIds });
     if (!plan.rotate) {
       report.paymentLinks.push({ ...entry, action: 'skipped', ...plan });
       continue;
     }
+    const openSessionIds = plan.openSessions.map((session) => session.id);
 
     if (apply) {
       let expireFailure = null;
-      for (const sessionId of plan.openSessionIds) {
+      for (const session of plan.openSessions) {
         try {
-          await stripe.checkout.sessions.expire(sessionId, {}, { stripeAccount: facilityAccountId });
+          // On the account the session was found on.
+          await stripe.checkout.sessions.expire(session.id, {}, { stripeAccount: session.account });
         } catch (error) {
           // Most likely paid in the meantime: leave the link for a person.
-          expireFailure = { sessionId, error: String(error && error.message) };
+          expireFailure = { sessionId: session.id, error: String(error && error.message) };
           break;
         }
       }
@@ -146,7 +162,7 @@ async function rotatePendingPaymentLinks({ db, stripe, apply, report, fieldValue
       ...entry,
       action: apply ? 'rotated' : 'would_rotate',
       replacementToken,
-      expiredSessionIds: plan.openSessionIds,
+      expiredSessionIds: openSessionIds,
     });
     if (apply) {
       await db.runTransaction(async (txn) => {

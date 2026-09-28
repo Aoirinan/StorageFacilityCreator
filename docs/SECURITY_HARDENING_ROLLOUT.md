@@ -48,7 +48,13 @@ npm run security:cleanup -- --project=<project-id> --apply --confirm-project=<pr
 
 The applied run:
 
-- replaces pending public payment-link tokens and revokes old documents;
+- replaces pending public payment-link tokens and revokes old documents. A link
+  that ever started a checkout is rotated only after each of its Checkout
+  Sessions is looked up on the facility's Stripe account and, for a
+  reconnected facility, its previous one (`stripeConnectPreviousAccountId`): a
+  complete session skips the link, an open one is expired first, and a lookup
+  that fails for any reason but "no such session" skips it. Set
+  `STRIPE_SECRET_KEY` for the run, or those links are skipped and reported;
 - rotates pending/confirmed reservation tokens;
 - removes public ACLs from current exports and deletes exports older than the
   retention window;

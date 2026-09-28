@@ -71,3 +71,31 @@ test('the pre-deploy check reports old dispute rows and accounts whose next mone
   ]);
   assert.deepEqual(report.recordedRefusals.map((r) => r.id), ['acct_old__du_2']);
 });
+
+test('a refund from an account no facility is connected to is reported', async () => {
+  const fake = new FakeFirestore();
+  fake.seed('facilities/f1', { stripeConnectAccountId: 'acct_new', stripeConnectPreviousAccountId: 'acct_old' });
+  // Refunds carry no facility metadata; this one is from the old account.
+  fake.seed('stripeWebhookEvents/evt_1', { eventType: 'charge.refunded', account: 'acct_old', facilityId: null });
+
+  const report = await check.runPredeployChecks(fake.firestore());
+
+  assert.equal(report.needsAttention, true);
+  assert.deepEqual(report.accountsWithNoFacility, [
+    { account: 'acct_old', previouslyConnectedTo: ['f1'], eventTypes: ['charge.refunded'], events: 1 },
+  ]);
+});
+
+test('an unresolved refusal alone needs a person; a resolved one does not', async () => {
+  const fake = new FakeFirestore();
+  fake.seed('facilities/f1', { stripeConnectAccountId: 'acct_1' });
+  fake.seed('stripeWebhookRefusals/acct_x__pi_1', { reason: 'unknown_account', facilityId: 'f1', resolved: true });
+
+  assert.equal((await check.runPredeployChecks(fake.firestore())).needsAttention, false);
+
+  fake.seed('stripeWebhookRefusals/acct_x__pi_2', { reason: 'unknown_account', facilityId: 'f1', resolved: false });
+  const report = await check.runPredeployChecks(fake.firestore());
+
+  assert.deepEqual(report.recordedRefusals.map((r) => r.id), ['acct_x__pi_2']);
+  assert.equal(report.needsAttention, true);
+});

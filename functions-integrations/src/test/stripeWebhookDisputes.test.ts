@@ -180,6 +180,21 @@ test('a return delivered before its withdrawal nets to zero, and the late withdr
   assert.equal(owed(fake), -42);
 });
 
+test('a win seen first posts both entries at once and marks the charge settled by the reversal', async () => {
+  const { fake } = await paidTenant();
+
+  // closed(won) arrives before anything else: the original and its reversal
+  // are created in one transaction, so the settled marker must be written
+  // there, not by the later-update path.
+  await send('charge.dispute.closed', won());
+
+  assert.deepEqual(fake.writesTo(`${LEDGERS}/dispute_du_1`).map((w) => w.op), ['create']);
+  const metadata = fake.read(`${LEDGERS}/dispute_du_1`)!.metadata as Record<string, unknown>;
+  // Without it Generate Invoice offers the won dispute to bill again.
+  assert.equal(metadata.allocatedAmount, 42);
+  assert.equal(metadata.settledByEntryId, 'dispute_du_1_reinstated');
+});
+
 test('a return reported before any withdrawal was booked still nets to zero', async () => {
   const { fake } = await paidTenant();
 

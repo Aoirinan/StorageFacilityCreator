@@ -87,13 +87,24 @@ test('a rotated payment link keeps the link but not the old token\'s checkout se
 const ACCOUNT = 'acct_facility1';
 const NEW_TOKEN = 'b'.repeat(48);
 
-/** Sessions on the facility's account; a lookup on any other account misses. */
-function fakeStripe(sessions: Record<string, { status: string; payment_status: string }>, failExpire = false) {
+type FakeSession = { status: string; payment_status: string };
+
+/**
+ * Sessions on the facility's account ([account], ACCOUNT by default); a
+ * lookup on any other account misses. [lookupError] makes every lookup fail
+ * that way instead.
+ */
+function fakeStripe(
+  sessions: Record<string, FakeSession>,
+  failExpire = false,
+  { account = ACCOUNT, lookupError }: { account?: string; lookupError?: Error } = {},
+) {
   const calls: Array<[string, string, string | undefined]> = [];
   const api: SessionsApi = {
     async retrieve(id, _params, options) {
       calls.push(['retrieve', id, options.stripeAccount]);
-      const found = options.stripeAccount === ACCOUNT ? sessions[id] : undefined;
+      if (lookupError) throw lookupError;
+      const found = options.stripeAccount === account ? sessions[id] : undefined;
       if (!found) throw Object.assign(new Error(`No such checkout.session: '${id}'`), { code: 'resource_missing', statusCode: 404 });
       return { id, ...found };
     },
@@ -224,4 +235,70 @@ test('a current 48-character token is never rotated', async () => {
 
   assert.deepEqual(await rotate(fake, null, true), []);
   assert.deepEqual(fake.writes, []);
+});
+
+test('a complete session is not rotated even before its payment has settled', async () => {
+  // A bank debit completes the session with payment_status 'unpaid' and
+  // pays later: rotating then offers the tenant a second Pay Now.
+  const fake = setupLinks({ checkoutSessionIds: ['cs_1'] });
+  const { stripe } = fakeStripe({ cs_1: { status: 'complete', payment_status: 'unpaid' } });
+
+  const links = await rotate(fake, stripe, true);
+
+  assert.equal(links[0].action, 'skipped');
+  assert.equal(links[0].reason, 'session_completed');
+  assert.deepEqual(fake.writes, []);
+});
+
+test('a session lookup that fails for any reason but "no such session" leaves the link alone', async () => {
+  // A Stripe outage or a revoked key is not a missing session: the session
+  // may well be paid.
+  const fake = setupLinks({ checkoutSessionIds: ['cs_1'] });
+  const outage = Object.assign(new Error('An error occurred with our connection to Stripe.'), {
+    type: 'StripeConnectionError',
+    statusCode: 500,
+  });
+  const { stripe, calls } = fakeStripe({ cs_1: { status: 'complete', payment_status: 'paid' } }, false, {
+    lookupError: outage,
+  });
+
+  const links = await rotate(fake, stripe, true);
+
+  assert.equal(links[0].action, 'skipped');
+  assert.equal(links[0].reason, 'session_lookup_failed');
+  assert.equal(links[0].sessionId, 'cs_1');
+  assert.equal(calls.some(([op]) => op === 'expire'), false);
+  assert.deepEqual(fake.writes, []);
+});
+
+test('on a reconnected facility a link paid on its previous account is not rotated', async () => {
+  // Started before the owner reconnected Stripe: the session lives on the old account.
+  const fake = setupLinks({ checkoutSessionIds: ['cs_1'] });
+  fake.seed('facilities/f1', { stripeConnectAccountId: 'acct_new', stripeConnectPreviousAccountId: ACCOUNT });
+  const { stripe, calls } = fakeStripe({ cs_1: { status: 'complete', payment_status: 'paid' } });
+
+  const links = await rotate(fake, stripe, true);
+
+  // Before: missing on acct_new read as "no session", and the paid link was rotated.
+  assert.equal(links[0].action, 'skipped');
+  assert.equal(links[0].reason, 'session_completed');
+  assert.equal(links[0].account, ACCOUNT);
+  assert.deepEqual(calls, [
+    ['retrieve', 'cs_1', 'acct_new'],
+    ['retrieve', 'cs_1', ACCOUNT],
+  ]);
+  assert.deepEqual(fake.writes, []);
+});
+
+test('on a reconnected facility an open session on the previous account is expired there', async () => {
+  const fake = setupLinks({ checkoutSessionIds: ['cs_1'] });
+  fake.seed('facilities/f1', { stripeConnectAccountId: 'acct_new', stripeConnectPreviousAccountId: ACCOUNT });
+  const { stripe, calls } = fakeStripe({ cs_1: { status: 'open', payment_status: 'unpaid' } });
+
+  const links = await rotate(fake, stripe, true);
+
+  assert.equal(links[0].action, 'rotated');
+  assert.deepEqual(links[0].expiredSessionIds, ['cs_1']);
+  assert.deepEqual(calls.slice(-1), [['expire', 'cs_1', ACCOUNT]]);
+  assert.equal(fake.read('publicPaymentLinks/legacy-token')!.status, 'revoked');
 });
