@@ -101,7 +101,24 @@ class TenantPastHistoryDialog extends ConsumerStatefulWidget {
 }
 
 class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialog> {
-  late final String _requestId = PastHistoryService.newRequestId();
+  /// This save's id. A retry of an unchanged save reuses it (the server
+  /// answers with what the first attempt saved); any edit after a failed or
+  /// timed-out save takes a new one, since the server refuses a changed
+  /// request under an old id.
+  String _requestId = PastHistoryService.newRequestId();
+
+  /// Ids of saves that failed or timed out. One may have gone through
+  /// anyway; before saving again the ledger is checked for them.
+  final Set<String> _unconfirmedIds = {};
+  bool _lastSaveFailed = false;
+
+  /// The owner's paid-through choice, when they made one (else the default).
+  PaidThroughChoice? _choice;
+  HistoryPreview? _preview;
+  List<LedgerEntry> _ledger = const [];
+
+  /// Invoice numbers by id, for entries being voided.
+  final Map<String, String> _invoiceNumbers = {};
 
   /// Asked for, never guessed: imported tenants have none, and the unit's or
   /// the record's date is the day they were typed in.
@@ -175,7 +192,7 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
     setState(() {
       _moveIn = picked;
       _propose(ledger);
-      _confirmed = false;
+      _edited();
     });
   }
 
@@ -191,7 +208,7 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
     if (picked == null) return;
     setState(() {
       row.date.text = formatHistoryDateInput(picked);
-      _confirmed = false;
+      _edited();
     });
   }
 
@@ -200,7 +217,7 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
       _payments.add(_PaymentRow(
         amount: widget.tenant.monthlyRate > 0 ? widget.tenant.monthlyRate.toStringAsFixed(2) : '',
       ));
-      _confirmed = false;
+      _edited();
     });
   }
 
@@ -212,8 +229,19 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
         _voiding.remove(id);
       }
       _propose(ledger);
-      _confirmed = false;
+      _edited();
     });
+  }
+
+  /// Called inside setState for every change to the form: the owner must
+  /// confirm again, and after a failed save the next one gets a new id.
+  void _edited() {
+    _confirmed = false;
+    if (_lastSaveFailed) {
+      _unconfirmedIds.add(_requestId);
+      _requestId = PastHistoryService.newRequestId();
+      _lastSaveFailed = false;
+    }
   }
 
   /// Why Save is off, or null when it may be pressed.
@@ -239,6 +267,16 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
 
   Future<void> _save() async {
     if (_saving || !_confirmed || _problem() != null) return;
+    // A save that failed or timed out may have gone through after all. If
+    // it did, its entries are on the (live) ledger: saving the edited
+    // version as well would enter the history twice.
+    final landed = postedHistoryBatches(_ledger).map((b) => b.requestId).toSet();
+    if (_unconfirmedIds.any(landed.contains)) {
+      setState(() => _error =
+          'Your earlier save went through after all. Close this, check the Ledger, and use '
+          '"Undo this history entry" there if it needs changing.');
+      return;
+    }
     setState(() {
       _saving = true;
       _error = null;
@@ -252,16 +290,38 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
         payments: _payments.map((p) => p.toInput()!).toList(),
         moveInDate: _moveIn,
         voidLedgerEntryIds: _voiding.toList(),
+        paidThroughChoice: _preview?.choice,
       );
       ref.invalidate(facilityTenantsProvider(widget.tenant.facilityId));
       ref.invalidate(paymentListProvider(widget.tenant.facilityId));
       ref.invalidate(paymentStatsProvider(widget.tenant.facilityId));
       if (mounted) Navigator.of(context).pop(result);
     } catch (e) {
-      if (mounted) setState(() => _error = ErrorMessageHelper.getUserFriendlyMessage(e));
+      if (mounted) {
+        setState(() {
+          _error = ErrorMessageHelper.getUserFriendlyMessage(e);
+          _lastSaveFailed = true;
+        });
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  void _loadInvoiceNumbers(List<String> ids) {
+    final missing = ids.where((id) => !_invoiceNumbers.containsKey(id)).toList();
+    if (missing.isEmpty) return;
+    for (final id in missing) {
+      _invoiceNumbers[id] = id;
+    }
+    PastHistoryService.invoiceNumbers(widget.tenant.facilityId, missing).then((numbers) {
+      if (!mounted) return;
+      setState(() {
+        for (var i = 0; i < missing.length; i++) {
+          _invoiceNumbers[missing[i]] = numbers[i];
+        }
+      });
+    });
   }
 
   @override
@@ -288,7 +348,12 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
         payments: _payments.map((p) => p.toInput()).whereType<HistoryPaymentInput>().toList(),
         existingPaidThrough: widget.tenant.paidThrough,
         voiding: _voiding,
+        monthlyRate: widget.tenant.monthlyRate,
+        choice: _choice,
       );
+      _ledger = ledger;
+      _preview = preview;
+      if (preview.invoiceIds.isNotEmpty) _loadInvoiceNumbers(preview.invoiceIds);
       body = _buildForm(context, ledger, preview);
       problem = _problem();
     }
@@ -451,7 +516,16 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
         const SizedBox(height: 20),
         Text('3. Check before saving', style: theme.textTheme.titleMedium),
         const SizedBox(height: 8),
-        PastHistoryPreviewCard(preview: preview),
+        PastHistoryPreviewCard(
+          preview: preview,
+          invoiceNumbers: [for (final id in preview.invoiceIds) _invoiceNumbers[id] ?? id],
+          onChoice: _saving
+              ? null
+              : (c) => setState(() {
+                    _choice = c;
+                    _edited();
+                  }),
+        ),
       ],
     );
   }
@@ -499,7 +573,7 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
                         : () => setState(() {
                               _voiding.addAll(voidable.map((e) => e.id));
                               _propose(ledger);
-                              _confirmed = false;
+                              _edited();
                             }),
                     child: Text('Tick all ${voidable.length}'),
                   ),
@@ -510,7 +584,7 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
                         : () => setState(() {
                               _voiding.clear();
                               _propose(ledger);
-                              _confirmed = false;
+                              _edited();
                             }),
                     child: const Text('Untick all'),
                   ),
@@ -544,7 +618,7 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
               ? null
               : (v) => setState(() {
                     c.included = v ?? false;
-                    _confirmed = false;
+                    _edited();
                   }),
         ),
         Expanded(
@@ -562,7 +636,7 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             onChanged: (v) => setState(() {
               c.amount = double.tryParse(v.trim()) ?? 0;
-              _confirmed = false;
+              _edited();
             }),
           ),
         ),
@@ -598,7 +672,7 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
                   onPressed: _saving ? null : () => _pickPaymentDate(row),
                 ),
               ),
-              onChanged: (_) => setState(() => _confirmed = false),
+              onChanged: (_) => setState(_edited),
             ),
           ),
           SizedBox(
@@ -608,7 +682,7 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
               enabled: !_saving,
               decoration: const InputDecoration(labelText: 'Amount', prefixText: '\$ ', isDense: true, border: OutlineInputBorder()),
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              onChanged: (_) => setState(() => _confirmed = false),
+              onChanged: (_) => setState(_edited),
             ),
           ),
           SizedBox(
@@ -648,7 +722,7 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
                 ? null
                 : () => setState(() {
                       _payments.removeAt(i).dispose();
-                      _confirmed = false;
+                      _edited();
                     }),
           ),
         ],
@@ -659,9 +733,21 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
 
 /// The totals the owner checks before saving.
 class PastHistoryPreviewCard extends StatelessWidget {
-  const PastHistoryPreviewCard({super.key, required this.preview});
+  const PastHistoryPreviewCard({
+    super.key,
+    required this.preview,
+    this.invoiceNumbers = const [],
+    this.onChoice,
+  });
 
   final HistoryPreview preview;
+
+  /// Numbers of the invoices the entries being voided are on.
+  final List<String> invoiceNumbers;
+
+  /// Picks between the recomputed and the current paid-through date, when
+  /// the recomputed one is earlier. Null hides the choice.
+  final ValueChanged<PaidThroughChoice>? onChoice;
 
   @override
   Widget build(BuildContext context) {
@@ -705,14 +791,62 @@ class PastHistoryPreviewCard extends StatelessWidget {
               _money(preview.balance),
               color: preview.balance > 0 ? AppTheme.error : AppTheme.success,
             ),
-            row('Paid through', pt == null ? 'Not set' : _day(pt)),
+            row('Paid through now', preview.paidThroughNow == null ? 'Not set' : _day(preview.paidThroughNow!)),
+            row('Paid through after saving', pt == null ? 'Not set' : _day(pt)),
+            if (preview.prepaidMonths > 0)
+              Text(
+                'Includes ${preview.prepaidMonths} month${preview.prepaidMonths == 1 ? '' : 's'} paid ahead from credit.',
+                style: theme.textTheme.bodySmall,
+              ),
+            if (preview.recomputedIsEarlier && onChoice != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                'The history works out to paid through '
+                '${preview.computedPaidThrough == null ? 'no month' : _day(preview.computedPaidThrough!)}, '
+                'earlier than the ${_day(preview.paidThroughNow!)} set now'
+                '${preview.voidsPayment ? ' (the payments being voided had moved it forward)' : ''}.',
+                style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.warning),
+              ),
+              RadioGroup<PaidThroughChoice>(
+                groupValue: preview.choice,
+                onChanged: (c) {
+                  if (c != null) onChoice!(c);
+                },
+                child: Column(
+                  children: [
+                    RadioListTile<PaidThroughChoice>(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      value: PaidThroughChoice.computed,
+                      title: Text(
+                        'Use ${preview.computedPaidThrough == null ? 'not set' : _day(preview.computedPaidThrough!)} (from the ledger)',
+                      ),
+                    ),
+                    RadioListTile<PaidThroughChoice>(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      value: PaidThroughChoice.keepLater,
+                      title: Text('Keep ${_day(preview.paidThroughNow!)}'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             if (preview.credit > 0)
               row(
                 unpaid == null
-                    ? 'Credit on the account'
+                    ? 'Credit on the account (less than a month)'
                     : 'Credit toward ${historyMonthLabel(unpaid.year, unpaid.month)}',
                 _money(preview.credit),
               ),
+            if (invoiceNumbers.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                'These entries were on invoice(s) ${invoiceNumbers.join(', ')}; open Invoices and void them '
+                "so they don't show as unpaid.",
+                style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.warning),
+              ),
+            ],
             if (preview.paidThroughWarning != null) ...[
               const SizedBox(height: 8),
               Text(preview.paidThroughWarning!, style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.warning)),
@@ -759,6 +893,9 @@ class PastHistorySavedDialog extends StatelessWidget {
             if (result.credit > 0) Text('Credit: ${_money(result.credit)}'),
             if (result.existingVoided > 0) Text('Entries already on the ledger voided: ${result.existingVoided}'),
             if (result.moveInDateSaved) const Text('Move-in date saved on the tenant.'),
+            if (result.paidThroughBefore != null &&
+                (pt == null || !DateUtils.isSameDay(result.paidThroughBefore, pt)))
+              Text('Paid through was ${_day(result.paidThroughBefore!)} before this save.'),
             for (final w in result.warnings)
               Padding(
                 padding: const EdgeInsets.only(top: 8),

@@ -335,6 +335,139 @@ void main() {
     });
   });
 
+  group('paid through from the whole ledger (review round)', () {
+    List<ProposedHistoryCharge> exampleCharges() =>
+        proposeHistoryCharges(moveIn: DateTime(2026, 2, 10), monthlyRate: 80, existing: const [], today: _today).charges;
+
+    // Four hand payments through Record payment pushed paidThrough to 1/31/2027.
+    List<LedgerEntry> handPayments() => [
+          for (final (i, amount) in [-160.0, -80.0, -80.0, -80.0].indexed)
+            LedgerEntry(
+              id: 'hand-p$i',
+              tenantId: 't1',
+              facilityId: 'f1',
+              type: LedgerEntryType.payment,
+              amount: amount,
+              entryDate: DateTime(2026, 9, 27, 21),
+              status: LedgerEntryStatus.posted,
+              metadata: {'paymentId': 'pay-$i', 'invoiceId': 'inv-7'},
+              createdAt: DateTime(2026, 9, 27, 21),
+              createdBy: 'owner',
+            ),
+        ];
+
+    test('voiding the hand payments recomputes paid through back to 7/31 by default', () {
+      final existing = handPayments();
+      final preview = computeHistoryPreview(
+        existing: existing,
+        charges: exampleCharges(),
+        payments: _examplePayments(),
+        existingPaidThrough: DateTime(2027, 1, 31),
+        voiding: existing.map((e) => e.id).toSet(),
+        monthlyRate: 80,
+      );
+      expect(preview.voidsPayment, isTrue);
+      expect(preview.choice, PaidThroughChoice.computed);
+      expect(preview.paidThroughNow, DateTime(2027, 1, 31));
+      expect(preview.computedPaidThrough, DateTime(2026, 7, 31));
+      expect(preview.resultingPaidThrough, DateTime(2026, 7, 31));
+      expect(preview.recomputedIsEarlier, isTrue);
+      expect(preview.balance, 160);
+      expect(preview.invoiceIds, ['inv-7']);
+    });
+
+    test('the owner can keep the later date instead', () {
+      final existing = handPayments();
+      final preview = computeHistoryPreview(
+        existing: existing,
+        charges: exampleCharges(),
+        payments: _examplePayments(),
+        existingPaidThrough: DateTime(2027, 1, 31),
+        voiding: existing.map((e) => e.id).toSet(),
+        monthlyRate: 80,
+        choice: PaidThroughChoice.keepLater,
+      );
+      expect(preview.resultingPaidThrough, DateTime(2027, 1, 31));
+      expect(preview.paidThroughWarning, contains('1/31/2027'));
+    });
+
+    test('without voids the default keeps the later date', () {
+      final preview = computeHistoryPreview(
+        existing: const [],
+        charges: exampleCharges(),
+        payments: _examplePayments(),
+        existingPaidThrough: DateTime(2027, 1, 31),
+        monthlyRate: 80,
+      );
+      expect(preview.choice, PaidThroughChoice.keepLater);
+      expect(preview.resultingPaidThrough, DateTime(2027, 1, 31));
+    });
+
+    test('a \$15 fee counts in the balance but does not hold paid through back', () {
+      final fee = LedgerEntry(
+        id: 'fee',
+        tenantId: 't1',
+        facilityId: 'f1',
+        type: LedgerEntryType.lateFee,
+        amount: 15,
+        entryDate: DateTime(2026, 3, 6),
+        status: LedgerEntryStatus.posted,
+        createdAt: DateTime(2026, 3, 6),
+        createdBy: 'system',
+      );
+      final preview = computeHistoryPreview(
+        existing: [fee],
+        charges: exampleCharges(),
+        payments: _examplePayments(),
+        existingPaidThrough: null,
+        monthlyRate: 80,
+      );
+      expect(preview.balance, 175);
+      expect(preview.resultingPaidThrough, DateTime(2026, 7, 31));
+    });
+
+    test('credit buys whole months; less than a month shows as credit', () {
+      List<ProposedHistoryCharge> augSep() =>
+          proposeHistoryCharges(moveIn: DateTime(2026, 8, 1), monthlyRate: 80, existing: const [], today: _today).charges;
+      final p240 = computeHistoryPreview(
+        existing: const [],
+        charges: augSep(),
+        payments: [HistoryPaymentInput(date: DateTime(2026, 8, 1), amount: 240)],
+        existingPaidThrough: null,
+        monthlyRate: 80,
+      );
+      expect(p240.resultingPaidThrough, DateTime(2026, 10, 31));
+      expect(p240.prepaidMonths, 1);
+      expect(p240.credit, 0);
+      final p270 = computeHistoryPreview(
+        existing: const [],
+        charges: augSep(),
+        payments: [HistoryPaymentInput(date: DateTime(2026, 8, 1), amount: 270)],
+        existingPaidThrough: null,
+        monthlyRate: 80,
+      );
+      expect(p270.resultingPaidThrough, DateTime(2026, 10, 31));
+      expect(p270.credit, 30);
+    });
+
+    test('a free trailing month right after paid months counts as paid', () {
+      final charges =
+          proposeHistoryCharges(moveIn: DateTime(2026, 7, 1), monthlyRate: 80, existing: const [], today: _today).charges;
+      charges.last.included = false; // September free
+      final preview = computeHistoryPreview(
+        existing: const [],
+        charges: charges,
+        payments: [
+          HistoryPaymentInput(date: DateTime(2026, 7, 1), amount: 80),
+          HistoryPaymentInput(date: DateTime(2026, 8, 1), amount: 80),
+        ],
+        existingPaidThrough: null,
+        monthlyRate: 80,
+      );
+      expect(preview.resultingPaidThrough, DateTime(2026, 9, 30));
+    });
+  });
+
   test('rent is proposed at the tenant rate, which covers all their units', () {
     // Four $20 outdoor spaces, one $80 rate on the tenant.
     final p = proposeHistoryCharges(moveIn: DateTime(2026, 6, 1), monthlyRate: 80, existing: const [], today: _today);

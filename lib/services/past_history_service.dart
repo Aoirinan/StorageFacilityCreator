@@ -1,5 +1,6 @@
 import 'dart:math';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
 import 'package:sfcapp/utils/past_history_math.dart';
@@ -18,6 +19,8 @@ class PastHistoryResult {
     required this.warnings,
     this.existingVoided = 0,
     this.moveInDateSaved = false,
+    this.paidThroughBefore,
+    this.invoicesToReview = const [],
   });
 
   final String requestId;
@@ -32,6 +35,13 @@ class PastHistoryResult {
   /// Entries already on the ledger that this save voided.
   final int existingVoided;
   final bool moveInDateSaved;
+
+  /// The tenant's paid-through date before the save.
+  final DateTime? paidThroughBefore;
+
+  /// Invoice numbers (or ids) the voided entries were on, for the owner to
+  /// void in Invoices.
+  final List<String> invoicesToReview;
 
   static double _num(Object? v) => v is num ? v.toDouble() : 0.0;
 
@@ -48,6 +58,13 @@ class PastHistoryResult {
       warnings: (data['warnings'] as List?)?.map((w) => '$w').toList() ?? const [],
       existingVoided: (data['existingVoided'] as num?)?.toInt() ?? 0,
       moveInDateSaved: data['moveInDateSaved'] == true,
+      paidThroughBefore: data['paidThroughBefore'] is String
+          ? DateTime.tryParse(data['paidThroughBefore'] as String)
+          : null,
+      invoicesToReview: [
+        for (final i in (data['invoicesToReview'] as List?) ?? const [])
+          if (i is Map) '${i['number'] ?? i['id']}',
+      ],
     );
   }
 }
@@ -74,6 +91,7 @@ class PastHistoryService {
     required List<HistoryPaymentInput> payments,
     DateTime? moveInDate,
     List<String> voidLedgerEntryIds = const [],
+    PaidThroughChoice? paidThroughChoice,
   }) async {
     final callable = FirebaseFunctions.instance.httpsCallable('recordTenantPastHistory');
     final result = await callable.call(<String, dynamic>{
@@ -86,8 +104,35 @@ class PastHistoryService {
         'moveInDate':
             '${moveInDate.year.toString().padLeft(4, '0')}-${moveInDate.month.toString().padLeft(2, '0')}-${moveInDate.day.toString().padLeft(2, '0')}',
       if (voidLedgerEntryIds.isNotEmpty) 'voidLedgerEntryIds': voidLedgerEntryIds,
+      // Unticked months: free rent, which counts as paid right after a paid month.
+      'freeMonths': [
+        for (final c in charges)
+          if (!c.included) {'year': c.year, 'month': c.month},
+      ],
+      if (paidThroughChoice != null) 'paidThroughChoice': paidThroughChoice.name,
     });
     return PastHistoryResult.fromMap(Map<String, dynamic>.from(result.data as Map));
+  }
+
+  /// Invoice numbers for [invoiceIds] (the id itself when a doc has none or
+  /// cannot be read), for the preview's "open Invoices and void them".
+  static Future<List<String>> invoiceNumbers(String facilityId, List<String> invoiceIds) async {
+    final out = <String>[];
+    for (final id in invoiceIds) {
+      try {
+        final doc = await FirebaseFirestore.instance
+            .collection('facilities')
+            .doc(facilityId)
+            .collection('invoices')
+            .doc(id)
+            .get();
+        final number = doc.data()?['invoiceNumber'];
+        out.add(number is String && number.isNotEmpty ? number : id);
+      } catch (_) {
+        out.add(id);
+      }
+    }
+    return out;
   }
 
   /// Voids every entry and payment of history entry [requestId] and puts

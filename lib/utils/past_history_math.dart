@@ -169,6 +169,16 @@ HistoryChargeProposal proposeHistoryCharges({
   return HistoryChargeProposal(charges: charges, stoppedBefore: firstCharged);
 }
 
+/// What to do with paidThrough when the recomputed date differs from the
+/// tenant's. Same names as the server's paidThroughChoice.
+enum PaidThroughChoice {
+  /// Use the date the ledger works out to after the save, even if earlier.
+  computed,
+
+  /// Only move it later; keep a later date already set.
+  keepLater,
+}
+
 /// What the owner will see once this history is saved.
 class HistoryPreview {
   const HistoryPreview({
@@ -180,12 +190,17 @@ class HistoryPreview {
     required this.paidThroughChanges,
     required this.credit,
     required this.firstUnpaidMonth,
+    this.paidThroughNow,
     this.paidThroughWarning,
     this.existingCharges = 0,
     this.existingChargeTotal = 0,
     this.existingPayments = 0,
     this.existingPaymentTotal = 0,
     this.voidedCount = 0,
+    this.voidsPayment = false,
+    this.choice = PaidThroughChoice.keepLater,
+    this.prepaidMonths = 0,
+    this.invoiceIds = const [],
   });
 
   /// Posted entries already on the ledger that stay (not ticked to void),
@@ -195,8 +210,9 @@ class HistoryPreview {
   final int existingPayments;
   final double existingPaymentTotal;
 
-  /// Existing entries this save voids.
+  /// Existing entries this save voids, and whether any is a payment.
   final int voidedCount;
+  final bool voidsPayment;
 
   /// This entry's charges and payments.
   final double totalCharges;
@@ -205,17 +221,36 @@ class HistoryPreview {
   /// The Ledger screen's Current Balance after saving (sum of posted entries).
   final double balance;
 
-  /// End of the last rent month fully paid (a calendar date), or null.
+  /// The tenant's paid-through date now.
+  final DateTime? paidThroughNow;
+
+  /// End of the last rent month paid once saved (a calendar date), or null.
   final DateTime? computedPaidThrough;
 
   /// What the tenant's paid-through date will be after saving.
   final DateTime? resultingPaidThrough;
   final bool paidThroughChanges;
 
-  /// Paid beyond the fully covered charges: part of [firstUnpaidMonth]'s
-  /// charge, or ahead of the account when nothing is owed.
+  /// The choice the preview used (the owner's, or the default).
+  final PaidThroughChoice choice;
+
+  /// True when saving recomputes to a date earlier than [paidThroughNow],
+  /// so the owner chooses between the two.
+  bool get recomputedIsEarlier =>
+      paidThroughNow != null &&
+      (computedPaidThrough == null ||
+          _dateOnly(computedPaidThrough!).isBefore(_dateOnly(paidThroughNow!).subtract(const Duration(days: 1))));
+
+  /// Money paid beyond the rent months it covers: part of
+  /// [firstUnpaidMonth]'s rent, or less than a month ahead.
   final double credit;
   final ({int year, int month})? firstUnpaidMonth;
+
+  /// Whole months past the last charged month the credit pays for.
+  final int prepaidMonths;
+
+  /// Invoices the entries being voided are on (metadata.invoiceId).
+  final List<String> invoiceIds;
 
   /// Set when the tenant already has a later paid-through date, which is kept.
   final String? paidThroughWarning;
@@ -227,23 +262,32 @@ DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 
 String _formatDay(DateTime d) => '${d.month}/${d.day}/${d.year}';
 
-/// Balance and paid-through once [charges] (the ticked ones) and [payments]
-/// join the tenant's [existing] ledger. Payments are applied oldest charge
-/// first as a pool; paid through is the end of the last rent month in the
-/// run of charges fully covered from the start; an existing later
-/// paid-through date is kept, with a warning.
+/// The default [PaidThroughChoice]: recompute when the save voids a payment
+/// (the payments that pushed paidThrough forward are going), otherwise only
+/// ever move it later.
+PaidThroughChoice defaultPaidThroughChoice({required bool voidsPayment}) =>
+    voidsPayment ? PaidThroughChoice.computed : PaidThroughChoice.keepLater;
+
+/// Balance and paid-through for the tenant's ledger as it will stand after
+/// the save: [existing] less the entries in [voiding], plus the ticked
+/// [charges] and the [payments]. Same rules as the server's
+/// computeHistoryOutcome:
 ///
-/// Entries in [voiding] (ticked to void in the same save) are left out, as
-/// the server leaves them out; every other posted entry already on the
-/// ledger counts, so typed-in duplicates show as a doubled balance.
+/// * only rent decides paid-through: all money paid is applied to the rent
+///   months in month order; fees count in the balance only;
+/// * an unticked (free) month right after a paid month counts as paid;
+/// * money left once every charged month is paid buys whole months at
+///   [monthlyRate]; less than a month is a credit.
 HistoryPreview computeHistoryPreview({
   required List<LedgerEntry> existing,
   required List<ProposedHistoryCharge> charges,
   required List<HistoryPaymentInput> payments,
   required DateTime? existingPaidThrough,
   Set<String> voiding = const {},
+  double monthlyRate = 0,
+  PaidThroughChoice? choice,
 }) {
-  final chargeList = <({int at, double amount, ({int year, int month})? rentMonth})>[];
+  final rentByMonth = <int, double>{};
   var pool = 0.0;
   var balance = 0.0;
   var existingCharges = 0;
@@ -251,41 +295,46 @@ HistoryPreview computeHistoryPreview({
   var existingPayments = 0;
   var existingPaymentTotal = 0.0;
   var voidedCount = 0;
+  var voidsPayment = false;
+  final invoiceIds = <String>{};
 
   for (final e in existing) {
     if (e.status != LedgerEntryStatus.posted || e.amount == 0) continue;
     if (voiding.contains(e.id)) {
       voidedCount++;
+      if (e.amount < 0) voidsPayment = true;
+      final inv = e.metadata?['invoiceId'];
+      if (inv is String && inv.isNotEmpty) invoiceIds.add(inv);
       continue;
     }
     balance += e.amount;
-    if (e.amount > 0) {
-      existingCharges++;
-      existingChargeTotal += e.amount;
-    } else {
+    if (e.amount < 0) {
       existingPayments++;
       existingPaymentTotal -= e.amount;
-    }
-    if (e.amount > 0) {
-      chargeList.add((
-        at: e.entryDate.millisecondsSinceEpoch,
-        amount: e.amount,
-        rentMonth: rentChargeMonthOfEntry(e),
-      ));
-    } else {
       pool += -e.amount;
+      continue;
+    }
+    existingCharges++;
+    existingChargeTotal += e.amount;
+    final m = rentChargeMonthOfEntry(e);
+    if (m != null) {
+      final key = _monthKey(m.year, m.month);
+      rentByMonth[key] = (rentByMonth[key] ?? 0) + e.amount;
     }
   }
 
   var totalCharges = 0.0;
-  for (final c in charges.where((c) => c.included && c.amount > 0)) {
+  final free = <int>{};
+  for (final c in charges) {
+    if (!c.included) {
+      free.add(_monthKey(c.year, c.month));
+      continue;
+    }
+    if (c.amount <= 0) continue;
     totalCharges += c.amount;
     balance += c.amount;
-    chargeList.add((
-      at: DateTime.utc(c.year, c.month, c.day, 12).millisecondsSinceEpoch,
-      amount: c.amount,
-      rentMonth: (year: c.year, month: c.month),
-    ));
+    final key = _monthKey(c.year, c.month);
+    rentByMonth[key] = (rentByMonth[key] ?? 0) + c.amount;
   }
 
   var totalPayments = 0.0;
@@ -295,53 +344,53 @@ HistoryPreview computeHistoryPreview({
     pool += p.amount;
   }
 
-  chargeList.sort((a, b) => a.at.compareTo(b.at));
   pool = _cents(pool);
-  ({int year, int month})? lastCovered;
-  ({int year, int month})? firstUnpaid;
-  for (final charge in chargeList) {
-    if (pool + 0.005 >= charge.amount) {
-      pool = _cents(pool - charge.amount);
-      final m = charge.rentMonth;
-      if (m != null &&
-          (lastCovered == null ||
-              _monthKey(m.year, m.month) > _monthKey(lastCovered.year, lastCovered.month))) {
-        lastCovered = m;
-      }
+  final months = rentByMonth.keys.toList()..sort();
+  int? lastCovered;
+  int? firstUnpaid;
+  for (final key in months) {
+    final need = _cents(rentByMonth[key]!);
+    if (pool + 0.005 >= need) {
+      pool = _cents(pool - need);
+      lastCovered = key;
       continue;
     }
-    if (charge.rentMonth != null) {
-      firstUnpaid = charge.rentMonth;
-    } else {
-      final d = DateTime.fromMillisecondsSinceEpoch(charge.at, isUtc: true);
-      firstUnpaid = (year: d.year, month: d.month);
-    }
+    firstUnpaid = key;
     break;
   }
+  while (lastCovered != null &&
+      free.contains(lastCovered + 1) &&
+      !rentByMonth.containsKey(lastCovered + 1) &&
+      (firstUnpaid == null || lastCovered + 1 < firstUnpaid)) {
+    lastCovered += 1;
+  }
+  var prepaidMonths = 0;
+  if (firstUnpaid == null && lastCovered != null && monthlyRate > 0 && pool + 0.005 >= monthlyRate) {
+    prepaidMonths = ((pool + 0.005) / monthlyRate).floor();
+    pool = _cents(pool - prepaidMonths * monthlyRate);
+    lastCovered += prepaidMonths;
+  }
 
-  final computed = lastCovered == null
-      ? null
-      : DateTime(lastCovered.year, lastCovered.month + 1, 0);
+  final computed = lastCovered == null ? null : DateTime(lastCovered ~/ 12, lastCovered % 12 + 2, 0);
+  final used = choice ?? defaultPaidThroughChoice(voidsPayment: voidsPayment);
 
-  DateTime? resulting = existingPaidThrough == null ? null : _dateOnly(existingPaidThrough);
+  final now = existingPaidThrough == null ? null : _dateOnly(existingPaidThrough);
+  DateTime? resulting = now;
   var changes = false;
   String? warning;
-  if (computed != null) {
-    if (existingPaidThrough == null) {
+  bool sameDay(DateTime? a, DateTime? b) =>
+      (a == null || b == null) ? a == b : (a.difference(b).inHours / 24).round().abs() <= 1;
+  if (!sameDay(now, computed)) {
+    if (used == PaidThroughChoice.computed) {
       resulting = computed;
       changes = true;
-    } else {
-      final existingDay = _dateOnly(existingPaidThrough);
-      // Whole days (a DST change makes one 23 or 25 hours). Within a day
-      // either way is the same date stored in another zone: left alone,
-      // as the server does.
-      final diffDays = (computed.difference(existingDay).inHours / 24).round();
-      if (diffDays > 1) {
+    } else if (computed != null) {
+      if (now == null || computed.isAfter(now)) {
         resulting = computed;
         changes = true;
-      } else if (diffDays < -1) {
-        warning = 'Paid through stays at ${_formatDay(existingDay)}, which is later than the '
-            '${_formatDay(computed)} this history works out to. Check it on the tenant\'s page.';
+      } else {
+        warning = 'Paid through stays at ${_formatDay(now)}, which is later than the '
+            '${_formatDay(computed)} this history works out to.';
       }
     }
   }
@@ -350,17 +399,22 @@ HistoryPreview computeHistoryPreview({
     totalCharges: _cents(totalCharges),
     totalPayments: _cents(totalPayments),
     balance: _cents(balance),
+    paidThroughNow: now,
     computedPaidThrough: computed,
     resultingPaidThrough: resulting,
     paidThroughChanges: changes,
+    choice: used,
     credit: _cents(pool),
-    firstUnpaidMonth: firstUnpaid,
+    firstUnpaidMonth: firstUnpaid == null ? null : (year: firstUnpaid ~/ 12, month: firstUnpaid % 12 + 1),
+    prepaidMonths: prepaidMonths,
     paidThroughWarning: warning,
     existingCharges: existingCharges,
     existingChargeTotal: _cents(existingChargeTotal),
     existingPayments: existingPayments,
     existingPaymentTotal: _cents(existingPaymentTotal),
     voidedCount: voidedCount,
+    voidsPayment: voidsPayment,
+    invoiceIds: invoiceIds.toList()..sort(),
   );
 }
 
