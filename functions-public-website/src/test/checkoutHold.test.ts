@@ -57,8 +57,8 @@ type FakeSession = {
 };
 
 type StripeStub = {
-  /** On the PaymentIntent the renter paid with. */
-  paymentMetadata?: Record<string, string>;
+  /** On the PaymentIntent the renter paid with, or given for each PaymentIntent id. */
+  paymentMetadata?: Record<string, string> | ((paymentIntentId: string) => Record<string, string>);
   /** Checkout Sessions Stripe knows, by id. */
   sessions?: Record<string, FakeSession>;
   /** checkout.sessions.create fails with this. */
@@ -110,13 +110,15 @@ function loadPublicMoveIn(inMemory: InMemoryFirestore, stub: StripeStub = {}) {
           },
         },
         paymentIntents: {
-          retrieve: async () => {
+          retrieve: async (paymentIntentId: string) => {
             stripeCalls.push({ method: 'paymentIntents.retrieve' });
             return {
-              id: 'pi_hold',
+              id: paymentIntentId,
               amount_received: createdAmounts.length > 0 ? createdAmounts[createdAmounts.length - 1] : quoteCents(inMemory),
               status: 'succeeded',
-              metadata: stub.paymentMetadata ?? {},
+              metadata: typeof stub.paymentMetadata === 'function'
+                ? stub.paymentMetadata(paymentIntentId)
+                : stub.paymentMetadata ?? {},
             };
           },
         },
@@ -131,7 +133,7 @@ function loadPublicMoveIn(inMemory: InMemoryFirestore, stub: StripeStub = {}) {
     /** Checkout for this reservation, or for [as] (priced as this one: seed them alike). */
     checkout: (as: { reservationId: string; token: string } = { reservationId: RESERVATION, token: TOKEN }) =>
       testEnv.wrap(moveIn.createPublicMoveInCheckout)(
-        { ...as, amount: quoteCents(inMemory) / 100 },
+        { ...as, amount: checkoutQuoteCents(inMemory) / 100 },
         callableContext,
       ) as Promise<{ checkoutUrl?: string; sessionId?: string }>,
     confirm: (sessionId: string) =>
@@ -225,16 +227,30 @@ function seedSomeoneElse(inMemory: InMemoryFirestore, expiresAt: Timestamp, gone
   seedHold(inMemory, SOMEONE_ELSE.reservationId, expiresAt);
 }
 
-/** The reservation's charges as the server quotes them now: for its move-in date, or today. */
-function quoteCents(inMemory: InMemoryFirestore): number {
+/**
+ * What the reservation's move-in costs from [date], by default the date
+ * checkout would price it from: its move-in date, else the date a checkout
+ * recorded, else today.
+ */
+function quoteCents(inMemory: InMemoryFirestore, date?: Date): number {
   const reservation = inMemory.read(RESERVATION_PATH) as Record<string, unknown>;
-  const moveInDate = reservation.moveInDate as Timestamp | null | undefined;
+  const recorded = (reservation.moveInDate ?? reservation.checkoutMoveInDate) as Timestamp | undefined;
   return computePublicMoveInCharges({
     reservation,
     unitData: inMemory.read(UNIT_PATH),
     facilityData: FACILITY_DATA,
-    moveInDate: moveInDate ? moveInDate.toDate() : new Date(),
+    moveInDate: date ?? recorded?.toDate() ?? new Date(),
   }).totalCents;
+}
+
+/** What a checkout started now charges: from the move-in date, else today (not a date an earlier checkout recorded). */
+function checkoutQuoteCents(inMemory: InMemoryFirestore): number {
+  const moveInDate = inMemory.read(RESERVATION_PATH)?.moveInDate as Timestamp | null | undefined;
+  return quoteCents(inMemory, moveInDate?.toDate() ?? new Date());
+}
+
+function millisOf(value: unknown): number {
+  return value instanceof Date ? value.getTime() : (value as Timestamp).toMillis();
 }
 
 function expiryOf(inMemory: InMemoryFirestore, path: string): number {
@@ -438,7 +454,7 @@ test('when Stripe refuses the session, the price an earlier checkout made its se
   // An earlier checkout, whose session may still be paid in another tab.
   const earlier = {
     expectedCheckoutAmountCents: 1999,
-    quotedMoveInDate: Timestamp.fromDate(new Date(2026, 8, 23)),
+    checkoutMoveInDate: Timestamp.fromDate(new Date(2026, 8, 23)),
     checkoutUpdatedAt: minutesFromNow(-4),
     checkoutAttemptId: 'attempt-earlier',
   };
@@ -460,7 +476,7 @@ test('when Stripe refuses the session, what a later checkout wrote is left alone
   seed(inMemory, { expiresInMinutes: 10 });
   const later = {
     expectedCheckoutAmountCents: 4242,
-    quotedMoveInDate: Timestamp.fromDate(new Date(2026, 8, 26)),
+    checkoutMoveInDate: Timestamp.fromDate(new Date(2026, 8, 26)),
     checkoutAttemptId: 'attempt-later',
   };
   const { checkout } = loadPublicMoveIn(inMemory, {
@@ -764,7 +780,7 @@ for (const [why, finishAfterMinutes] of [
     await checkout();
     const paidCents = stripeCalls[0].params?.line_items[0].price_data.unit_amount;
     mock.timers.setTime(beforeMidnight + finishAfterMinutes * MINUTE);
-    assert.notEqual(quoteCents(inMemory), paidCents, 'the test must cross a change in the price');
+    assert.notEqual(quoteCents(inMemory, new Date()), paidCents, 'the test must cross a change in the price');
 
     const result = await complete();
 
@@ -780,6 +796,96 @@ for (const [why, finishAfterMinutes] of [
     assert.equal((inMemory.read(UNIT_PATH)?.moveInDate as Date).getDate(), 24);
   });
 }
+
+// A renter who gave no move-in date
+
+test('checkout records the date it priced a move-in with no move-in date from', async () => {
+  const inMemory = new InMemoryFirestore();
+  seed(inMemory, { expiresInMinutes: 10 });
+  inMemory.seed(RESERVATION_PATH, { ...inMemory.read(RESERVATION_PATH), moveInDate: null });
+  const { checkout } = loadPublicMoveIn(inMemory);
+  const before = Date.now();
+
+  await checkout();
+
+  const reservation = inMemory.read(RESERVATION_PATH) as Record<string, unknown>;
+  const priced = millisOf(reservation.checkoutMoveInDate);
+  assert.ok(priced >= before && priced <= Date.now());
+  assert.equal(reservation.expectedCheckoutAmountCents, quoteCents(inMemory, new Date(priced)));
+});
+
+test('a renter with no move-in date who paid finishes after the day changed', async () => {
+  // Completion priced the move-in from today again, so a renter who paid at
+  // 23:50 UTC and finished at 00:10 was refused as "charges changed".
+  const inMemory = new InMemoryFirestore();
+  seed(inMemory, { expiresInMinutes: 30, reservedMinutesAgo: 60, checkoutStarted: true });
+  const today = quoteCents(inMemory, new Date());
+  const pricedOn = [2, 3, 5, 10]
+    .map((days) => new Date(Date.now() - days * 24 * 60 * MINUTE))
+    .find((date) => quoteCents(inMemory, date) !== today);
+  assert.ok(pricedOn, 'no earlier date prices differently from today');
+  inMemory.seed(RESERVATION_PATH, {
+    ...inMemory.read(RESERVATION_PATH),
+    moveInDate: null,
+    checkoutMoveInDate: Timestamp.fromDate(pricedOn),
+    expectedCheckoutAmountCents: quoteCents(inMemory, pricedOn),
+  });
+  const { complete } = loadPublicMoveIn(inMemory, { paymentMetadata: TAGGED });
+
+  const result = await complete();
+
+  assert.equal(result.success, true);
+  assert.equal(inMemory.read(UNIT_PATH)?.status, 'occupied');
+  assert.equal(millisOf(inMemory.read(UNIT_PATH)?.moveInDate), pricedOn.getTime());
+});
+
+// Two paid renters, one unit
+
+test('of two paid renters finishing on one unit at once, one moves in and the other is refused', async () => {
+  // Both holds lapsed after checkout, so both pass the checks made before
+  // the transaction; the unit was set occupied without being read again.
+  const inMemory = new InMemoryFirestore();
+  seed(inMemory, { expiresInMinutes: -40, reservedMinutesAgo: 120, checkoutStarted: true });
+  const other = 'res-hold-other';
+  const otherToken = 'hold-move-in-token-other-0123456789';
+  inMemory.seed(`publicReservations/${other}`, {
+    ...inMemory.read(RESERVATION_PATH),
+    moveInToken: otherToken,
+    name: 'Olly Other',
+    email: 'other@example.com',
+    expiresAt: minutesFromNow(-20),
+  });
+  seedHold(inMemory, other, minutesFromNow(-20));
+  const { complete, stripeCalls } = loadPublicMoveIn(inMemory, {
+    paymentMetadata: (id) => ({ type: 'public_move_in', reservationId: id === 'pi_other' ? other : RESERVATION }),
+  });
+
+  const results = await Promise.allSettled([
+    complete({ paymentIntentId: 'pi_first' }),
+    complete({
+      reservationId: other,
+      token: otherToken,
+      name: 'Olly Other',
+      email: 'other@example.com',
+      paymentIntentId: 'pi_other',
+    }),
+  ]);
+
+  const refused = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+  assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
+  assert.equal(refused.length, 1);
+  // Refused after paying, so refunded, not just turned away.
+  assert.match(String((refused[0].reason as { message?: string }).message),
+    /^This unit was rented or taken out of service while you were paying/);
+  const refunds = stripeCalls.filter((c) => c.method === 'refunds.create');
+  assert.equal(refunds.length, 1);
+  assert.equal(inMemory.listCollection(`facilities/${FACILITY}/tenants`).length, 1);
+  const tenantId = inMemory.read(UNIT_PATH)?.tenantId;
+  const movedIn = inMemory.read(`facilities/${FACILITY}/tenants/${tenantId}`) as Record<string, unknown>;
+  // The refund is the other renter's payment, never the one that moved in.
+  const refundedPayment = refunds[0].params?.payment_intent;
+  assert.equal(refundedPayment, movedIn.name === 'Olly Other' ? 'pi_first' : 'pi_other');
+});
 
 test.after(() => {
   testEnv.cleanup();

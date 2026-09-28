@@ -7,6 +7,7 @@ import {
   enforceRateLimit,
   escapeHtml,
   enabledOnlineUnitTypes,
+  facilityTakesOnlineRentals,
   getStripeClient,
   isArchivedForOnlineRental,
   isInternalUseUnit,
@@ -302,7 +303,9 @@ async function assertFacilityTakesOnlineRentals(facilityId: string): Promise<Rec
     .doc('public')
     .get();
   const settings = (settingsSnap.data() || {}) as Record<string, unknown>;
-  if (settings.publicRentalsEnabled !== true) {
+  // The public website shows "Rent now" by the same test
+  // (facilityAcceptsPublicRentals), so it never links to this refusal.
+  if (!facilityTakesOnlineRentals(settings)) {
     throw new functions.https.HttpsError('failed-precondition', ONLINE_RENTALS_OFF_MESSAGE);
   }
   return settings;
@@ -753,7 +756,7 @@ export const createPublicMoveInCheckout = functions
   });
 
   // Priced for the renter's move-in date, or today when they gave none. That
-  // day is recorded with the amount (quotedMoveInDate), and completion prices
+  // day is recorded with the amount (checkoutMoveInDate), and completion prices
   // it rather than its own today: proration changes at midnight, server time
   // (UTC), so a renter who paid before it and finished after it was refused
   // as 'charges changed' and refunded.
@@ -810,7 +813,7 @@ export const createPublicMoveInCheckout = functions
 
     tx.update(reservationRef, {
       expectedCheckoutAmountCents: chargeQuote.totalCents,
-      quotedMoveInDate: admin.firestore.Timestamp.fromDate(moveInDate),
+      checkoutMoveInDate: admin.firestore.Timestamp.fromDate(moveInDate),
       [CHECKOUT_ATTEMPT_FIELD]: attemptId,
       checkoutUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
       expiresAt: admin.firestore.Timestamp.fromDate(laterExpiry(current.expiresAt, holdUntil)),
@@ -1339,7 +1342,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   // afresh, a completion after midnight (UTC) quoted another day's proration
   // than the renter paid, and refused and refunded them as 'charges changed'.
   const moveInDate =
-    timestampToDate(reservation.moveInDate) ?? timestampToDate(reservation.quotedMoveInDate) ?? new Date();
+    timestampToDate(reservation.moveInDate) ?? timestampToDate(reservation.checkoutMoveInDate) ?? new Date();
 
   if (!facilityId) {
     throw new functions.https.HttpsError('failed-precondition', 'Reservation missing facilityId');

@@ -10,15 +10,27 @@ import 'package:sfcapp/models/permission_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/facility_public_service.dart';
 import 'package:sfcapp/services/map_layout_service.dart';
+import 'package:sfcapp/services/facility_subcollections.dart';
 import 'package:sfcapp/services/permission_service.dart';
-import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/utils/firestore_field_read.dart';
 import 'package:sfcapp/utils/tenant_unit_claims.dart';
 
 class FacilityMapV2Service {
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
+  // Getters, not final fields, so tests can run a publish against a fake
+  // Firestore and a signed-in fake user.
+  static FirebaseFirestore get _firestore =>
+      _firestoreForTesting ?? FirebaseFirestore.instance;
+  static FirebaseFirestore? _firestoreForTesting;
+  static FirebaseAuth get _auth => _authForTesting ?? FirebaseAuth.instance;
+  static FirebaseAuth? _authForTesting;
+
+  @visibleForTesting
+  static set firestoreForTesting(FirebaseFirestore? firestore) =>
+      _firestoreForTesting = firestore;
+
+  @visibleForTesting
+  static set authForTesting(FirebaseAuth? auth) => _authForTesting = auth;
 
   static DocumentReference<Map<String, dynamic>> _metaRef(String facilityId) {
     return _firestore
@@ -102,6 +114,16 @@ class FacilityMapV2Service {
       throw Exception('Not signed in');
     }
 
+    // Throws rather than publish a snapshot built from default settings: that
+    // switched the public site off, cleared its custom domain and page text,
+    // and opened every unit type, until the next publish. Read first, so a
+    // failure writes nothing (getOrCreateMeta can create the meta doc).
+    final publicSettings =
+        await FacilityPublicService.getPublicSettingsOrThrow(facilityId);
+    // Throws too. On a failed read this saw no tenants, so a unit taken only
+    // through an active tenant's unit number was published as rentable.
+    final claimedUnits = await readTenantUnitClaimsOrThrow(facilityId);
+
     final meta = await getOrCreateMeta(facilityId);
     final facilitySnap =
         await _firestore.collection('facilities').doc(facilityId).get();
@@ -163,14 +185,11 @@ class FacilityMapV2Service {
         },
         SetOptions(merge: true));
 
-    final publicSettings =
-        await FacilityPublicService.getPublicSettings(facilityId);
-    final tenants = await TenantService.getTenantsForFacility(facilityId);
     final inventory = publicUnitInventory(
       facilityId: facilityId,
       units: units,
       publicSettings: publicSettings,
-      tenantClaims: TenantUnitClaims.fromTenants(tenants),
+      tenantClaims: claimedUnits,
     );
     final snapshot = _buildPublicSnapshot(
       facilityId: facilityId,
@@ -289,6 +308,18 @@ class FacilityMapV2Service {
     return PublicFacilityMapSnapshot.fromMap(doc.data()!);
   }
 
+  /// Whether publicFacilityMaps/{slug} has the website switched on, which is
+  /// half of what renderPublicWebsite checks before serving /w/{slug} (the
+  /// other half is the website add-on). False when nothing is published
+  /// there; throws when the doc cannot be read. Reads the one field rather
+  /// than the whole snapshot, so an odd value elsewhere cannot fail it.
+  static Future<bool> publishedWebsiteEnabled(String slug) async {
+    final doc =
+        await _firestore.collection('publicFacilityMaps').doc(slug).get();
+    final settings = doc.data()?['publicSettings'];
+    return settings is Map && settings['enabled'] == true;
+  }
+
   static Future<String?> getPublicSlugForFacility(String facilityId) async {
     final query = await _firestore
         .collection('publicFacilityMaps')
@@ -388,10 +419,37 @@ class FacilityMapV2Service {
           String facilityId) =>
       _fetchActiveUnitsOrdered(facilityId);
 
+  /// What the facility's active tenants claim by their own records
+  /// ([TenantUnitClaims]), which marks a unit taken even when its own doc was
+  /// never set to occupied. Throws when they cannot all be read, so a publish
+  /// cannot mistake a failed or partial read for a facility with fewer
+  /// tenants.
+  ///
+  /// The claims syncPublicFacilityMapInventoryForFacility makes on the
+  /// server, so the two writers of publicFacilityMaps/{slug}.units agree:
+  /// only tenants whose `isActive` is exactly true, read from the raw doc
+  /// ([TenantUnitClaims.fromTenantDocs]). This parsed every tenant into a
+  /// TenantModel, which throws on a unit number stored as a number (the
+  /// server reads 101 as '101') and on any odd field unrelated to the claim,
+  /// and read every tenant under a cap that was reported but still published
+  /// a partial list of claims.
+  static Future<TenantUnitClaims> readTenantUnitClaimsOrThrow(
+      String facilityId) async {
+    const cap = FacilitySubcollections.readLimit;
+    final snapshot =
+        await FacilitySubcollections.activeTenants(facilityId).limit(cap).get();
+    if (snapshot.docs.length >= cap) {
+      throw StateError('Facility $facilityId has at least $cap active tenants; '
+          'the public map cannot be published from a partial list of them.');
+    }
+    return TenantUnitClaims.fromTenantDocs(
+        snapshot.docs.map((doc) => doc.data()));
+  }
+
   /// Builds the anonymous-safe `units` payload for [publicFacilityMaps] documents.
   ///
   /// [tenantClaims]: the units active tenants have by their own records
-  /// ([TenantUnitClaims.fromTenants]), which catches tenants whose unit doc
+  /// ([readTenantUnitClaimsOrThrow]), which catches tenants whose unit doc
   /// was never set to occupied.
   static List<Map<String, dynamic>> buildPublicUnitInventoryMaps({
     required List<UnitModel> units,
@@ -558,15 +616,19 @@ class FacilityMapV2Service {
         return;
       }
 
+      // Throws, and the catch below skips the refresh, rather than list the
+      // unit types and unit numbers the owner hid (default settings show all).
       final publicSettings =
-          await FacilityPublicService.getPublicSettings(facilityId);
+          await FacilityPublicService.getPublicSettingsOrThrow(facilityId);
       final units = await _fetchActiveUnitsOrdered(facilityId);
-      final tenants = await TenantService.getTenantsForFacility(facilityId);
+      // Throws and skips the refresh too, rather than list a unit taken only
+      // through an active tenant's unit number as rentable.
+      final claimedUnits = await readTenantUnitClaimsOrThrow(facilityId);
       final inventory = publicUnitInventory(
         facilityId: facilityId,
         units: units,
         publicSettings: publicSettings,
-        tenantClaims: TenantUnitClaims.fromTenants(tenants),
+        tenantClaims: claimedUnits,
       );
 
       await publicRef.update({

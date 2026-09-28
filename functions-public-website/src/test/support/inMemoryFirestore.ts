@@ -55,6 +55,9 @@ export class InMemoryFirestore {
    */
   readonly writeErrorsOutsideTransactions = new Map<string, Error>();
 
+  /** A document's `get()` on a path listed here rejects with its error. */
+  readonly docErrors = new Map<string, Error>();
+
   /** The last transaction queued; the next one starts when it settles. */
   private transactionTail: Promise<unknown> = Promise.resolve();
 
@@ -147,6 +150,8 @@ export class InMemoryFirestore {
       }
 
       async get(): Promise<DocSnapshot> {
+        const docError = owner.docErrors.get(this.path);
+        if (docError) throw docError;
         return new DocSnapshot(this, this.path);
       }
 

@@ -317,6 +317,7 @@ export type { ActiveTenantUnitClaims, UnitNotOfferedReason } from './units/onlin
 export {
   activeTenantUnitClaims,
   enabledOnlineUnitTypes,
+  facilityTakesOnlineRentals,
   hasTenantLink,
   isArchivedForOnlineRental,
   isInternalUseUnit,

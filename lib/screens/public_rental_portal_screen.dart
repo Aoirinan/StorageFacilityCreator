@@ -5,8 +5,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:sfcapp/models/facility_map_v2_models.dart';
 import 'package:sfcapp/services/facility_map_v2_service.dart';
 import 'package:sfcapp/services/public_rental_service.dart';
+import 'package:sfcapp/services/public_website_status.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
@@ -18,12 +20,39 @@ class PublicRentalPortalScreen extends StatefulWidget {
   final bool availableOnly;
   final String? initialCategorySlug;
 
+  /// Whether the facility's website (`/w/{slug}`) is live, when the caller
+  /// already asked (PublicRentEntryPage). Null: this screen asks once the
+  /// facility loads. The Home/About/Units/Map/Contact bar links into the
+  /// website, so it shows only when the website is live.
+  final bool? websiteLive;
+
+  /// Test seam. Production asks [PublicWebsiteStatus.isLive].
+  final Future<bool> Function(String slug)? websiteIsLive;
+
+  /// Replaces the publicFacilityMaps read, for tests.
+  @visibleForTesting
+  final Future<PublicFacilityMapSnapshot?> Function(String slug)? loadSnapshot;
+
+  /// Replaces the page URL's query parameters, for tests.
+  @visibleForTesting
+  final Map<String, String>? queryParamsForTesting;
+
+  /// Replaces url_launcher's launchUrl for the call and email links, for
+  /// tests.
+  @visibleForTesting
+  final Future<bool> Function(Uri uri)? openUrl;
+
   const PublicRentalPortalScreen({
     super.key,
     this.facilityId,
     this.facilitySlug,
     this.availableOnly = false,
     this.initialCategorySlug,
+    this.websiteLive,
+    this.websiteIsLive,
+    this.loadSnapshot,
+    this.queryParamsForTesting,
+    this.openUrl,
   });
 
   @override
@@ -37,6 +66,8 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   /// Hash routes (`/#/f/...?embed=1`) put query params in [Uri.fragment], not
   /// [Uri.queryParameters]. Parse both so embedded mode actually activates.
   Map<String, String> _locationQueryParams() {
+    final forTesting = widget.queryParamsForTesting;
+    if (forTesting != null) return forTesting;
     final merged = Map<String, String>.from(Uri.base.queryParameters);
     final frag = Uri.base.fragment;
     if (frag.isNotEmpty) {
@@ -54,9 +85,11 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   String? _error;
   String? _facilitySlug;
   String? _facilityId;
+  bool _websiteLive = false;
   String _facilityName = 'Rent Online';
   String? _facilityDescription;
   String? _facilityPhone;
+  String? _contactEmail;
   String? _facilityLogoUrl;
   String? _customDomain;
   Color _heroGradientStart = const Color(0xFF0C1E4D);
@@ -115,8 +148,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         return;
       }
 
-      final snapshot =
-          await FacilityMapV2Service.getPublicSnapshotBySlug(resolvedSlug);
+      final snapshot = await _fetchSnapshot(resolvedSlug);
       if (snapshot == null) {
         setState(() {
           _error =
@@ -161,7 +193,10 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
                 ? settings['facilityName'].toString()
                 : 'Rent Online';
         _facilityDescription = settings['facilityDescription']?.toString();
-        _facilityPhone = settings['facilityPhone']?.toString();
+        // As /w/{slug} picks it: the website's phone, else the facility's.
+        _facilityPhone = publishedRentalPhone(settings);
+        final email = websiteConfig['contactEmail']?.toString().trim();
+        _contactEmail = (email != null && email.contains('@')) ? email : null;
         _facilityLogoUrl = settings['facilityLogoUrl']?.toString();
         _customDomain = settings['customDomain']?.toString();
         _heroGradientStart = _parseColor(
@@ -200,7 +235,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
           websiteConfig['promiseConvenience']?.toString(),
           'Fast online reservation and move-in flow',
         );
-        _publicRentalsEnabled = settings['publicRentalsEnabled'] == true;
+        _publicRentalsEnabled = facilityTakesOnlineRentals(settings);
         _publicPricingEnabled = settings['showPublicPricing'] != false;
         _publicUnitNumbersEnabled =
             settings['publicUnitNumbersEnabled'] != false;
@@ -212,9 +247,13 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         _unitTypeImageUrls = unitTypeImageUrls;
         _units = publicUnits;
         _selectedCategorySlug = widget.initialCategorySlug;
+        _websiteLive = widget.websiteLive ?? false;
         _isLoading = false;
       });
 
+      if (widget.websiteLive == null) {
+        unawaited(_askWhetherWebsiteIsLive(resolvedSlug, settings));
+      }
       _maybeAutoStartRental();
     } catch (e) {
       if (kDebugMode) {
@@ -226,6 +265,33 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
       });
     }
   }
+
+  /// The website is live only when the server says so (publicSettings.enabled
+  /// and the facility entitled to it). Off in this snapshot means off there
+  /// too, since the server reads the same publicFacilityMaps doc, so only a
+  /// website switched on costs a request.
+  Future<void> _askWhetherWebsiteIsLive(
+    String slug,
+    Map<String, dynamic> settings,
+  ) async {
+    if (settings['enabled'] != true) return;
+    final ask = widget.websiteIsLive ?? PublicWebsiteStatus.isLive;
+    bool live;
+    try {
+      live = await ask(slug);
+    } catch (_) {
+      live = false;
+    }
+    if (!mounted || !live || _facilitySlug != slug) return;
+    setState(() => _websiteLive = true);
+  }
+
+  Future<PublicFacilityMapSnapshot?> _fetchSnapshot(String slug) =>
+      (widget.loadSnapshot ?? FacilityMapV2Service.getPublicSnapshotBySlug)(
+          slug);
+
+  // publishedRentalPhone answers only a number with a digit to dial.
+  bool get _hasFacilityPhone => _facilityPhone != null;
 
   String? _getSlugFromPath() {
     final segments = Uri.base.pathSegments;
@@ -245,21 +311,39 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
     if (raw == null || raw.isEmpty) return;
     final normalized = raw.replaceAll(RegExp(r'[^\d+]'), '');
     if (normalized.isEmpty) return;
-    final uri = Uri(scheme: 'tel', path: normalized);
-    try {
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri);
-      }
-    } catch (_) {
-      /* ignore launch failures on unsupported platforms */
-    }
+    await _openContact(
+      Uri(scheme: 'tel', path: normalized),
+      fallback: 'Call $raw to rent.',
+    );
   }
 
-  String _originBase() {
-    final origin = Uri.base.origin;
-    if (origin.isNotEmpty) return origin;
-    return 'https://app.storagefacilitycreator.com';
+  Future<void> _emailFacility() async {
+    final email = _contactEmail;
+    if (email == null) return;
+    await _openContact(
+      Uri(scheme: 'mailto', path: email),
+      fallback: 'Email $email to rent.',
+    );
   }
+
+  /// Opens a tel: or mailto: link. Where nothing opens it (a desktop
+  /// browser with no dialer), says [fallback] instead, so the button still
+  /// gives the renter a way to reach the facility.
+  Future<void> _openContact(Uri uri, {required String fallback}) async {
+    var opened = false;
+    try {
+      opened = await (widget.openUrl ?? launchUrl)(uri);
+    } catch (_) {
+      opened = false;
+    }
+    if (opened || !mounted) return;
+    ScaffoldMessenger.maybeOf(context)
+        ?.showSnackBar(SnackBar(content: Text(fallback)));
+  }
+
+  // Not Uri.base.origin directly: that throws when the page has no http(s)
+  // origin (off the web, and in tests).
+  String _originBase() => PublicWebsiteStatus.appOrigin().toString();
 
   String _publicWebsiteBaseUrl() {
     final slug = _facilitySlug?.trim();
@@ -297,8 +381,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
     final slug = _facilitySlug;
     if (slug == null || slug.trim().isEmpty) return;
     try {
-      final snapshot =
-          await FacilityMapV2Service.getPublicSnapshotBySlug(slug.trim());
+      final snapshot = await _fetchSnapshot(slug.trim());
       if (!mounted || snapshot == null) return;
       final publicUnits = snapshot.units
           .map((raw) => _PublicUnitView.fromMap(raw))
@@ -319,6 +402,10 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
 
   bool get _isAutoSubmitMode {
     if (_autoSubmitAbandoned) return false;
+    // _maybeAutoStartRental never submits while rentals are off, so this
+    // left the website's renters on "Completing your reservation..." for
+    // good.
+    if (!_publicRentalsEnabled) return false;
     final params = _locationQueryParams();
     return params['autoSubmit'] == '1' &&
         (params['email']?.trim().isNotEmpty == true);
@@ -621,7 +708,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
           padding: EdgeInsets.zero,
           children: [
             if (!_isEmbeddedMode) _buildFacilityHeader(),
-            if (!_isEmbeddedMode)
+            if (!_isEmbeddedMode && _websiteLive)
               Center(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: _contentMaxWidth),
@@ -646,7 +733,8 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        if (!_isEmbeddedMode) ...[
+                        // The steps end in "Reserve online".
+                        if (!_isEmbeddedMode && _publicRentalsEnabled) ...[
                           _buildJourneyStrip(),
                           const SizedBox(height: 14),
                         ],
@@ -659,9 +747,11 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
                         ] else ...[
                           _buildSectionHeader(
                             title: 'Available Units',
-                            subtitle: _categorySlugs.isEmpty
-                                ? 'Pick a unit type and reserve online in minutes.'
-                                : 'Filter by unit type to find the right fit quickly.',
+                            subtitle: !_publicRentalsEnabled
+                                ? 'Call the facility to rent any of these units.'
+                                : _categorySlugs.isEmpty
+                                    ? 'Pick a unit type and reserve online in minutes.'
+                                    : 'Filter by unit type to find the right fit quickly.',
                           ),
                           if (_categorySlugs.isNotEmpty) ...[
                             const SizedBox(height: 12),
@@ -669,6 +759,10 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
                           ],
                         ],
                         const SizedBox(height: 14),
+                        if (!_publicRentalsEnabled) ...[
+                          _buildRentalsOffNotice(),
+                          const SizedBox(height: 14),
+                        ],
                         if (groups.isEmpty)
                           _buildEmptyState()
                         else
@@ -767,9 +861,6 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
     final availableCount = group.availableUnits.length;
     final unavailable = availableCount == 0;
     final monthlyRate = group.lowestRate;
-    final canRent = _publicRentalsEnabled &&
-        !unavailable &&
-        (_allowAutoAssign || _allowUnitSelection);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -845,20 +936,11 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
             ),
           ],
           const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _ctaButtonColor,
-                foregroundColor: Colors.white,
-                minimumSize: const Size.fromHeight(44),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              onPressed: canRent ? () => _handleRentNow(group) : null,
-              child: Text(unavailable ? 'Unavailable' : 'Reserve this unit'),
-            ),
+          _buildCardAction(
+            group,
+            reserveLabel: 'Reserve this unit',
+            height: 44,
+            radius: 10,
           ),
         ],
       ),
@@ -952,7 +1034,9 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
                     ),
               const SizedBox(height: 8),
               Text(
-                'Rent storage units in minutes',
+                _publicRentalsEnabled
+                    ? 'Rent storage units in minutes'
+                    : 'Call the facility to rent a unit',
                 style: TextStyle(
                   fontSize: 18,
                   height: 1.35,
@@ -961,7 +1045,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
                   letterSpacing: 0.15,
                 ),
               ),
-              if (_facilityPhone != null && _facilityPhone!.trim().isNotEmpty) ...[
+              if (_hasFacilityPhone) ...[
                 const SizedBox(height: 14),
                 Material(
                   color: Colors.transparent,
@@ -1038,11 +1122,12 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
                       label: 'Transparent monthly pricing',
                       textColor: _heroTextColor,
                     ),
-                  _MetaPill(
-                    icon: Icons.bolt_rounded,
-                    label: 'Online reservation flow',
-                    textColor: _heroTextColor,
-                  ),
+                  if (_publicRentalsEnabled)
+                    _MetaPill(
+                      icon: Icons.bolt_rounded,
+                      label: 'Online reservation flow',
+                      textColor: _heroTextColor,
+                    ),
                 ],
               ),
                   ],
@@ -1164,11 +1249,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
 
   Widget _buildGroupCard(_UnitTypeGroup group) {
     final availableCount = group.availableUnits.length;
-    final unavailable = availableCount == 0;
     final monthlyRate = group.lowestRate;
-    final canRent = _publicRentalsEnabled &&
-        !unavailable &&
-        (_allowAutoAssign || _allowUnitSelection);
 
     final imageUrl = _unitTypeImageUrls[_normalizeUnitTypeKey(group.unitType)];
 
@@ -1272,20 +1353,11 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
               ),
             ],
             const SizedBox(height: 14),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _ctaButtonColor,
-                  foregroundColor: Colors.white,
-                  minimumSize: const Size.fromHeight(48),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                onPressed: canRent ? () => _handleRentNow(group) : null,
-                child: Text(unavailable ? 'Unavailable' : 'Reserve This Unit'),
-              ),
+            _buildCardAction(
+              group,
+              reserveLabel: 'Reserve This Unit',
+              height: 48,
+              radius: 12,
             ),
           ],
         ),
@@ -1365,6 +1437,8 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   }
 
   Widget _buildInfoRail() {
+    // Every FAQ answer is about renting online.
+    if (!_publicRentalsEnabled) return _buildWhyRentSection();
     return LayoutBuilder(
       builder: (context, constraints) {
         if (constraints.maxWidth >= 900) {
@@ -1451,9 +1525,109 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
     );
   }
 
+  /// A group card's action: reserve while the hold would take a rental.
+  /// Otherwise the facility's phone ("Call {phone} to rent"), else its
+  /// email: with online rentals off, cards showed a greyed-out "Reserve"
+  /// that said nothing about why. Null when the page has neither, and the
+  /// card says to contact the facility instead of showing a dead button.
+  ({String label, VoidCallback? onPressed})? _cardAction(
+    _UnitTypeGroup group, {
+    required String reserveLabel,
+  }) {
+    if (group.availableUnits.isEmpty) {
+      return (label: 'Unavailable', onPressed: null);
+    }
+    // With both off there is no way to pick a unit online, so this too
+    // was a greyed-out "Reserve".
+    if (_publicRentalsEnabled && (_allowAutoAssign || _allowUnitSelection)) {
+      return (label: reserveLabel, onPressed: () => _handleRentNow(group));
+    }
+    if (_hasFacilityPhone) {
+      return (
+        label: 'Call $_facilityPhone to rent',
+        onPressed: _dialFacilityPhone,
+      );
+    }
+    if (_contactEmail != null) {
+      return (label: 'Email $_contactEmail to rent', onPressed: _emailFacility);
+    }
+    return null;
+  }
+
+  Widget _buildCardAction(
+    _UnitTypeGroup group, {
+    required String reserveLabel,
+    required double height,
+    required double radius,
+  }) {
+    final action = _cardAction(group, reserveLabel: reserveLabel);
+    if (action == null) {
+      return const Text(
+        'Not available online. Contact the facility to rent this unit.',
+        style: TextStyle(
+          color: AppTheme.textSecondary,
+          fontWeight: FontWeight.w600,
+        ),
+      );
+    }
+    return SizedBox(
+      width: double.infinity,
+      child: ElevatedButton(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: _ctaButtonColor,
+          foregroundColor: Colors.white,
+          minimumSize: Size.fromHeight(height),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(radius),
+          ),
+        ),
+        onPressed: action.onPressed,
+        child: Text(action.label, textAlign: TextAlign.center),
+      ),
+    );
+  }
+
+  Widget _buildRentalsOffNotice() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF7E6),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFF5D8A6)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            onlineRentalsOffMessage,
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF0F172A),
+              height: 1.4,
+            ),
+          ),
+          if (_hasFacilityPhone) ...[
+            const SizedBox(height: 10),
+            FilledButton.tonalIcon(
+              onPressed: _dialFacilityPhone,
+              icon: const Icon(Icons.call_rounded, size: 20),
+              label: Text('Call $_facilityPhone'),
+            ),
+          ] else if (_contactEmail != null) ...[
+            const SizedBox(height: 10),
+            FilledButton.tonalIcon(
+              onPressed: _emailFacility,
+              icon: const Icon(Icons.email_outlined, size: 20),
+              label: Text('Email $_contactEmail'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildEmptyState() {
-    final hasPhone =
-        _facilityPhone != null && _facilityPhone!.trim().isNotEmpty;
+    final hasPhone = _hasFacilityPhone;
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),

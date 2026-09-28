@@ -23,21 +23,25 @@ import 'package:sfcapp/utils/unit_number.dart';
 class TenantUnitClaims {
   TenantUnitClaims._(this._unitIds, this._byNumber);
 
-  /// What [tenants] claim. Only an active tenant ([TenantModel.isActive])
-  /// claims anything.
-  factory TenantUnitClaims.fromTenants(Iterable<TenantModel> tenants) {
+  /// What the tenant docs [tenants] claim, read from the raw fields as the
+  /// server reads them. Only a tenant whose `isActive` is exactly true
+  /// claims anything. From the raw doc, not a [TenantModel]: parsing one
+  /// throws on a unit number stored as a number and on odd fields unrelated
+  /// to the claim, and the publish then saw no tenants at all.
+  factory TenantUnitClaims.fromTenantDocs(
+      Iterable<Map<String, dynamic>> tenants) {
     final unitIds = <String>{};
     final byNumber = <String, Set<String?>>{};
     for (final t in tenants) {
-      if (!t.isActive) continue;
-      final unitId = TenantModel.textField(t.unitId);
+      if (t['isActive'] != true) continue;
+      final unitId = TenantModel.textField(t['unitId']);
       if (unitId != null) {
         unitIds.add(unitId);
         continue;
       }
-      final number = unitNumberKey(t.unitNumber);
-      if (number.isEmpty) continue;
-      (byNumber[number] ??= <String?>{}).add(unitAreaKey(t.unitArea));
+      final number = claimedNumberKey(t);
+      if (number == null) continue;
+      (byNumber[number] ??= <String?>{}).add(unitAreaKey(t['unitArea']));
     }
     return TenantUnitClaims._(unitIds, byNumber);
   }
@@ -45,6 +49,31 @@ class TenantUnitClaims {
   /// No tenant claims anything.
   static final TenantUnitClaims none =
       TenantUnitClaims._(const <String>{}, const <String, Set<String?>>{});
+
+  /// The unit number key a tenant doc's `unitNumber` gives, as the server's
+  /// `String(td.unitNumber || '').trim().toLowerCase()` reads it, or null
+  /// when it names none (missing, blank, 0, false).
+  static String? claimedNumberKey(Map<String, dynamic> tenant) {
+    final raw = tenant['unitNumber'];
+    final String text;
+    if (raw is String) {
+      text = raw;
+    } else if (raw is num && raw != 0 && !raw.isNaN) {
+      // JavaScript's String() writes 101.0 as '101', as it does 101.
+      text = raw is double &&
+              raw.isFinite &&
+              raw == raw.roundToDouble() &&
+              raw.abs() < 1e21
+          ? raw.toStringAsFixed(0)
+          : raw.toString();
+    } else if (raw == true) {
+      text = 'true';
+    } else {
+      text = '';
+    }
+    final n = unitNumberKey(text);
+    return n.isEmpty ? null : n;
+  }
 
   final Set<String> _unitIds;
 

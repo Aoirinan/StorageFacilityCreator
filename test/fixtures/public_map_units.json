@@ -336,6 +336,26 @@
         "vehicle": { "isRentable": false, "status": "available", "unitType": "vehicle", "categorySlug": "vehicle" },
         "blank": { "isRentable": false, "status": "available", "unitType": "", "categorySlug": "facility-map" },
         "zero": { "isRentable": false, "status": "available", "unitType": "0", "categorySlug": "0" }
+        }
+      },
+      {
+      "name": "a tenant's unit number claims its unit as the server reads it, whatever else the tenant doc holds",
+      "units": [
+        { "id": "u101", "data": { "unitNumber": "101", "status": "available", "unitType": "standard" } },
+        { "id": "c2", "data": { "unitNumber": "C2", "status": "available", "unitType": "standard" } },
+        { "id": "u0", "data": { "unitNumber": "0", "status": "available", "unitType": "standard" } },
+        { "id": "c3", "data": { "unitNumber": "C3", "status": "available", "unitType": "standard" } }
+      ],
+      "tenants": [
+        { "id": "number", "data": { "name": "Al", "isActive": true, "unitNumber": 101 } },
+        { "id": "odd-fields", "data": { "name": "Bo", "isActive": true, "unitNumber": "C2", "monthlyRate": "ninety", "createdAt": "yesterday", "vehicles": "truck" } },
+        { "id": "zero", "data": { "name": "Cy", "isActive": true, "unitNumber": 0 } }
+      ],
+      "expected": {
+        "u101": { "isRentable": false, "status": "rented" },
+        "c2": { "isRentable": false, "status": "rented" },
+        "u0": { "isRentable": true, "status": "available" },
+        "c3": { "isRentable": true, "status": "available" }
       }
     }
   ]

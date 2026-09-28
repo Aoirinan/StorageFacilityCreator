@@ -1,13 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/models/facility_public_settings_model.dart';
 import 'package:sfcapp/services/facility_map_v2_service.dart';
 import 'package:sfcapp/services/facility_subcollections.dart';
-import 'package:sfcapp/services/tenant_service.dart';
-import 'package:sfcapp/utils/tenant_unit_claims.dart';
 
 import 'support/fake_facility_collection.dart';
 
@@ -31,12 +28,7 @@ void main() {
   ) as Map<String, Object?>;
   final cases = fixture['cases']! as List<Object?>;
 
-  setUp(() {
-    TenantService.authForTesting =
-        MockFirebaseAuth(signedIn: true, mockUser: MockUser(uid: 'owner-1'));
-  });
   tearDown(() {
-    TenantService.authForTesting = null;
     FacilitySubcollections.overrideForTesting(null);
   });
 
@@ -58,11 +50,11 @@ void main() {
 
       // What publish and refreshPublicMapInventoryFromLiveUnits do between
       // reading the public settings (FacilityPublicService.getPublicSettings,
-      // null when the facility has none) and writing.
+      // null when the facility has none) and writing, through the same unit
+      // and tenant-claim reads.
       final settings = c['publicSettings'] as Map?;
       final units =
           await FacilityMapV2Service.fetchActiveUnitsForTesting('fac1');
-      final tenants = await TenantService.getTenantsForFacility('fac1');
       final maps = FacilityMapV2Service.buildPublicUnitInventoryMaps(
         units: units,
         publicSettings: settings == null
@@ -70,7 +62,8 @@ void main() {
             : FacilityPublicSettings.fromMap(
                 {...Map<String, dynamic>.from(settings), 'facilityId': 'fac1'},
               ),
-        tenantClaims: TenantUnitClaims.fromTenants(tenants),
+        tenantClaims:
+            await FacilityMapV2Service.readTenantUnitClaimsOrThrow('fac1'),
       );
 
       // The fields each unit's entry names (isRentable and status in all of

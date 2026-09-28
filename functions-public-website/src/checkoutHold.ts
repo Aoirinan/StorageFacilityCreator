@@ -145,7 +145,7 @@ export const CHECKOUT_ATTEMPT_FIELD = 'checkoutAttemptId';
 const CHECKOUT_FIELDS = [
   'checkoutUpdatedAt',
   'expectedCheckoutAmountCents',
-  'quotedMoveInDate',
+  'checkoutMoveInDate',
   CHECKOUT_ATTEMPT_FIELD,
 ] as const;
 
