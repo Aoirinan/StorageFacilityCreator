@@ -17,20 +17,20 @@ enum TextingRegistrationStatus {
 
 /// How a facility's tenants agree to texts. Keys must match CONSENT_METHODS in
 /// functions-messaging-twilio/src/a2pCampaign.ts; the campaign filed with the
-/// carriers describes only the methods the owner selects here.
+/// carriers describes only the methods the owner selects here. Texting START
+/// is not offered: it only restores a tenant's own earlier STOP, so it is not
+/// a way for a new tenant to opt in.
 class TextingConsentMethod {
   static const onlineForm = 'online_form';
   static const leaseClause = 'lease_clause';
   static const signedForm = 'signed_form';
   static const verbalRecorded = 'verbal_recorded';
-  static const textStart = 'text_start';
 
   static const labels = <String, String>{
     onlineForm: 'Checkbox on our online rental form',
     leaseClause: 'Optional SMS clause in our written rental agreement',
     signedForm: 'Separate SMS consent form signed at the office',
     verbalRecorded: 'In person at the office, recorded by staff',
-    textStart: 'Tenant texts START to our number',
   };
 }
 

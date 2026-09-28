@@ -1125,7 +1125,8 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
         title: const Text('Review registration details?'),
         content: const Text(
           'This clears the part of the registration the carrier rejected so you can fix it and submit again. '
-          'An approved brand is kept; a rejected campaign is withdrawn first.',
+          'An approved brand is kept, a rejected campaign is withdrawn first, and a rejected brand is '
+          'resubmitted rather than registered again.',
         ),
         actions: [
           TextButton(

@@ -225,7 +225,6 @@ export {
   isStopKeyword,
   isStartKeyword,
   isHelpKeyword,
-  buildTenantOptInConfirmation,
   computeA2PStatus,
   ensureIdempotentResource,
 } from './twilio/textingOnboardingHelpers';

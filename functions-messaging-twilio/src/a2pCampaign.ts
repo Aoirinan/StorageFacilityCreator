@@ -12,10 +12,13 @@
  *
  * Everything filed here is a claim a carrier can check, so the message flow is
  * built only from the consent methods the owner says the facility actually
- * uses, and the opt-in message is the same sentence the START reply sends.
+ * uses. No keyword opt-in is filed: on this platform START only restores a
+ * tenant's own earlier STOP (inbound webhook, `isStartRestorable`); a new
+ * number texting START records no consent and gets the platform's reply, so
+ * claiming "text START to join" would be false.
  */
 import * as functions from 'firebase-functions/v1';
-import { buildTenantOptInConfirmation, isSoleProprietorBusinessType } from '@sfc/functions-shared';
+import { isSoleProprietorBusinessType } from '@sfc/functions-shared';
 import type {
   A2PTwilioClient,
   BrandRegistrationListInstanceCreateOptions,
@@ -42,14 +45,14 @@ export const MAX_SAMPLE_LENGTH = 1024;
 /**
  * How a facility's tenants agree to texts. The owner picks the ones the
  * facility really uses on the texting setup form ("How your tenants agree to
- * texts"); the Flutter keys in texting_setup_screen.dart must match.
+ * texts"); the Flutter keys in TextingConsentMethod must match. Texting START
+ * is deliberately not one of them (see the file comment).
  */
 export const CONSENT_METHODS = [
   'online_form',
   'lease_clause',
   'signed_form',
   'verbal_recorded',
-  'text_start',
 ] as const;
 export type ConsentMethod = (typeof CONSENT_METHODS)[number];
 
@@ -109,9 +112,9 @@ export function normalizeConsentMethods(value: unknown): ConsentMethod[] {
 /**
  * The campaign description, named to the facility under review.
  *
- * Evidence from the two campaigns in the SFC Twilio account: the Hochatown
- * Saloon campaign (approved the same day it was filed) opens by naming the
- * registered business and what it is. SFC's own campaign (rejected 30909)
+ * Evidence from two campaigns in the SFC Twilio account: the one approved the
+ * same day it was filed opens by naming the registered business and what it
+ * is. SFC's own campaign (rejected 30909)
  * described a *class* of businesses texting on other companies' behalf and
  * never named the brand under review. A facility's brand is its own legal
  * entity, so the description reads as that facility describing itself.
@@ -140,16 +143,7 @@ export function buildCampaignDescription(facilityData: Record<string, any>): str
   );
 }
 
-/** Auto-reply to START, naming the facility; identical to the live START reply. */
-export function buildOptInMessage(facilityData: Record<string, any>): string {
-  return buildTenantOptInConfirmation(facilityDisplayName(facilityData)).slice(0, 320);
-}
-
-function describeConsentMethod(
-  method: ConsentMethod,
-  name: string,
-  facilityData: Record<string, any>,
-): string {
+function describeConsentMethod(method: ConsentMethod, name: string): string {
   switch (method) {
     case 'online_form':
       return `on ${name}'s online rental form, by ticking a separate, unchecked box that reads "${TENANT_CONSENT_TEXT}"`;
@@ -159,8 +153,6 @@ function describeConsentMethod(
       return `by signing a separate SMS consent form at ${name}'s office`;
     case 'verbal_recorded':
       return `by agreeing in person at ${name}'s office, which staff record on the tenant's account with the date`;
-    case 'text_start':
-      return `by texting START to ${name}'s number, which replies "${buildOptInMessage(facilityData)}"`;
   }
 }
 
@@ -189,7 +181,7 @@ export function buildCampaignMessageFlow(
   const website = absoluteUrl(business.website);
   const who = legalName && legalName !== name ? `${name} (${legalName})` : name;
 
-  const ways = consentMethods.map((m) => describeConsentMethod(m, name, facilityData));
+  const ways = consentMethods.map((m) => describeConsentMethod(m, name));
   const waysText =
     ways.length === 1
       ? `Tenants agree to texts ${ways[0]}.`
@@ -277,10 +269,9 @@ export function buildCampaignCreateParams(
     messageFlow: buildCampaignMessageFlow(facilityData, consentMethods),
     messageSamples: samples,
     ...detectEmbeddedContent(samples),
-    // Keyword opt-in is declared only when the owner says tenants use it.
-    ...(consentMethods.includes('text_start')
-      ? { optInKeywords: ['START'], optInMessage: buildOptInMessage(facilityData) }
-      : {}),
+    // No optInKeywords / optInMessage: keyword opt-in is not offered (START
+    // only restores a tenant's own earlier STOP), and Twilio requires them only
+    // when it is.
     privacyPolicyUrl: PRIVACY_POLICY_URL,
     termsAndConditionsUrl: SMS_TERMS_URL,
   };
@@ -477,8 +468,14 @@ const failedStatus = (status: string): boolean =>
 export interface RegistrationResetPlan {
   /** What Twilio says was rejected. */
   rejected: 'brand' | 'campaign' | 'campaign_filing' | 'nothing_filed';
-  /** Keep the brand SID: it is approved (or still usable) and cost a fee. */
+  /** Keep the brand SID. Always true once a brand exists: a new brand is a new fee. */
   keepBrand: boolean;
+  /**
+   * The brand is FAILED: the next submit resubmits it in place
+   * (`brandRegistrations(sid).update()`, free up to three times) instead of
+   * registering a second brand on the same bundles.
+   */
+  resubmitBrand: boolean;
   /** Remove the failed usAppToPerson from the messaging service before refiling. */
   removeCampaign: boolean;
 }
@@ -487,10 +484,10 @@ export interface RegistrationResetPlan {
  * Decide what a reset after rejection clears, from Twilio's live statuses.
  *
  * The old reset deleted both the brand and campaign SIDs whatever had failed,
- * so a rejected *campaign* under an approved brand made the owner pay for a
- * second brand, and left the failed campaign on the messaging service.
- * Throws when Twilio shows nothing rejected, so a stale page cannot throw away
- * a campaign that is still in review or approved.
+ * so the next submit registered (and paid for) a second brand, and left the
+ * failed campaign on the messaging service. Throws when Twilio shows nothing
+ * rejected, so a stale page cannot throw away a campaign that is still in
+ * review or approved.
  */
 export function planRegistrationReset(input: {
   hasBrand: boolean;
@@ -501,21 +498,22 @@ export function planRegistrationReset(input: {
   const brand = input.brandStatus.toUpperCase();
   const campaign = input.campaignStatus.toUpperCase();
   if (!input.hasBrand) {
-    return { rejected: 'nothing_filed', keepBrand: false, removeCampaign: false };
+    return { rejected: 'nothing_filed', keepBrand: false, resubmitBrand: false, removeCampaign: false };
   }
   if (failedStatus(brand)) {
-    return { rejected: 'brand', keepBrand: false, removeCampaign: input.hasCampaign };
+    return { rejected: 'brand', keepBrand: true, resubmitBrand: true, removeCampaign: input.hasCampaign };
   }
   if (input.hasCampaign && failedStatus(campaign)) {
-    return { rejected: 'campaign', keepBrand: true, removeCampaign: true };
+    return { rejected: 'campaign', keepBrand: true, resubmitBrand: false, removeCampaign: true };
   }
   if (!input.hasCampaign) {
-    // Brand fine, campaign never filed (deferred filing gave up).
-    return { rejected: 'campaign_filing', keepBrand: true, removeCampaign: false };
+    // Brand fine, campaign never filed (the hourly poll gave up filing it).
+    return { rejected: 'campaign_filing', keepBrand: true, resubmitBrand: false, removeCampaign: false };
   }
   throw new functions.https.HttpsError(
     'failed-precondition',
-    `Twilio does not show this registration as rejected right now (brand ${brand || 'unknown'}, ` +
-      `campaign ${campaign || 'unknown'}). Press Refresh status instead of resetting.`,
+    `Twilio does not show this registration as rejected (brand ${brand || 'unknown'}, ` +
+      `campaign ${campaign || 'unknown'}), so there is nothing to reset. The page catches up ` +
+      'with Twilio within the hour; contact support if it still shows the registration as rejected.',
   );
 }

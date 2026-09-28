@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildTenantOptInConfirmation, computeA2PStatus } from '../twilio/textingOnboardingHelpers';
+import { computeA2PStatus } from '../twilio/textingOnboardingHelpers';
 
 test('computeA2PStatus: an approved brand alone is not approved texting', () => {
   // Regression: "APPROVED" on the brand matched and flipped the facility to
@@ -23,12 +23,12 @@ test('computeA2PStatus: nothing filed leaves the status alone', () => {
   assert.equal(computeA2PStatus('approved', undefined, undefined), 'approved');
 });
 
-test('opt-in confirmation matches the START reply wording exactly', () => {
-  // Filed with the campaign as its opt-in message and sent as the live START
-  // reply; carriers compare the two, so this string is pinned verbatim.
-  assert.equal(
-    buildTenantOptInConfirmation('Example Storage'),
-    "Example Storage: you're opted in to account texts about your storage unit. " +
-      'Msg frequency varies. Msg & data rates may apply. Reply HELP for help, STOP to opt out.',
-  );
+test('computeA2PStatus: a rejection with no campaign is not demoted by an approved brand', () => {
+  // The poll gave up filing the campaign; refresh must keep the rejection so
+  // the owner can reset and refile.
+  assert.equal(computeA2PStatus('rejected', 'APPROVED', undefined), 'rejected');
+  assert.equal(computeA2PStatus('rejected', 'APPROVED', ''), 'rejected');
+  // A campaign filed again (e.g. edited in the console) moves it on.
+  assert.equal(computeA2PStatus('rejected', 'APPROVED', 'IN_PROGRESS'), 'pending');
+  assert.equal(computeA2PStatus('rejected', 'APPROVED', 'VERIFIED'), 'approved');
 });

@@ -23,9 +23,11 @@ flow. The `messageFlow` and `description` submitted with every campaign are buil
    opt-in paths (e.g., in-person/paper) that a facility does not really offer. The owner picks
    the facility's methods on the Messaging plan step ("How your tenants agree to texts":
    online rental form checkbox, SMS clause in the written rental agreement, signed consent form,
-   in person recorded by staff, texting START), stored as `textingConsentMethods`, and the
-   message flow describes only those. Keyword opt-in (`optInKeywords: ['START']` plus the opt-in
-   message) is filed only when "texting START" is selected.
+   in person recorded by staff), stored as `textingConsentMethods`, and the message flow
+   describes only those. Texting START is deliberately not a method and no keyword opt-in
+   (`optInKeywords` / `optInMessage`) is filed: on this platform START only restores a
+   tenant's own earlier STOP (`isStartRestorable` in the inbound webhook), and a new number
+   texting START records no consent and gets the platform's reply.
 2. The disclosures: unchecked-by-default, consent not a condition of service, message frequency
    varies, "message and data rates may apply", STOP/HELP.
 3. Publicly reviewable URLs (the live opt-in form is behind login, so reviewers need these):
@@ -55,10 +57,7 @@ case; the `textingUseCases` the owner ticks in the wizard are the facility's own
 message categories and are unrelated.
 
 As of 2026-09-27 (branch `fix/a2p-registration-pipeline`) the campaign also
-carries the opt-in message (when START is selected) built by
-`buildTenantOptInConfirmation` in functions-shared, the same sentence the
-START reply sends (PR #16's `buildStartReply` produces identical text; a test
-pins it), `privacyPolicyUrl` / `termsAndConditionsUrl`, and `hasEmbeddedLinks` /
+carries `privacyPolicyUrl` / `termsAndConditionsUrl`, and `hasEmbeddedLinks` /
 `hasEmbeddedPhone` computed from the samples. Samples are validated server-side
 (2-5, each at least 20 characters) and prefixed with the facility's name.
 Campaigns are filed with `messaging.v1.services(MG).usAppToPerson.create`; the
@@ -68,8 +67,8 @@ submits, nothing is filed: `a2pCampaignPending` is set and the hourly
 `pollA2PRegistrationStatus` files the campaign once the brand clears.
 
 The message flow states that the software does not text a tenant without
-recorded consent. That is true once PR #16 (consent that `forceSend` cannot
-override) is merged; deploy the two together.
+recorded consent. PR #16 (merged to main) makes that hold: `forceSend` cannot
+override tenant consent in `sendSMS`.
 
 Every outbound text opens with the facility's name (`withSenderPrefix`), on the
 shared number and on a facility's own number alike, so live traffic matches the
@@ -128,11 +127,25 @@ is written to `a2pLastError` and counted in `a2pCampaignFilingFailures`; after
 
 **Reset after rejection (`resubmitTextingOnboarding`):** allowed only when
 `a2pStatus` is `rejected`, and only for the facility owner or a super admin.
-It reads Twilio to see what was rejected: a failed brand is dropped (with any
-campaign under it); a failed campaign under an approved brand is removed from
-the messaging service (`usAppToPerson(sid).remove()`) and the brand is kept; a
-campaign whose deferred filing gave up keeps the brand. It refuses when Twilio
-shows nothing rejected.
+It reads Twilio to see what was rejected (`planRegistrationReset`), and never
+throws away a brand, because a new brand is a new fee:
+
+- **Failed brand:** the brand SID is kept and `a2pBrandResubmitRequired` set;
+  any campaign under it is removed. The next submit resubmits the same brand
+  with `brandRegistrations(sid).update()` (POST /v1/a2p/BrandRegistrations/{Sid},
+  only valid while the brand is FAILED; Twilio allows three free self-service
+  resubmissions, counted in `a2pBrandResubmissions`, after which it refuses and
+  says to contact support). The resubmission re-vets the same TrustHub bundles:
+  they are already twilio-approved, and this pipeline does not edit approved
+  bundles, so correcting the underlying details is a support task before the
+  owner resubmits.
+- **Failed campaign under an approved brand:** the campaign is removed from the
+  messaging service (`usAppToPerson(sid).remove()`) and the brand kept.
+- **Campaign the poll gave up filing:** the brand is kept. Refreshing status no
+  longer turns this rejection back into `pending` (`computeA2PStatus` keeps a
+  rejection with no campaign on file), so the reset stays available.
+
+It refuses when Twilio shows nothing rejected.
 
 **When outbound SMS uses that number as `From`:** Only when **all** of the following hold: the global feature flag is on, the facility has `textingOnboardingEnabled === true`, `a2pStatus` is `approved`, `textingPlatformApproved` is `true` (superadmin), and `twilioPhoneNumberE164` is set. Otherwise `sendSMS` either blocks or uses the legacy global `TWILIO_PHONE_NUMBER` when the per-facility onboarding path is not active for that facility.
 

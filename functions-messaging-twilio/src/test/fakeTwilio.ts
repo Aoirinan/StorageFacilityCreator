@@ -27,6 +27,8 @@ interface FakeOptions {
   productEvaluation?: { status: string; results: any[] };
   brandStatus?: string;
   campaignStatus?: string;
+  /** Milliseconds a number purchase takes, to overlap concurrent calls. */
+  purchaseDelayMs?: number;
 }
 
 const PRIMARY_POLICY = 'RN6433641899984f951173ef1738c3bdd0';
@@ -158,8 +160,14 @@ export function fakeTwilio(options: FakeOptions = {}) {
     return { sid: nextSid('AD') };
   };
 
+  let brandStatus = options.brandStatus ?? 'APPROVED';
   const brandRegistrations: any = (sid: string) => ({
-    fetch: async () => ({ sid, status: options.brandStatus ?? 'APPROVED', errors: [], failureReason: '' }),
+    fetch: async () => ({ sid, status: brandStatus, errors: [], failureReason: '' }),
+    update: async () => {
+      calls.push({ op: 'brand.update', target: sid });
+      brandStatus = 'PENDING';
+      return { sid, status: brandStatus, errors: [], failureReason: '' };
+    },
   });
   brandRegistrations.create = async (params: any) => {
     calls.push({ op: 'brand.create', params });
@@ -184,7 +192,40 @@ export function fakeTwilio(options: FakeOptions = {}) {
     usAppToPerson.list = async () => [
       { sid: 'QE' + '4'.repeat(32), campaignId: 'CMlegacy', campaignStatus: 'IN_PROGRESS', errors: [] },
     ];
-    return { usAppToPerson };
+    const phoneNumbers = {
+      list: async () => (attached.get(mg) || []).map((sid) => ({ sid })),
+      create: async ({ phoneNumberSid }: { phoneNumberSid: string }) => {
+        const list = attached.get(mg) || [];
+        if (list.includes(phoneNumberSid)) {
+          throw new Error('Phone Number or Short Code is already in the Messaging Service.');
+        }
+        calls.push({ op: 'number.attach', target: mg, params: phoneNumberSid });
+        attached.set(mg, [...list, phoneNumberSid]);
+        return { sid: phoneNumberSid };
+      },
+    };
+    return { usAppToPerson, phoneNumbers };
+  };
+  const attached = new Map<string, string[]>();
+  (services as any).create = async (params: any) => {
+    calls.push({ op: 'service.create', params });
+    return { sid: nextSid('MG') };
+  };
+
+  const availablePhoneNumbers = (_country: string) => ({
+    local: {
+      list: async (params: any) => {
+        calls.push({ op: 'number.search', params });
+        return [{ phoneNumber: '+15125550100' }];
+      },
+    },
+  });
+  const incomingPhoneNumbers = {
+    create: async (params: any) => {
+      if (options.purchaseDelayMs) await new Promise((r) => setTimeout(r, options.purchaseDelayMs));
+      calls.push({ op: 'number.buy', params });
+      return { sid: nextSid('PN'), phoneNumber: params.phoneNumber };
+    },
   };
 
   // A decoy the old name-matching resolver would have picked first.
@@ -201,6 +242,8 @@ export function fakeTwilio(options: FakeOptions = {}) {
   const client = {
     trusthub: { v1: { customerProfiles, trustProducts, endUsers, supportingDocuments, policies } },
     addresses,
+    availablePhoneNumbers,
+    incomingPhoneNumbers,
     messaging: { v1: { brandRegistrations, services } },
   };
   return { client: client as unknown as A2PTwilioClient, calls, profiles, products };

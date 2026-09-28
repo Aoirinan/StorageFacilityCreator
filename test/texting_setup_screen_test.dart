@@ -430,6 +430,10 @@ void main() {
 
       expect(find.byKey(const Key('messaging-plan-stage')), findsOneWidget);
       expect(find.byKey(const Key('consent-method-error')), findsOneWidget);
+      // START only restores a tenant's own STOP, so it is not offered as a
+      // way to opt in (and therefore never filed with the carriers).
+      expect(find.byKey(const Key('consent-method-text_start')), findsNothing);
+      expect(find.textContaining('START'), findsNothing);
       tester
           .widget<FilledButton>(find.byKey(const Key('primary-stage-action')))
           .onPressed!();

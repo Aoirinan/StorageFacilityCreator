@@ -12,7 +12,6 @@ import {
 import {
   buildBrandRegistrationParams,
   buildCampaignMessageFlow,
-  buildOptInMessage,
   campaignFilingFields,
   detectEmbeddedContent,
   fetchUsAppToPersonCampaign,
@@ -439,7 +438,7 @@ test('brand registration sends a2PProfileBundleSid (SDK spelling)', () => {
 // --- campaign ----------------------------------------------------------------
 
 const FACILITY = {
-  textingConsentMethods: ['online_form', 'text_start'],
+  textingConsentMethods: ['online_form', 'verbal_recorded'],
   twilioBrandSid: 'BNbrand',
   twilioMessagingServiceSid: 'MGservice',
   textingBusinessData: {
@@ -470,9 +469,9 @@ test('campaign is filed through services(MG).usAppToPerson with QE and CM stored
   assert.deepEqual(params.messageSamples, SAMPLES);
   assert.equal(params.hasEmbeddedPhone, false);
   assert.equal(params.hasEmbeddedLinks, false);
-  assert.deepEqual(params.optInKeywords, ['START']);
-  assert.match(params.optInMessage, /^Example Self Storage:/);
-  assert.ok(params.optInMessage.length >= 20 && params.optInMessage.length <= 320);
+  // No keyword opt-in is filed: START only restores a tenant's own STOP.
+  assert.equal('optInKeywords' in params, false);
+  assert.equal('optInMessage' in params, false);
   assert.equal(params.privacyPolicyUrl, 'https://www.storagefacilitycreator.com/privacy');
   assert.equal(params.termsAndConditionsUrl, 'https://www.storagefacilitycreator.com/sms-terms');
   assert.ok(params.description.length >= 40);
@@ -538,14 +537,16 @@ test('message flow names the facility, its website and only the selected consent
   const flow = buildCampaignMessageFlow(FACILITY);
   assert.match(flow, /^Example Self Storage \(Example Storage LLC\)/);
   assert.match(flow, /online rental form/);
-  assert.match(flow, /texting START/);
+  assert.match(flow, /agreeing in person/);
+  // START is not an opt-in route on this platform, so it is never claimed.
+  assert.doesNotMatch(flow, /START/);
   assert.match(flow, /records each tenant's consent/);
   assert.match(flow, /https:\/\/example\.com/);
   assert.match(flow, /https:\/\/www\.storagefacilitycreator\.com\/sms-terms/);
   assert.match(flow, /https:\/\/www\.storagefacilitycreator\.com\/sms-consent-demo/);
   assert.match(flow, /Reply STOP to opt out, HELP for help/);
   // Not selected, so not claimed.
-  assert.doesNotMatch(flow, /rental agreement|consent form|in person/);
+  assert.doesNotMatch(flow, /rental agreement|consent form/);
   // The old copy pointed reviewers at the operator app, which they cannot use.
   assert.doesNotMatch(flow, /app\.storagefacilitycreator\.com/);
   assert.ok(flow.length >= 40 && flow.length <= 2048);
@@ -558,26 +559,15 @@ test('message flow names the facility, its website and only the selected consent
   assert.throws(() => buildCampaignMessageFlow(FACILITY, []), /how your tenants agree/);
 });
 
-test('opt-in keyword and message are filed only when tenants text START', async () => {
-  const withStart = fakeTwilio({ brandStatus: 'APPROVED' });
-  await fileCampaignWhenBrandApproved(withStart.client, FACILITY, SAMPLES);
-  const filed = ops(withStart.calls, 'campaign.create')[0].params;
-  assert.deepEqual(filed.optInKeywords, ['START']);
-  // Identical to the live START reply (PR #16 inboundKeywordReplies.buildStartReply).
-  assert.equal(
-    filed.optInMessage,
-    "Example Self Storage: you're opted in to account texts about your storage unit. " +
-      'Msg frequency varies. Msg & data rates may apply. Reply HELP for help, STOP to opt out.',
-  );
-  assert.equal(buildOptInMessage(FACILITY), filed.optInMessage);
-
-  const noStart = fakeTwilio({ brandStatus: 'APPROVED' });
+test('a stored text_start method (from an earlier build) is dropped, not filed', async () => {
+  const { client, calls } = fakeTwilio({ brandStatus: 'APPROVED' });
   await fileCampaignWhenBrandApproved(
-    noStart.client,
-    { ...FACILITY, textingConsentMethods: ['lease_clause'] },
+    client,
+    { ...FACILITY, textingConsentMethods: ['text_start', 'lease_clause'] },
     SAMPLES,
   );
-  const params = ops(noStart.calls, 'campaign.create')[0].params;
+  const params = ops(calls, 'campaign.create')[0].params;
+  assert.doesNotMatch(params.messageFlow, /START/);
+  assert.match(params.messageFlow, /rental agreement/);
   assert.equal('optInKeywords' in params, false);
-  assert.equal('optInMessage' in params, false);
 });

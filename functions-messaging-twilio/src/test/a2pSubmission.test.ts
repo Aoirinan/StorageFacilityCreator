@@ -16,84 +16,12 @@ import {
   withSenderPrefix,
 } from '../a2pCampaign';
 import { fakeTwilio } from './fakeTwilio';
-
-// --- in-memory Firestore with serialised transactions -------------------------
-
-function fakeDb() {
-  const docs = new Map<string, Record<string, any>>();
-  let queue: Promise<unknown> = Promise.resolve();
-  const ref = (id: string) => ({
-    id,
-    get: async () => ({ data: () => (docs.has(id) ? { ...docs.get(id)! } : undefined) }),
-    set: async (data: Record<string, any>) => {
-      docs.set(id, { ...(docs.get(id) || {}), ...data });
-    },
-  });
-  const db: LeaseDb = {
-    runTransaction<T>(fn: (tx: any) => Promise<T>): Promise<T> {
-      // Firestore transactions are atomic; running them one at a time is the
-      // simplest faithful model for a single-process test.
-      const run = queue.then(() =>
-        fn({
-          get: async (r: { id: string }) => ({ data: () => (docs.has(r.id) ? { ...docs.get(r.id)! } : undefined) }),
-          update: (r: { id: string }, data: Record<string, unknown>) => {
-            docs.set(r.id, { ...(docs.get(r.id) || {}), ...data });
-          },
-        }),
-      );
-      queue = run.catch(() => undefined);
-      return run;
-    },
-  };
-  return { db, docs, ref };
-}
+import { fakeDb } from './fakeFirestore';
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
-/**
- * The shape of a paid submission: under the lease, re-read, and buy a number
- * only if the facility still has none. Returns how many numbers were bought.
- */
-function purchaseFlow(env: ReturnType<typeof fakeDb>, counter: { bought: number }) {
-  const facility = env.ref('facility-1');
-  return (holder: string) =>
-    withA2PSubmitLease(env.db, facility, holder, () =>
-      runPaidSubmission(async () => (await facility.get()).data() || {}, [
-        async (d) => {
-          if (d.twilioPhoneNumberSid) return;
-          await tick(); // the purchase takes a while
-          counter.bought += 1;
-          await facility.set({ twilioPhoneNumberSid: `PN${counter.bought}` });
-        },
-      ]),
-    );
-}
-
-test('two concurrent submissions buy one number: the second is refused while the lease is held', async () => {
-  const env = fakeDb();
-  env.docs.set('facility-1', {});
-  const counter = { bought: 0 };
-  const submit = purchaseFlow(env, counter);
-
-  const results = await Promise.allSettled([submit('tab-a'), submit('tab-b')]);
-  assert.equal(counter.bought, 1);
-  const refused = results.filter((r) => r.status === 'rejected');
-  assert.equal(refused.length, 1);
-  assert.ok((refused[0] as PromiseRejectedResult).reason instanceof A2PLeaseHeldError);
-  assert.equal(env.docs.get('facility-1')!.a2pSubmitLease, null, 'lease released');
-});
-
-test('a submission after another finished re-reads the facility and does not buy again', async () => {
-  const env = fakeDb();
-  env.docs.set('facility-1', {});
-  const counter = { bought: 0 };
-  const submit = purchaseFlow(env, counter);
-
-  await submit('tab-a');
-  const after = await submit('tab-b');
-  assert.equal(counter.bought, 1);
-  assert.equal(after.twilioPhoneNumberSid, 'PN1');
-});
+// Concurrent and repeated submissions through the real runGatedPaidSubmission
+// are in a2pPaidSteps.test.ts; these cover the lease primitive itself.
 
 test('the hourly poll and a tab cannot both hold the lease', async () => {
   const env = fakeDb();
@@ -238,25 +166,25 @@ test('stored campaign inputs are used when a paid call carries none', () => {
 test('reset keeps an approved brand and removes only the failed campaign', () => {
   assert.deepEqual(
     planRegistrationReset({ hasBrand: true, brandStatus: 'APPROVED', hasCampaign: true, campaignStatus: 'FAILED' }),
-    { rejected: 'campaign', keepBrand: true, removeCampaign: true },
+    { rejected: 'campaign', keepBrand: true, resubmitBrand: false, removeCampaign: true },
   );
 });
 
-test('reset drops a failed brand (and any campaign under it)', () => {
+test('reset keeps a failed brand for in-place resubmission (no second brand)', () => {
   assert.deepEqual(
     planRegistrationReset({ hasBrand: true, brandStatus: 'FAILED', hasCampaign: true, campaignStatus: 'PENDING' }),
-    { rejected: 'brand', keepBrand: false, removeCampaign: true },
+    { rejected: 'brand', keepBrand: true, resubmitBrand: true, removeCampaign: true },
   );
   assert.deepEqual(
     planRegistrationReset({ hasBrand: true, brandStatus: 'FAILED', hasCampaign: false, campaignStatus: '' }),
-    { rejected: 'brand', keepBrand: false, removeCampaign: false },
+    { rejected: 'brand', keepBrand: true, resubmitBrand: true, removeCampaign: false },
   );
 });
 
 test('reset after a deferred filing gave up keeps the brand', () => {
   assert.deepEqual(
     planRegistrationReset({ hasBrand: true, brandStatus: 'APPROVED', hasCampaign: false, campaignStatus: '' }),
-    { rejected: 'campaign_filing', keepBrand: true, removeCampaign: false },
+    { rejected: 'campaign_filing', keepBrand: true, resubmitBrand: false, removeCampaign: false },
   );
 });
 
@@ -265,7 +193,10 @@ test('reset refuses when Twilio shows nothing rejected', () => {
     assert.throws(
       () =>
         planRegistrationReset({ hasBrand: true, brandStatus: 'APPROVED', hasCampaign: true, campaignStatus }),
-      (error: any) => error.code === 'failed-precondition',
+      (error: any) =>
+        error.code === 'failed-precondition' &&
+        /nothing to reset/.test(error.message) &&
+        !/Refresh status/.test(error.message),
     );
   }
 });
@@ -304,9 +235,10 @@ test('a facility with no name is not prefixed with a placeholder', () => {
 });
 
 test('consent methods keep only known values, in a stable order', () => {
-  assert.deepEqual(normalizeConsentMethods(['text_start', 'bogus', 'online_form', 'text_start']), [
-    'online_form',
-    'text_start',
-  ]);
+  // text_start is not a consent method (START only restores a tenant's own STOP).
+  assert.deepEqual(
+    normalizeConsentMethods(['verbal_recorded', 'text_start', 'bogus', 'online_form', 'verbal_recorded']),
+    ['online_form', 'verbal_recorded'],
+  );
   assert.deepEqual(normalizeConsentMethods(undefined), []);
 });

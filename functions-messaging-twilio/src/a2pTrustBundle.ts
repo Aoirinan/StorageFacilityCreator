@@ -267,6 +267,17 @@ export function describeBusinessDetailsLock(facilityData: Record<string, any>): 
   const productStatus = String(facilityData.a2pBundleProductStatus || '').toLowerCase();
   const a2pStatus = String(facilityData.a2pStatus || 'draft').toLowerCase();
 
+  if (facilityData.twilioBrandSid && facilityData.a2pBrandResubmitRequired === true) {
+    return {
+      businessDetailsLocked: true,
+      profileDetailsLocked: true,
+      lockReason:
+        'The carriers rejected your brand. The business details it was checked against were ' +
+        'already approved by Twilio, so they are locked here; if they need correcting, contact ' +
+        'support. Submitting again resubmits the same brand (free up to three times) rather ' +
+        'than registering a new one.',
+    };
+  }
   if (
     facilityData.twilioBrandSid ||
     a2pStatus === 'approved' ||

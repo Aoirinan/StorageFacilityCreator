@@ -506,6 +506,40 @@ test('facility owners cannot forge A2P texting approval state', async () => {
   );
 });
 
+test('facility owners cannot write A2P paid-step state or the filed campaign inputs', async () => {
+  // a2pSubmitLease serialises number purchases and campaign filing; the
+  // pending flag makes the hourly poll file a campaign; the E164 number is
+  // what sendSMS sends from and inbound replies route by; the consent methods
+  // and samples are what the poll files with the carriers. All server-written.
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilities').doc(FACILITY_ID).set({
+      ownerUid: OWNER_UID,
+      roles: { [OWNER_UID]: 'owner' },
+      name: 'Example Self Storage',
+      twilioPhoneNumberE164: '+15125550100',
+      textingConsentMethods: ['online_form'],
+    });
+  });
+  const owner = testEnv.authenticatedContext(OWNER_UID);
+  const facilityRef = owner.firestore().collection('facilities').doc(FACILITY_ID);
+
+  await assertFails(facilityRef.update({ a2pSubmitLease: null }));
+  await assertFails(facilityRef.update({ a2pSubmitLease: { holder: 'me', expiresAtMs: 1 } }));
+  await assertFails(facilityRef.update({ twilioPhoneNumberE164: '+15125550199' }));
+  await assertFails(facilityRef.update({ a2pCampaignPending: true }));
+  await assertFails(facilityRef.update({ a2pRejectedAt: null }));
+  await assertFails(facilityRef.update({ a2pBrandResubmitRequired: true }));
+  await assertFails(facilityRef.update({ textingConsentMethods: ['lease_clause'] }));
+  await assertFails(facilityRef.update({ textingSampleMessages: ['a', 'b'] }));
+  await assertFails(facilityRef.update({ twilioCampaignId: 'CM_forged' }));
+
+  // Re-saving the unchanged number with an ordinary edit (what the app's
+  // facility form does) is still allowed.
+  await assertSucceeds(
+    facilityRef.update({ name: 'Example Self Storage East', twilioPhoneNumberE164: '+15125550100' }),
+  );
+});
+
 test('superadmin custom claim can write website entitlements; others cannot', async () => {
   await seedFacility();
   // Superadmin access is granted by a server-set custom claim, not by email, so

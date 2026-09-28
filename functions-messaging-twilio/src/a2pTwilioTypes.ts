@@ -35,6 +35,10 @@ import type {
 } from 'twilio/lib/rest/api/v2010/account/address';
 import type { BrandRegistrationListInstanceCreateOptions } from 'twilio/lib/rest/messaging/v1/brandRegistration';
 import type { UsAppToPersonListInstanceCreateOptions } from 'twilio/lib/rest/messaging/v1/service/usAppToPerson';
+import type { ServiceListInstanceCreateOptions } from 'twilio/lib/rest/messaging/v1/service';
+import type { PhoneNumberListInstanceCreateOptions as MessagingServicePhoneNumberCreateOptions } from 'twilio/lib/rest/messaging/v1/service/phoneNumber';
+import type { LocalListInstanceOptions } from 'twilio/lib/rest/api/v2010/account/availablePhoneNumberCountry/local';
+import type { IncomingPhoneNumberListInstanceCreateOptions } from 'twilio/lib/rest/api/v2010/account/incomingPhoneNumber';
 
 export type {
   BrandRegistrationListInstanceCreateOptions,
@@ -134,13 +138,37 @@ export interface A2PTwilioClient {
     (sid: string): { update(params: AddressContextUpdateOptions): Promise<{ sid: string }> };
     create(params: AddressListInstanceCreateOptions): Promise<{ sid: string }>;
   };
+  /** Local numbers for sale, e.g. availablePhoneNumbers('US').local.list(...). */
+  availablePhoneNumbers: (country: string) => {
+    local: { list(params: LocalListInstanceOptions): Promise<Array<{ phoneNumber: string }>> };
+  };
+  incomingPhoneNumbers: {
+    create(params: IncomingPhoneNumberListInstanceCreateOptions): Promise<{ sid: string; phoneNumber: string }>;
+  };
   messaging: {
     v1: {
       brandRegistrations: {
-        (sid: string): { fetch(): Promise<BrandRegistrationRecord> };
+        (sid: string): {
+          fetch(): Promise<BrandRegistrationRecord>;
+          /**
+           * POST /v1/a2p/BrandRegistrations/{Sid}: resubmit a FAILED brand for
+           * vetting (Twilio error 21725 otherwise). Free up to three times.
+           */
+          update(): Promise<BrandRegistrationRecord>;
+        };
         create(params: BrandRegistrationListInstanceCreateOptions): Promise<{ sid: string }>;
       };
-      services: (sid: string) => { usAppToPerson: UsAppToPersonList };
+      services: {
+        (sid: string): {
+          usAppToPerson: UsAppToPersonList;
+          /** A messaging-service number's `sid` IS the PN... phone number SID. */
+          phoneNumbers: {
+            list(params: { limit?: number }): Promise<Array<{ sid: string }>>;
+            create(params: MessagingServicePhoneNumberCreateOptions): Promise<{ sid: string }>;
+          };
+        };
+        create(params: ServiceListInstanceCreateOptions): Promise<{ sid: string }>;
+      };
     };
   };
 }

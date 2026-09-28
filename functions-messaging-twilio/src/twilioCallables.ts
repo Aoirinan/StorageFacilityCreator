@@ -10,9 +10,6 @@ import {
   sendFacilityEmailWithCompliance,
 } from '@sfc/functions-shared';
 import {
-  buildA2PRejectionReason,
-  computeA2PStatus,
-  ensureIdempotentResource,
   formatA2PValidationIssues,
   formatEvaluationFailures,
   normalizeEin,
@@ -29,25 +26,20 @@ import {
   type TrustBundleState,
 } from './a2pTrustBundle';
 import {
-  buildBrandRegistrationParams,
-  campaignFilingFields,
   facilityDisplayName,
   fetchUsAppToPersonCampaign,
-  fileCampaignWhenBrandApproved,
   normalizeConsentMethods,
-  planRegistrationReset,
-  withSenderPrefix,
-  type CampaignFilingResult,
 } from './a2pCampaign';
+import { composeOutboundSmsBody } from './smsBody';
+import type { LeaseDb } from './a2pSubmission';
 import {
-  assertReadyForPaidSubmission,
-  resolvePaidSubmissionInput,
-  runPaidSubmission,
-  withA2PSubmitLease,
-  type LeaseDb,
-  type PaidStep,
-  type PaidSubmissionReadiness,
-} from './a2pSubmission';
+  buildRefreshStatusFields,
+  buildTwilioDryRunSid,
+  readFacilityData,
+  resetRejectedRegistration,
+  runGatedPaidSubmission,
+  type PaidStepDeps,
+} from './a2pPaidSteps';
 import { reservePlatformOutgoing, releasePlatformOutgoing } from './platformOutgoing';
 import { createOrUpdateMessageLog } from './messageLog';
 import { getTenantInfo } from './tenantInfo';
@@ -252,8 +244,12 @@ export const sendSMS = functions.runWith({
       }
     }
 
-    // Every outbound text carries the STOP/HELP footer (see addOptOutFooter).
-    let finalMessage = await addOptOutFooter(facilityId, message);
+    // Every outbound text carries the STOP/HELP footer (see addOptOutFooter)
+    // and opens with the facility's name (see composeOutboundSmsBody), on the
+    // shared number and a facility's own number alike.
+    const finalMessage = await composeOutboundSmsBody(facilityData, message, (body) =>
+      addOptOutFooter(facilityId, body),
+    );
 
     // Get user email for message logging
     const userRecord = await admin.auth().getUser(context.auth.uid);
@@ -477,12 +473,6 @@ export const sendSMS = functions.runWith({
         sharedDecision.message ?? 'Texting for this facility is not available right now.',
       );
     }
-
-    // Every text opens with the facility's name. On the shared platform number
-    // that is the only way the recipient can tell who is texting; on a
-    // facility's own registered number it keeps live traffic identical to the
-    // samples filed with the facility's campaign, which all open with the name.
-    finalMessage = withSenderPrefix(facilityData, finalMessage);
 
     // Safe debug logging (masked for security)
     // #region agent log
@@ -1253,100 +1243,15 @@ async function getFacilityForTextingMutation(
   return { ref, data };
 }
 
-function buildTwilioDryRunSid(prefix: string, facilityId: string): string {
-  const normalized = facilityId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24).padEnd(24, '0');
-  return `${prefix}${normalized}`;
-}
-
-async function ensureMessagingServiceForFacility(
-  facilityRef: admin.firestore.DocumentReference,
-  facilityData: Record<string, any>,
-  requestId: string,
-): Promise<{ messagingServiceSid: string; created: boolean }> {
-  const existing = facilityData.twilioMessagingServiceSid as string | undefined;
-  const idempotent = await ensureIdempotentResource(
-    existing,
-    async () => {
-      if (isTwilioDryRunEnabled()) {
-        return { sid: buildTwilioDryRunSid('MG', facilityRef.id) };
-      }
-      const twilio = getTwilioClient() as any;
-      return await twilio.messaging.v1.services.create({
-        friendlyName: `SFC-${facilityRef.id}-Messaging`,
-      });
-    },
-    (resource: any) => resource.sid as string,
-  );
-
-  if (idempotent.created) {
-    await facilityRef.set({
-      twilioMessagingServiceSid: idempotent.sid,
-      a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-    functions.logger.info('Created messaging service', { requestId, facilityId: facilityRef.id });
-  }
-  return { messagingServiceSid: idempotent.sid, created: idempotent.created };
-}
-
-async function provisionFacilityPhoneNumber(
-  facilityRef: admin.firestore.DocumentReference,
-  facilityData: Record<string, any>,
-  areaCode: string | undefined,
-  requestId: string,
-): Promise<{ phoneNumberSid: string; phoneNumberE164: string; created: boolean }> {
-  const existingSid = facilityData.twilioPhoneNumberSid as string | undefined;
-  const existingE164 = facilityData.twilioPhoneNumberE164 as string | undefined;
-  if (existingSid && existingE164) {
-    return { phoneNumberSid: existingSid, phoneNumberE164: existingE164, created: false };
-  }
-
-  if (isTwilioDryRunEnabled()) {
-    const sid = buildTwilioDryRunSid('PN', facilityRef.id);
-    const e164 = `+1555${Math.floor(Math.random() * 9000000 + 1000000)}`;
-    await facilityRef.set({
-      twilioPhoneNumberSid: sid,
-      twilioPhoneNumberE164: e164,
-      a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-    return { phoneNumberSid: sid, phoneNumberE164: e164, created: true };
-  }
-
-  const twilio = getTwilioClient() as any;
-  const numbers = await twilio.availablePhoneNumbers('US').local.list({
-    smsEnabled: true,
-    limit: 1,
-    ...(areaCode ? { areaCode } : {}),
-  });
-  if (!numbers?.length) {
-    throw new functions.https.HttpsError('resource-exhausted', 'No local Twilio number available for requested area');
-  }
-
-  const purchased = await twilio.incomingPhoneNumbers.create({
-    phoneNumber: numbers[0].phoneNumber,
-  });
-
-  await facilityRef.set({
-    twilioPhoneNumberSid: purchased.sid,
-    twilioPhoneNumberE164: purchased.phoneNumber,
-    a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  }, { merge: true });
-  functions.logger.info('Provisioned Twilio number', { requestId, facilityId: facilityRef.id, phoneSid: purchased.sid });
-  return { phoneNumberSid: purchased.sid, phoneNumberE164: purchased.phoneNumber, created: true };
-}
-
-async function attachPhoneNumberToMessagingService(
-  messagingServiceSid: string,
-  phoneNumberSid: string,
-): Promise<void> {
-  if (isTwilioDryRunEnabled()) return;
-  const twilio = getTwilioClient() as any;
-  const existing = await twilio.messaging.v1.services(messagingServiceSid).phoneNumbers.list({ limit: 200 });
-  const exists = (existing || []).some((p: any) => p.phoneNumberSid === phoneNumberSid);
-  if (!exists) {
-    await twilio.messaging.v1.services(messagingServiceSid).phoneNumbers.create({
-      phoneNumberSid,
-    });
-  }
+/** Real dependencies for the paid registration steps in a2pPaidSteps.ts. */
+function paidStepDeps(): PaidStepDeps {
+  return {
+    db: admin.firestore() as unknown as LeaseDb,
+    twilio: isTwilioDryRunEnabled() ? null : getA2PTwilioClient(),
+    serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+    deleteField: () => admin.firestore.FieldValue.delete(),
+    newId: () => crypto.randomUUID(),
+  };
 }
 
 /** Stored business fields that only feed the campaign, never a TrustHub bundle. */
@@ -1519,239 +1424,6 @@ async function createOrUpdateA2PProfileInternal(
   };
 }
 
-/**
- * Refuse to submit a brand unless Twilio has approved both TrustHub bundles.
- *
- * A2P brand registration charges per attempt and carriers vet the bundle
- * contents, so submitting an unapproved bundle burns the fee and returns a
- * rejection days later. Saving business details now builds the full bundle and
- * hands it to Twilio for review, but review is asynchronous — the bundle sits
- * in `pending-review` for a while before it becomes `twilio-approved`, and it
- * can come back rejected. Both cases must block the paid step.
- */
-async function assertTrustBundleReadyForBrand(
-  twilio: A2PTwilioClient,
-  trustProfileSid: string | undefined,
-  trustProductSid: string | undefined,
-): Promise<void> {
-  if (!trustProfileSid || !trustProductSid) {
-    throw new functions.https.HttpsError(
-      'failed-precondition',
-      'Business profile has not been created yet. Save your business details first.',
-    );
-  }
-
-  const [profile, product] = await Promise.all([
-    twilio.trusthub.v1.customerProfiles(trustProfileSid).fetch(),
-    twilio.trusthub.v1.trustProducts(trustProductSid).fetch(),
-  ]);
-
-  const approved = (status: unknown) => String(status || '').toLowerCase() === 'twilio-approved';
-  if (approved(profile.status) && approved(product.status)) return;
-
-  functions.logger.error('Refusing brand submission: TrustHub bundles not approved', {
-    trustProfileSid,
-    trustProductSid,
-    profileStatus: profile.status,
-    productStatus: product.status,
-  });
-
-  const pending = (status: unknown) =>
-    ['pending-review', 'in-review'].includes(String(status || '').toLowerCase());
-
-  if (pending(profile.status) || pending(product.status)) {
-    throw new functions.https.HttpsError(
-      'failed-precondition',
-      'Your business profile is still being reviewed by Twilio. This usually takes about a ' +
-        'business day. You will be able to submit for carrier registration once it is approved — ' +
-        'no action is needed in the meantime.',
-    );
-  }
-
-  throw new functions.https.HttpsError(
-    'failed-precondition',
-    'Your business profile has not been approved by Twilio yet, so carrier brand registration ' +
-      `cannot be submitted (profile: ${profile.status}, A2P profile: ${product.status}). ` +
-      'Submitting now would incur the registration fee and be rejected. Re-save your business ' +
-      'details to rebuild and resubmit the profile.',
-  );
-}
-
-async function submitBrandRegistrationInternal(
-  facilityRef: admin.firestore.DocumentReference,
-  facilityData: Record<string, any>,
-): Promise<string> {
-  if (facilityData.twilioBrandSid) return facilityData.twilioBrandSid as string;
-
-  let sid: string;
-  if (isTwilioDryRunEnabled()) {
-    sid = buildTwilioDryRunSid('BN', facilityRef.id);
-  } else {
-    const twilio = getA2PTwilioClient();
-
-    // Brand registration costs a non-refundable fee per attempt and is vetted
-    // against public records, so refuse to submit unless Twilio has approved
-    // both the customer profile and the A2P trust product.
-    await assertTrustBundleReadyForBrand(
-      twilio,
-      facilityData.twilioTrustProfileSid as string | undefined,
-      facilityData.twilioTrustProductSid as string | undefined,
-    );
-
-    const brand = await twilio.messaging.v1.brandRegistrations.create(
-      buildBrandRegistrationParams(facilityData),
-    );
-    sid = brand.sid;
-  }
-
-  await facilityRef.set({
-    twilioBrandSid: sid,
-    a2pStatus: 'submitted',
-    textingPlatformApproved: false,
-    textingPlatformApprovedAt: null,
-    textingPlatformApprovedBy: null,
-    a2pSubmittedAt: admin.firestore.FieldValue.serverTimestamp(),
-    a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  }, { merge: true });
-  return sid;
-}
-
-async function submitCampaignInternal(
-  facilityRef: admin.firestore.DocumentReference,
-  facilityData: Record<string, any>,
-  campaignData: Pick<CampaignData, 'useCases' | 'consentConfirmed'>,
-  readiness: PaidSubmissionReadiness,
-): Promise<string> {
-  if (facilityData.twilioCampaignSid) return facilityData.twilioCampaignSid as string;
-  if (!facilityData.twilioBrandSid || !facilityData.twilioMessagingServiceSid || !facilityData.twilioPhoneNumberSid) {
-    throw new functions.https.HttpsError(
-      'failed-precondition',
-      'Missing Twilio brand, messaging service, or phone number. Complete previous steps first.',
-    );
-  }
-
-  // Samples and consent methods were validated by assertReadyForPaidSubmission
-  // before anything was bought; they are stored so a deferred filing by the
-  // hourly poll uses exactly what the owner submitted.
-  const withMethods = { ...facilityData, textingConsentMethods: readiness.consentMethods };
-  const dryRun = isTwilioDryRunEnabled();
-  const filing: CampaignFilingResult = dryRun
-    ? {
-        filed: true,
-        brandStatus: 'APPROVED',
-        sid: buildTwilioDryRunSid('QE', facilityRef.id),
-        campaignId: buildTwilioDryRunSid('CM', facilityRef.id),
-        campaignStatus: 'VERIFIED',
-      }
-    : await fileCampaignWhenBrandApproved(getA2PTwilioClient(), withMethods, readiness.samples);
-
-  await facilityRef.set({
-    ...campaignFilingFields(filing),
-    a2pCampaignFilingFailures: 0,
-    a2pLastError: null,
-    textingUseCases: Array.isArray(campaignData.useCases) ? campaignData.useCases : [],
-    textingSampleMessages: readiness.samples,
-    textingConsentMethods: readiness.consentMethods,
-    textingConsentConfirmedAt: campaignData.consentConfirmed ? admin.firestore.FieldValue.serverTimestamp() : null,
-    a2pStatus: dryRun ? 'approved' : filing.filed ? 'pending' : 'submitted',
-    textingPlatformApproved: false,
-    textingPlatformApprovedAt: null,
-    textingPlatformApprovedBy: null,
-    a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    ...(dryRun ? { a2pApprovedAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
-  }, { merge: true });
-
-  if (!dryRun) {
-    await attachPhoneNumberToMessagingService(
-      facilityData.twilioMessagingServiceSid as string,
-      facilityData.twilioPhoneNumberSid as string,
-    );
-  }
-
-  return filing.sid ?? '';
-}
-
-function leaseDb(): LeaseDb {
-  return admin.firestore() as unknown as LeaseDb;
-}
-
-async function readFacilityData(ref: admin.firestore.DocumentReference): Promise<Record<string, any>> {
-  const data = (await ref.get()).data();
-  if (!data) throw new functions.https.HttpsError('not-found', 'Facility not found');
-  return data;
-}
-
-type PaidScope = 'service' | 'number' | 'brand' | 'campaign' | 'all';
-
-/**
- * Run a paid texting-registration sequence for one facility.
- *
- * Holds the facility's submission lease for the whole sequence, checks every
- * prerequisite (live bundle approval, samples, consent) before the first
- * purchase, and re-reads the facility before each step so a number or brand
- * bought by an earlier run is reused rather than bought again. Creating the
- * messaging service alone is free and skips the readiness check.
- */
-async function runGatedPaidSubmission(
-  ref: admin.firestore.DocumentReference,
-  uid: string,
-  scope: PaidScope,
-  campaignData: Partial<CampaignData> | undefined,
-): Promise<{ requestId: string; facility: Record<string, any> }> {
-  const requestId = crypto.randomUUID();
-  const holder = `${uid}:${requestId}`;
-  const facility = await withA2PSubmitLease(leaseDb(), ref, holder, async () => {
-    const first = await readFacilityData(ref);
-    const readiness =
-      scope === 'service'
-        ? null
-        : await assertReadyForPaidSubmission(
-            isTwilioDryRunEnabled() ? null : getA2PTwilioClient(),
-            first,
-            resolvePaidSubmissionInput(campaignData, first),
-          );
-
-    const wants = (step: PaidScope) => scope === 'all' || scope === step;
-    const steps: PaidStep[] = [];
-    if (scope !== 'brand') {
-      steps.push(async (d) => {
-        await ensureMessagingServiceForFacility(ref, d, requestId);
-      });
-    }
-    if (wants('number')) {
-      steps.push(async (d) => {
-        await provisionFacilityPhoneNumber(ref, d, campaignData?.areaCode, requestId);
-      });
-      steps.push(async (d) => {
-        await attachPhoneNumberToMessagingService(
-          String(d.twilioMessagingServiceSid),
-          String(d.twilioPhoneNumberSid),
-        );
-      });
-    }
-    if (wants('brand')) {
-      steps.push(async (d) => {
-        await submitBrandRegistrationInternal(ref, d);
-      });
-    }
-    if (wants('campaign') && readiness) {
-      steps.push(async (d) => {
-        await submitCampaignInternal(
-          ref,
-          d,
-          {
-            useCases: campaignData?.useCases ?? d.textingUseCases ?? [],
-            consentConfirmed: resolvePaidSubmissionInput(campaignData, d).consentConfirmed === true,
-          },
-          readiness,
-        );
-      });
-    }
-    return runPaidSubmission(() => readFacilityData(ref), steps);
-  });
-  return { requestId, facility };
-}
-
 function getTextingOnboardingState(facilityData: Record<string, any>): TextingOnboardingState {
   return {
     a2pStatus: ((facilityData.a2pStatus as string) || 'draft') as A2PStatus,
@@ -1870,7 +1542,7 @@ export const ensureMessagingService = functions.runWith({ secrets: TWILIO_SECRET
       if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
       await assertTextingOnboardingEnabled(facilityId);
       const { ref } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-      const { requestId, facility } = await runGatedPaidSubmission(ref, context.auth.uid, 'service', undefined);
+      const { requestId, facility } = await runGatedPaidSubmission(paidStepDeps(), ref, context.auth.uid, 'service', undefined);
       return { success: true, requestId, messagingServiceSid: facility.twilioMessagingServiceSid || null };
     } catch (error: unknown) {
       throw mapTextingOnboardingError('ensureMessagingService', error);
@@ -1954,7 +1626,7 @@ export const provisionPhoneNumber = functions.runWith({ secrets: TWILIO_SECRETS 
       if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
       await assertTextingOnboardingEnabled(facilityId);
       const { ref } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-      const { requestId, facility } = await runGatedPaidSubmission(ref, context.auth.uid, 'number', data);
+      const { requestId, facility } = await runGatedPaidSubmission(paidStepDeps(), ref, context.auth.uid, 'number', data);
       return {
         success: true,
         requestId,
@@ -1980,7 +1652,7 @@ export const submitTextingOnboarding = functions.runWith({ secrets: TWILIO_SECRE
       const { ref } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
       // Messaging service, number, brand, campaign — in that order, under the
       // facility's lease, and only after every prerequisite has been checked.
-      const { requestId, facility } = await runGatedPaidSubmission(ref, context.auth.uid, 'all', campaignData);
+      const { requestId, facility } = await runGatedPaidSubmission(paidStepDeps(), ref, context.auth.uid, 'all', campaignData);
 
       return {
         success: true,
@@ -2008,7 +1680,7 @@ export const submitBrandRegistration = functions.runWith({ secrets: TWILIO_SECRE
       if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
       await assertTextingOnboardingEnabled(facilityId);
       const { ref } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-      const { facility } = await runGatedPaidSubmission(ref, context.auth.uid, 'brand', undefined);
+      const { facility } = await runGatedPaidSubmission(paidStepDeps(), ref, context.auth.uid, 'brand', undefined);
       return { success: true, brandSid: facility.twilioBrandSid || null };
     } catch (error: unknown) {
       throw mapTextingOnboardingError('submitBrandRegistration', error);
@@ -2083,7 +1755,7 @@ export const submitCampaign = functions.runWith({ secrets: TWILIO_SECRETS }).htt
       }
       await assertTextingOnboardingEnabled(facilityId);
       const { ref } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-      const { facility } = await runGatedPaidSubmission(ref, context.auth.uid, 'campaign', campaignData);
+      const { facility } = await runGatedPaidSubmission(paidStepDeps(), ref, context.auth.uid, 'campaign', campaignData);
       return { success: true, campaignSid: facility.twilioCampaignSid || null };
     } catch (error: unknown) {
       throw mapTextingOnboardingError('submitCampaign', error);
@@ -2149,31 +1821,15 @@ export const refreshTextingOnboardingStatus = functions.runWith({ secrets: TWILI
         campaignStatus = campaign?.campaignStatus;
         campaignErrors = campaign?.errors;
       }
-      const current = ((facilityData.a2pStatus as string) || 'draft') as A2PStatus;
-      const next = computeA2PStatus(current, brandStatus, campaignStatus);
-      const update: Record<string, any> = {
+      const update: Record<string, unknown> = {
         ...bundleUpdate,
-        ...(campaignStatus ? { a2pCampaignStatus: campaignStatus } : {}),
-        a2pStatus: next,
-        a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        a2pLastError: null,
-        a2pRejectionReason: next === 'rejected'
-          ? (buildA2PRejectionReason({
-              campaignErrors,
-              brandErrors,
-              brandFailureReason,
-              campaignStatus,
-              brandStatus,
-            }) ?? 'Rejected by Twilio')
-          : null,
-        ...(next !== 'approved' ? {
-          textingPlatformApproved: false,
-          textingPlatformApprovedAt: null,
-          textingPlatformApprovedBy: null,
-        } : {}),
+        ...buildRefreshStatusFields(
+          facilityData,
+          { brandStatus, brandErrors, brandFailureReason, campaignStatus, campaignErrors },
+          () => admin.firestore.FieldValue.serverTimestamp(),
+        ),
       };
-      if (next === 'approved') update.a2pApprovedAt = admin.firestore.FieldValue.serverTimestamp();
-      if (next === 'rejected') update.a2pRejectedAt = admin.firestore.FieldValue.serverTimestamp();
+      const next = update.a2pStatus;
       await ref.set(update, { merge: true });
       return { success: true, a2pStatus: next, brandStatus, campaignStatus };
     } catch (error: unknown) {
@@ -2208,72 +1864,13 @@ export const resubmitTextingOnboarding = functions.runWith({ secrets: TWILIO_SEC
         );
       }
 
-      const holder = `${context.auth.uid}:${crypto.randomUUID()}`;
-      const result = await withA2PSubmitLease(leaseDb(), ref, holder, async () => {
-        const facilityData = await readFacilityData(ref);
-        if (String(facilityData.a2pStatus || '').toLowerCase() !== 'rejected') {
-          throw new functions.https.HttpsError(
-            'failed-precondition',
-            'Only a rejected registration can be reset.',
-          );
-        }
-
-        const brandSid = String(facilityData.twilioBrandSid || '').trim();
-        const campaignSid = String(facilityData.twilioCampaignSid || '').trim();
-        const messagingServiceSid = String(facilityData.twilioMessagingServiceSid || '').trim();
-        let brandStatus = '';
-        let campaignStatus = '';
-        let liveCampaignSid = '';
-        const dryRun = isTwilioDryRunEnabled();
-        const twilio = dryRun ? null : getA2PTwilioClient();
-        if (twilio && brandSid) {
-          brandStatus = String((await twilio.messaging.v1.brandRegistrations(brandSid).fetch()).status || '');
-        }
-        if (twilio && campaignSid && messagingServiceSid) {
-          const campaign = await fetchUsAppToPersonCampaign(twilio, messagingServiceSid, campaignSid);
-          campaignStatus = String(campaign?.campaignStatus || '');
-          liveCampaignSid = campaign?.sid || '';
-        }
-
-        const plan = dryRun
-          ? { rejected: 'campaign' as const, keepBrand: false, removeCampaign: false }
-          : planRegistrationReset({
-              hasBrand: Boolean(brandSid),
-              brandStatus,
-              hasCampaign: Boolean(campaignSid),
-              campaignStatus,
-            });
-
-        if (twilio && plan.removeCampaign && liveCampaignSid && messagingServiceSid) {
-          await twilio.messaging.v1.services(messagingServiceSid).usAppToPerson(liveCampaignSid).remove();
-          functions.logger.info('Removed rejected A2P campaign before refiling', {
-            facilityId,
-            usAppToPersonSid: liveCampaignSid,
-            campaignStatus,
-          });
-        }
-
-        const del = admin.firestore.FieldValue.delete();
-        await ref.set({
-          ...(plan.keepBrand ? {} : { twilioBrandSid: del, a2pBrandStatus: del }),
-          twilioCampaignSid: del,
-          twilioCampaignId: del,
-          a2pCampaignStatus: del,
-          a2pCampaignPending: del,
-          a2pCampaignFilingFailures: del,
-          a2pStatus: 'draft',
-          textingPlatformApproved: false,
-          textingPlatformApprovedAt: null,
-          textingPlatformApprovedBy: null,
-          a2pLastError: null,
-          a2pRejectionReason: null,
-          a2pRejectedAt: null,
-          a2pLastResetOf: plan.rejected,
-          a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-        return plan;
-      });
-      return { success: true, reset: result.rejected, keptBrand: result.keepBrand };
+      const result = await resetRejectedRegistration(paidStepDeps(), ref, context.auth.uid);
+      return {
+        success: true,
+        reset: result.rejected,
+        keptBrand: result.keepBrand,
+        brandWillBeResubmitted: result.resubmitBrand,
+      };
     } catch (error: unknown) {
       throw mapTextingOnboardingError('resubmitTextingOnboarding', error);
     }

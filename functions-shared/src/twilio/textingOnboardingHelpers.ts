@@ -22,21 +22,6 @@ export function isHelpKeyword(input: string): boolean {
 }
 
 /**
- * The confirmation a tenant gets after opting in, e.g. by texting START.
- *
- * The same sentence is filed with each facility's A2P campaign as its opt-in
- * message, so the live reply and the filing must not drift: carriers compare
- * them. The keyword webhook's START reply (inboundKeywordReplies.ts, PR #16)
- * produces this exact text for a single facility; a test pins the wording.
- */
-export function buildTenantOptInConfirmation(senderName: string): string {
-  return (
-    `${senderName.trim()}: you're opted in to account texts about your storage unit. ` +
-    'Msg frequency varies. Msg & data rates may apply. Reply HELP for help, STOP to opt out.'
-  );
-}
-
-/**
  * Fold Twilio's brand and campaign states into the facility's A2P status.
  *
  * Twilio reports a brand as PENDING / IN_REVIEW / APPROVED / FAILED and a
@@ -56,6 +41,14 @@ export function computeA2PStatus(
     s.includes('reject') || s.includes('denied') || s.includes('fail') || s.includes('suspend');
 
   if (failed(brand) || failed(campaign)) {
+    return 'rejected';
+  }
+  // A rejection with no campaign on file (the hourly poll gave up filing it
+  // under an approved brand) stays rejected: only filing a campaign changes
+  // that. Demoting it to pending here wiped the reason and left the facility
+  // where neither the reset (needs rejected) nor the poll (needs a pending
+  // filing) would touch it again.
+  if (currentStatus === 'rejected' && !campaign) {
     return 'rejected';
   }
   if (campaign.includes('approv') || campaign.includes('verified')) {
