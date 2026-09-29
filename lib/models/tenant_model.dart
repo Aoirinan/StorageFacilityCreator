@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'occupant_model.dart';
 import 'address_model.dart';
+import 'security_deposit_model.dart';
 import 'tenant_autopay_model.dart';
 import 'tenant_stripe_model.dart';
 
@@ -192,6 +193,10 @@ class TenantModel {
   /// Manual per-month status overrides: key "yyyy-MM", value "paid"|"late"|"moved_out".
   final Map<String, String> monthStatusOverrides;
 
+  /// The security deposit the facility holds (or settled) for this tenant;
+  /// null when none is on file. Never part of the ledger balance.
+  final SecurityDeposit? securityDeposit;
+
   TenantModel({
     required this.id,
     required this.facilityId,
@@ -259,6 +264,7 @@ class TenantModel {
     this.stripe = const TenantStripeModel(),
     this.overlockIsActive = false,
     this.monthStatusOverrides = const {},
+    this.securityDeposit,
   });
 
   /// Whether a tenant doc's `isActive` value makes it an active tenant: only
@@ -417,6 +423,10 @@ class TenantModel {
           ? Map<String, String>.from((data!['monthStatusOverrides'] as Map)
               .map((k, v) => MapEntry(k.toString(), v.toString())))
           : {},
+      securityDeposit: data?['securityDeposit'] is Map
+          ? SecurityDeposit.fromMap(
+              Map<String, dynamic>.from(data!['securityDeposit'] as Map))
+          : null,
     );
   }
 
@@ -544,6 +554,7 @@ class TenantModel {
       'overlockIsActive': overlockIsActive,
       if (monthStatusOverrides.isNotEmpty)
         'monthStatusOverrides': monthStatusOverrides,
+      if (securityDeposit != null) 'securityDeposit': securityDeposit!.toMap(),
     };
   }
 
@@ -617,6 +628,8 @@ class TenantModel {
     TenantStripeModel? stripe,
     bool? overlockIsActive,
     Map<String, String>? monthStatusOverrides,
+    SecurityDeposit? securityDeposit,
+    bool clearSecurityDeposit = false,
   }) {
     return TenantModel(
       id: id ?? this.id,
@@ -687,6 +700,9 @@ class TenantModel {
       stripe: stripe ?? this.stripe,
       overlockIsActive: overlockIsActive ?? this.overlockIsActive,
       monthStatusOverrides: monthStatusOverrides ?? this.monthStatusOverrides,
+      securityDeposit: clearSecurityDeposit
+          ? null
+          : (securityDeposit ?? this.securityDeposit),
     );
   }
 
