@@ -57,8 +57,8 @@ List<String> statementUnitLabels(
 }
 
 /// "Unit: 12" for one label, "Units: 12, 14" for more. Labels that all end
-/// in the same area, "C2-6 (Complex 2)" and "C2-7 (Complex 2)", name it
-/// once: "Units: C2-6, C2-7 (Complex 2)". Null when there are none.
+/// in the same area, "B-14 (Building B)" and "B-15 (Building B)", name it
+/// once: "Units: B-14, B-15 (Building B)". Null when there are none.
 String? statementUnitsLine(List<String> labels) {
   if (labels.isEmpty) return null;
   if (labels.length == 1) return 'Unit: ${labels.single}';
@@ -78,7 +78,7 @@ String? _sharedAreaSuffix(List<String> labels) {
 }
 
 /// The statement's unit line under the account holder: "Unit: 12", or
-/// "Unit: 12 (Complex 2)" when [facility] names units with their area. Null
+/// "Unit: 12 (Building B)" when [facility] names units with their area. Null
 /// for a tenant with no unit number.
 String? statementUnitLine(TenantModel tenant, FacilityModel facility) =>
     statementUnitsLine(statementUnitLabels(tenant, facility));
