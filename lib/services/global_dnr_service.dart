@@ -165,6 +165,7 @@ class GlobalDNRService {
       facilityId: createdByFacilityId,
       action: 'dnr.global.create',
       targetId: docRef.id,
+      targetType: 'globalDnr',
       details: {
         'fullName': fullName.trim(),
         'reason': reason.trim(),
@@ -289,6 +290,7 @@ class GlobalDNRService {
         facilityId: auditFacilityId,
         action: 'dnr.global.update',
         targetId: entryId,
+        targetType: 'globalDnr',
         details: {
           'updatedFields': updates.keys
               .where((k) => k != 'updatedAt' && k != 'searchTokens')
@@ -342,6 +344,7 @@ class GlobalDNRService {
         facilityId: auditFacilityId,
         action: 'dnr.global.delete',
         targetId: entryId,
+        targetType: 'globalDnr',
         details: {
           if (entryData['fullName'] != null) 'fullName': entryData['fullName'],
           if (entryData['reason'] != null) 'reason': entryData['reason'],

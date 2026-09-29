@@ -177,38 +177,24 @@ class AuditService {
     }
   }
 
+  /// [targetId] is a DNR entry unless [targetType] says otherwise (the
+  /// override screens pass the tenant being let through).
   static Future<void> logDNRAction({
     required String facilityId,
     required String action, // 'dnr.create', 'dnr.update', 'dnr.delete', 'dnr.toggle', 'dnr.override', 'dnr.global.*'
-    required String targetId, // DNR entry ID
+    required String targetId,
+    String targetType = 'dnr',
+    String? tenantId,
     Map<String, dynamic>? details,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging DNR audit: $action for $targetId in facility $facilityId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': action,
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': targetId,
-        'details': details ?? {},
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging DNR audit: $e');
-      }
-      // Don't throw - audit logging should not break the main flow
-    }
+    await logEvent(
+      facilityId: facilityId,
+      eventType: action,
+      targetType: targetType,
+      targetId: targetId,
+      tenantId: tenantId,
+      metadata: details,
+    );
   }
 
   /// Log ledger entry creation
@@ -220,38 +206,18 @@ class AuditService {
     required double amount,
     Map<String, dynamic>? details,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging ledger entry creation: $entryId for tenant $tenantId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'ledger.entry.created',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': entryId,
-        'entityType': 'ledgerEntry',
-        'entityId': entryId,
-        'tenantId': tenantId,
-        'details': {
-          'type': type,
-          'amount': amount,
-          ...?details,
-        },
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging ledger entry creation: $e');
-      }
-    }
+    await logEvent(
+      facilityId: facilityId,
+      eventType: 'ledger.entry.created',
+      targetType: 'ledgerEntry',
+      targetId: entryId,
+      tenantId: tenantId,
+      after: {
+        'type': type,
+        'amount': amount,
+      },
+      metadata: details,
+    );
   }
 
   /// Log ledger entry voiding
@@ -261,36 +227,16 @@ class AuditService {
     required String entryId,
     String? reason,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging ledger entry void: $entryId for tenant $tenantId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'ledger.entry.voided',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': entryId,
-        'entityType': 'ledgerEntry',
-        'entityId': entryId,
-        'tenantId': tenantId,
-        'details': {
-          if (reason != null) 'reason': reason,
-        },
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging ledger entry void: $e');
-      }
-    }
+    await logEvent(
+      facilityId: facilityId,
+      eventType: 'ledger.entry.voided',
+      targetType: 'ledgerEntry',
+      targetId: entryId,
+      tenantId: tenantId,
+      metadata: {
+        if (reason != null) 'reason': reason,
+      },
+    );
   }
 
   /// Log payment allocation
@@ -300,37 +246,17 @@ class AuditService {
     required String paymentId,
     required List<Map<String, dynamic>> allocations,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging payment allocation: $paymentId for tenant $tenantId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'ledger.payment.allocated',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': paymentId,
-        'entityType': 'payment',
-        'entityId': paymentId,
-        'tenantId': tenantId,
-        'details': {
-          'allocations': allocations,
-          'allocationCount': allocations.length,
-        },
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging payment allocation: $e');
-      }
-    }
+    await logEvent(
+      facilityId: facilityId,
+      eventType: 'ledger.payment.allocated',
+      targetType: 'payment',
+      targetId: paymentId,
+      tenantId: tenantId,
+      after: {
+        'allocations': allocations,
+        'allocationCount': allocations.length,
+      },
+    );
   }
 
   /// Log move-in completion
@@ -342,39 +268,19 @@ class AuditService {
     required double totalAmount,
     Map<String, dynamic>? details,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging move-in completion: tenant $tenantId, unit $unitId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'movein.completed',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': tenantId,
-        'entityType': 'moveIn',
-        'entityId': contractId,
-        'tenantId': tenantId,
-        'details': {
-          'unitId': unitId,
-          'contractId': contractId,
-          'totalAmount': totalAmount,
-          ...?details,
-        },
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging move-in completion: $e');
-      }
-    }
+    await logEvent(
+      facilityId: facilityId,
+      eventType: 'movein.completed',
+      targetType: 'moveIn',
+      targetId: contractId,
+      tenantId: tenantId,
+      after: {
+        'unitId': unitId,
+        'contractId': contractId,
+        'totalAmount': totalAmount,
+      },
+      metadata: details,
+    );
   }
 
   /// Log contact log creation
@@ -385,37 +291,17 @@ class AuditService {
     required String type,
     Map<String, dynamic>? details,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging contact log creation: $logId for tenant $tenantId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'contactlog.created',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': logId,
-        'entityType': 'contactLog',
-        'entityId': logId,
-        'tenantId': tenantId,
-        'details': {
-          'type': type,
-          ...?details,
-        },
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging contact log creation: $e');
-      }
-    }
+    await logEvent(
+      facilityId: facilityId,
+      eventType: 'contactlog.created',
+      targetType: 'contactLog',
+      targetId: logId,
+      tenantId: tenantId,
+      after: {
+        'type': type,
+      },
+      metadata: details,
+    );
   }
 
   /// Log payment method creation
@@ -426,37 +312,17 @@ class AuditService {
     required String type,
     Map<String, dynamic>? details,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging payment method creation: $methodId for tenant $tenantId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'paymentmethod.created',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': methodId,
-        'entityType': 'paymentMethod',
-        'entityId': methodId,
-        'tenantId': tenantId,
-        'details': {
-          'type': type,
-          ...?details,
-        },
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging payment method creation: $e');
-      }
-    }
+    await logEvent(
+      facilityId: facilityId,
+      eventType: 'paymentmethod.created',
+      targetType: 'paymentMethod',
+      targetId: methodId,
+      tenantId: tenantId,
+      after: {
+        'type': type,
+      },
+      metadata: details,
+    );
   }
 
   /// Log payment method deletion
@@ -465,33 +331,13 @@ class AuditService {
     required String tenantId,
     required String methodId,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging payment method deletion: $methodId for tenant $tenantId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'paymentmethod.deleted',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': methodId,
-        'entityType': 'paymentMethod',
-        'entityId': methodId,
-        'tenantId': tenantId,
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging payment method deletion: $e');
-      }
-    }
+    await logEvent(
+      facilityId: facilityId,
+      eventType: 'paymentmethod.deleted',
+      targetType: 'paymentMethod',
+      targetId: methodId,
+      tenantId: tenantId,
+    );
   }
 
   /// Log autopay toggle
@@ -501,36 +347,16 @@ class AuditService {
     required String methodId,
     required bool enabled,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging autopay toggle: $methodId for tenant $tenantId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'autopay.${enabled ? 'enabled' : 'disabled'}',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': methodId,
-        'entityType': 'paymentMethod',
-        'entityId': methodId,
-        'tenantId': tenantId,
-        'details': {
-          'enabled': enabled,
-        },
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging autopay toggle: $e');
-      }
-    }
+    await logEvent(
+      facilityId: facilityId,
+      eventType: 'autopay.${enabled ? 'enabled' : 'disabled'}',
+      targetType: 'paymentMethod',
+      targetId: methodId,
+      tenantId: tenantId,
+      after: {
+        'enabled': enabled,
+      },
+    );
   }
 
   /// Log autopay processed
@@ -542,38 +368,18 @@ class AuditService {
     String? transactionId,
     Map<String, dynamic>? details,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging autopay processed: $methodId for tenant $tenantId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'autopay.processed',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': methodId,
-        'entityType': 'paymentMethod',
-        'entityId': methodId,
-        'tenantId': tenantId,
-        'details': {
-          'amount': amount,
-          if (transactionId != null) 'transactionId': transactionId,
-          ...?details,
-        },
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging autopay processed: $e');
-      }
-    }
+    await logEvent(
+      facilityId: facilityId,
+      eventType: 'autopay.processed',
+      targetType: 'paymentMethod',
+      targetId: methodId,
+      tenantId: tenantId,
+      after: {
+        'amount': amount,
+        if (transactionId != null) 'transactionId': transactionId,
+      },
+      metadata: details,
+    );
   }
 
   /// Log move-out completion
@@ -586,83 +392,20 @@ class AuditService {
     required double refund,
     Map<String, dynamic>? details,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging move-out completion: tenant $tenantId, unit $unitId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'moveout.completed',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': tenantId,
-        'entityType': 'moveOut',
-        'entityId': contractId,
-        'tenantId': tenantId,
-        'details': {
-          'unitId': unitId,
-          'contractId': contractId,
-          'charges': charges,
-          'refund': refund,
-          ...?details,
-        },
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging move-out completion: $e');
-      }
-    }
-  }
-
-  /// Log recurring charge generation
-  static Future<void> logRecurringChargeGenerated({
-    required String facilityId,
-    required String tenantId,
-    required String entryId,
-    required double amount,
-    required String chargeType,
-    Map<String, dynamic>? details,
-  }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging recurring charge generation: $entryId for tenant $tenantId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'recurringcharge.generated',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': entryId,
-        'entityType': 'ledgerEntry',
-        'entityId': entryId,
-        'tenantId': tenantId,
-        'details': {
-          'amount': amount,
-          'chargeType': chargeType,
-          ...?details,
-        },
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging recurring charge generation: $e');
-      }
-    }
+    await logEvent(
+      facilityId: facilityId,
+      eventType: 'moveout.completed',
+      targetType: 'moveOut',
+      targetId: contractId,
+      tenantId: tenantId,
+      after: {
+        'unitId': unitId,
+        'contractId': contractId,
+        'charges': charges,
+        'refund': refund,
+      },
+      metadata: details,
+    );
   }
 
   /// Log invoice creation
@@ -674,38 +417,18 @@ class AuditService {
     required double total,
     Map<String, dynamic>? details,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging invoice creation: $invoiceId for tenant $tenantId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'invoice.created',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': invoiceId,
-        'entityType': 'invoice',
-        'entityId': invoiceId,
-        'tenantId': tenantId,
-        'details': {
-          'invoiceNumber': invoiceNumber,
-          'total': total,
-          ...?details,
-        },
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging invoice creation: $e');
-      }
-    }
+    await logEvent(
+      facilityId: facilityId,
+      eventType: 'invoice.created',
+      targetType: 'invoice',
+      targetId: invoiceId,
+      tenantId: tenantId,
+      after: {
+        'invoiceNumber': invoiceNumber,
+        'total': total,
+      },
+      metadata: details,
+    );
   }
 
   /// Log invoice action (paid, voided, etc.)
@@ -717,37 +440,17 @@ class AuditService {
     required String action, // 'paid', 'voided', etc.
     Map<String, dynamic>? details,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging invoice action: invoice.$action for $invoiceId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'invoice.$action',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': invoiceId,
-        'entityType': 'invoice',
-        'entityId': invoiceId,
-        'tenantId': tenantId,
-        'details': {
-          'invoiceNumber': invoiceNumber,
-          ...?details,
-        },
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging invoice action: $e');
-      }
-    }
+    await logEvent(
+      facilityId: facilityId,
+      eventType: 'invoice.$action',
+      targetType: 'invoice',
+      targetId: invoiceId,
+      tenantId: tenantId,
+      metadata: {
+        'invoiceNumber': invoiceNumber,
+        ...?details,
+      },
+    );
   }
 
   /// Log transfer completion
@@ -760,39 +463,19 @@ class AuditService {
     required double netAmount,
     Map<String, dynamic>? details,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging transfer completion: $transferId for tenant $tenantId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'transfer.completed',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': transferId,
-        'entityType': 'transfer',
-        'entityId': transferId,
-        'tenantId': tenantId,
-        'details': {
-          'fromUnitNumber': fromUnitNumber,
-          'toUnitNumber': toUnitNumber,
-          'netAmount': netAmount,
-          ...?details,
-        },
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging transfer completion: $e');
-      }
-    }
+    await logEvent(
+      facilityId: facilityId,
+      eventType: 'transfer.completed',
+      targetType: 'transfer',
+      targetId: transferId,
+      tenantId: tenantId,
+      after: {
+        'fromUnitNumber': fromUnitNumber,
+        'toUnitNumber': toUnitNumber,
+        'netAmount': netAmount,
+      },
+      metadata: details,
+    );
   }
 
   /// Log document upload
@@ -804,38 +487,18 @@ class AuditService {
     String? tenantId,
     Map<String, dynamic>? details,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging document upload: $documentId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'document.uploaded',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': documentId,
-        'entityType': 'document',
-        'entityId': documentId,
-        'tenantId': tenantId,
-        'details': {
-          'fileName': fileName,
-          'documentType': documentType,
-          ...?details,
-        },
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging document upload: $e');
-      }
-    }
+    await logEvent(
+      facilityId: facilityId,
+      eventType: 'document.uploaded',
+      targetType: 'document',
+      targetId: documentId,
+      tenantId: tenantId,
+      after: {
+        'fileName': fileName,
+        'documentType': documentType,
+      },
+      metadata: details,
+    );
   }
 
   /// Log document deletion
@@ -845,36 +508,16 @@ class AuditService {
     required String fileName,
     Map<String, dynamic>? details,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging document deletion: $documentId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'document.deleted',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': documentId,
-        'entityType': 'document',
-        'entityId': documentId,
-        'details': {
-          'fileName': fileName,
-          ...?details,
-        },
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging document deletion: $e');
-      }
-    }
+    await logEvent(
+      facilityId: facilityId,
+      eventType: 'document.deleted',
+      targetType: 'document',
+      targetId: documentId,
+      metadata: {
+        'fileName': fileName,
+        ...?details,
+      },
+    );
   }
 
   /// Log lien creation
@@ -885,35 +528,17 @@ class AuditService {
     required String unitId,
     Map<String, dynamic>? details,
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging lien creation: $lienId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'lien.created',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': lienId,
-        'entityType': 'lien',
-        'entityId': lienId,
-        'tenantId': tenantId,
+    await logEvent(
+      facilityId: facilityId,
+      eventType: 'lien.created',
+      targetType: 'lien',
+      targetId: lienId,
+      tenantId: tenantId,
+      after: {
         'unitId': unitId,
-        'details': details ?? {},
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging lien creation: $e');
-      }
-    }
+      },
+      metadata: details,
+    );
   }
 
   /// Log contract upload with compliance
