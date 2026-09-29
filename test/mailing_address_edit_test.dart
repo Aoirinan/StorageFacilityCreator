@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/models/address_model.dart';
 import 'package:sfcapp/services/tenant_service.dart';
@@ -183,6 +184,13 @@ void main() {
   });
 
   group('TenantService.setMailingAddress', () {
+    // Nobody signed in unless the test passes actingUid. Without this the
+    // "refuses" test below would read FirebaseAuth.instance, which throws
+    // for want of a Firebase app before the guard runs, and pass whether
+    // or not the guard is there.
+    setUp(() => TenantService.authForTesting = MockFirebaseAuth(signedIn: false));
+    tearDown(() => TenantService.authForTesting = null);
+
     test('writes the whole array and updatedAt, with the audit row updateTenant writes', () async {
       final store = _Store({'name': 'Pat Example', 'isActive': true});
       final fx = _RecordingEffects();
@@ -238,7 +246,7 @@ void main() {
           records: store,
           effects: _RecordingEffects(),
         ),
-        throwsA(isA<Exception>()),
+        throwsA(predicate((e) => e.toString().contains('Not signed in'))),
       );
       expect(store.writes, isEmpty);
     });
