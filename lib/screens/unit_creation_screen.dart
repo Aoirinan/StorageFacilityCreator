@@ -525,6 +525,10 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                   value: 'outdoor',
                                   child: Text('Outdoor Storage'),
                                 ),
+                                const DropdownMenuItem(
+                                  value: 'rvSite',
+                                  child: Text('RV Site'),
+                                ),
                               ],
                               onChanged: (value) {
                                 if (value != null && mounted) {

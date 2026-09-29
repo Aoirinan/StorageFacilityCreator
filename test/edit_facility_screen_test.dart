@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/providers/auth_provider.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/router/app_route.dart';
@@ -232,6 +233,31 @@ void main() {
         scrollable: find.byType(Scrollable).first);
     expect(find.text('Save Public Rental Settings'), findsOneWidget);
     expect(store.writes, isEmpty);
+  });
+
+  testWidgets('the public unit categories are named as the Unit Type dropdown is',
+      (tester) async {
+    store.put(_settingsPath, {
+      'facilityId': 'fac1',
+      'publicRentalsEnabled': false,
+      'publicRentalSlug': 'main-street',
+      // A value no version of the app has offered stays readable.
+      'enabledPublicUnitTypes': ['standard', 'coldStorage'],
+    });
+    final actions = _FakeEditActions(_facility());
+    await _openEditFacility(tester, actions);
+    await tester.scrollUntilVisible(find.text('Public Unit Categories'), 300,
+        scrollable: find.byType(Scrollable).first);
+
+    // Every type has a chip under the name Create Unit gives it: 'RV Site'
+    // here read 'Rv Site' when spelled out from the stored name.
+    for (final type in UnitType.values) {
+      expect(find.widgetWithText(FilterChip, type.displayName), findsOneWidget,
+          reason: type.name);
+    }
+    await tester.scrollUntilVisible(find.text('Cold Storage Link'), 300,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Cold Storage Link'), findsOneWidget);
   });
 
   testWidgets('a failed publish after a save says the settings were saved',

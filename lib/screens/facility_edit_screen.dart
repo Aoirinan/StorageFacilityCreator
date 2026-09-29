@@ -632,7 +632,13 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     return slug.isEmpty ? widget.facility.id.toLowerCase() : slug;
   }
 
+  /// The Unit Type dropdown's name for a type the app knows, so this page
+  /// and Create Unit agree ('RV Site', not 'Rv Site'); a stored value the
+  /// app does not know is spaced out as it is.
   String _unitTypeLabel(String raw) {
+    for (final type in UnitType.values) {
+      if (type.name == raw) return type.displayName;
+    }
     return raw
         .replaceAllMapped(RegExp(r'([A-Z])'), (m) => ' ${m.group(1)}')
         .trim()
