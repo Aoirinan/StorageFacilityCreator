@@ -90,9 +90,30 @@ Future<void> _tapVisible(WidgetTester tester, Finder finder) async {
   await tester.pumpAndSettle();
 }
 
+/// Picks [label] in the Unit Type dropdown.
+Future<void> _chooseUnitType(WidgetTester tester, String label) async {
+  await _tapVisible(
+    tester,
+    find.ancestor(
+      of: find.text('Unit Type *'),
+      matching: find.byType(DropdownButtonFormField<String>),
+    ),
+  );
+  // The open menu lists every type; the button shows only the chosen one.
+  await tester.tap(find.text(label).last);
+  await tester.pumpAndSettle();
+}
+
 bool _switchValue(WidgetTester tester, String title) => tester
     .widget<SwitchListTile>(find.widgetWithText(SwitchListTile, title))
     .value;
+
+Future<void> _fillNewUnit(WidgetTester tester) async {
+  await tester.enterText(
+      find.widgetWithText(TextFormField, 'Unit Number *'), 'RV-1');
+  await tester.enterText(
+      find.widgetWithText(TextFormField, 'Monthly Rate *'), '900');
+}
 
 void main() {
   setUp(() {
@@ -133,6 +154,69 @@ void main() {
   });
 
   group('UnitCreationScreen RV Site', () {
+    testWidgets('choosing RV Site on Create Unit starts the unit unlisted',
+        (tester) async {
+      final log = _serveUnits([]);
+      await _openScreen(tester);
+      await _fillNewUnit(tester);
+
+      expect(_switchValue(tester, _listingLabel), isTrue);
+      await _chooseUnitType(tester, 'RV Site');
+
+      // A new unit is listed and Available by default, so each empty site
+      // would otherwise go on the public map as available at $900/month.
+      expect(_switchValue(tester, _listingLabel), isFalse);
+      await _tapVisible(
+          tester, find.widgetWithText(ElevatedButton, 'Create Unit'));
+
+      final created = log.writes.single;
+      expect(created.$1, 'set');
+      expect(created.$3['unitNumber'], 'RV-1');
+      expect(created.$3['unitType'], 'rvSite');
+      expect(created.$3['publicListingEnabled'], isFalse);
+      expect(created.$3['internalUse'], isFalse);
+      expect(find.byType(UnitCreationScreen), findsNothing);
+    });
+
+    testWidgets('the listing switch stays free to turn on for an RV site',
+        (tester) async {
+      final log = _serveUnits([]);
+      await _openScreen(tester);
+      await _fillNewUnit(tester);
+      await _chooseUnitType(tester, 'RV Site');
+
+      final listing = tester.widget<SwitchListTile>(
+          find.widgetWithText(SwitchListTile, _listingLabel));
+      expect(listing.onChanged, isNotNull);
+      await _tapVisible(tester, find.text(_listingLabel));
+      expect(_switchValue(tester, _listingLabel), isTrue);
+
+      await _tapVisible(
+          tester, find.widgetWithText(ElevatedButton, 'Create Unit'));
+      expect(log.writes.single.$3['unitType'], 'rvSite');
+      expect(log.writes.single.$3['publicListingEnabled'], isTrue);
+    });
+
+    testWidgets('choosing another type again puts the listing back',
+        (tester) async {
+      _serveUnits([]);
+      await _openScreen(tester);
+
+      await _chooseUnitType(tester, 'RV Site');
+      expect(_switchValue(tester, _listingLabel), isFalse);
+      await _chooseUnitType(tester, 'Standard');
+      // A storage unit picked after a change of mind should not quietly
+      // stay off the website.
+      expect(_switchValue(tester, _listingLabel), isTrue);
+
+      // Turned off by hand before RV Site: it stays off afterwards.
+      await _tapVisible(tester, find.text(_listingLabel));
+      expect(_switchValue(tester, _listingLabel), isFalse);
+      await _chooseUnitType(tester, 'RV Site');
+      await _chooseUnitType(tester, 'Outdoor Storage');
+      expect(_switchValue(tester, _listingLabel), isFalse);
+    });
+
     testWidgets('editing a listed RV site keeps it listed', (tester) async {
       final log = _serveUnits([
         FakeDoc('u1', {
@@ -147,11 +231,33 @@ void main() {
       // The stored type is one of the dropdown's items, so the editor opens
       // on it instead of failing the dropdown's one-matching-item check.
       expect(find.text('RV Site'), findsOneWidget);
+      // The default is for new units only; a saved choice is the owner's.
       expect(_switchValue(tester, _listingLabel), isTrue);
       await _tapVisible(
           tester, find.widgetWithText(ElevatedButton, 'Update Unit'));
 
       expect(log.writes.single.$1, 'update');
+      expect(log.writes.single.$3['unitType'], 'rvSite');
+      expect(log.writes.single.$3['publicListingEnabled'], isTrue);
+    });
+
+    testWidgets('changing a listed unit to RV Site while editing keeps it listed',
+        (tester) async {
+      final log = _serveUnits([
+        FakeDoc('u1', {
+          'unitNumber': 'RV-1',
+          'unitType': 'outdoor',
+          'status': 'available',
+          'publicListingEnabled': true,
+        }),
+      ]);
+      await _openScreen(tester, unit: _unit(unitType: 'outdoor'));
+
+      await _chooseUnitType(tester, 'RV Site');
+      expect(_switchValue(tester, _listingLabel), isTrue);
+      await _tapVisible(
+          tester, find.widgetWithText(ElevatedButton, 'Update Unit'));
+
       expect(log.writes.single.$3['unitType'], 'rvSite');
       expect(log.writes.single.$3['publicListingEnabled'], isTrue);
     });
