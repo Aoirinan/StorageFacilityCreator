@@ -155,6 +155,10 @@ Future<void> _tap(WidgetTester tester, String text) async {
   final target = find.text(text);
   await tester.scrollUntilVisible(target, 300,
       scrollable: find.byType(Scrollable).first);
+  // scrollUntilVisible jumps the list to the target without pumping a frame,
+  // so a widget the list had already built just past the bottom edge still
+  // reports where it was, and the tap lands off the 2400px test view.
+  await tester.pumpAndSettle();
   await tester.tap(target);
   await tester.pumpAndSettle();
 }
