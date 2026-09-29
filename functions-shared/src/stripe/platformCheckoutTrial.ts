@@ -90,8 +90,17 @@ function str(value: unknown): string {
 export type PlatformOfferHistoryInput = {
   /** The `facilityCreatorAccounts` document. */
   account: Doc;
-  /** Every facility linked to the account, including the one being subscribed. */
+  /**
+   * Every facility linked to the account, including the one being subscribed, plus any
+   * other facility the same owner owns.
+   */
   facilities: Doc[];
+  /**
+   * The owner's other `facilityCreatorAccounts` documents (same `ownerUid`, not
+   * [account]). The offer is once per owner, so a duplicate or recreated account does
+   * not start over.
+   */
+  otherAccounts?: Doc[];
 };
 
 export type PlatformOfferHistory = {
@@ -131,10 +140,27 @@ export type PlatformOfferHistory = {
  *
  * T2 and T4 alone do not use up the free month: an app-trial owner (who may have opened
  * and abandoned a checkout, leaving a customer id) still gets it.
+ *
+ * Other accounts of the same owner (O1-O3): each is judged by the account rules above
+ * (S1-S3, F1, T1, T2, T4); whatever it used, this owner used.
  */
 export function assessPlatformOfferHistory(input: PlatformOfferHistoryInput): PlatformOfferHistory {
-  const account = input.account ?? {};
-  const facilities = input.facilities ?? [];
+  const own = assessOneAccount(input.account ?? {}, input.facilities ?? []);
+  const reasons = [...own.reasons];
+  let { trialUsed, hadPlatformSubscription, firstMonthFreeUsed } = own;
+  for (const other of input.otherAccounts ?? []) {
+    const h = assessOneAccount(other ?? {}, []);
+    if (h.hadPlatformSubscription) reasons.push('O1 another account of this owner had a platform subscription');
+    else if (h.firstMonthFreeUsed) reasons.push('O2 another account of this owner used the free month');
+    else if (h.trialUsed) reasons.push('O3 another account of this owner used the trial');
+    hadPlatformSubscription = hadPlatformSubscription || h.hadPlatformSubscription;
+    firstMonthFreeUsed = firstMonthFreeUsed || h.firstMonthFreeUsed;
+    trialUsed = trialUsed || h.trialUsed;
+  }
+  return { trialUsed, hadPlatformSubscription, firstMonthFreeUsed, reasons };
+}
+
+function assessOneAccount(account: Doc, facilities: Doc[]): PlatformOfferHistory {
   const status = str(account.subscriptionStatus);
   const reasons: string[] = [];
 
@@ -195,6 +221,17 @@ export type PlatformCheckoutTrialDecision =
       reason: string;
     }
   | {
+      /**
+       * The rest of the owner's running card-backed trial (their free month, on another
+       * facility or on the account), no free month of its own: a facility added while
+       * the free month runs is first charged when it ends, as on the account path.
+       */
+      kind: 'align_to_free_month';
+      /** Epoch seconds, as Stripe expects for `trial_end`. */
+      trialEndSeconds: number;
+      reason: string;
+    }
+  | {
       kind: 'no_trial';
       reason: string;
     };
@@ -213,6 +250,29 @@ export type PlatformCheckoutOfferInput = PlatformOfferHistoryInput & {
 };
 
 /**
+ * The end (epoch ms) of the owner's running card-backed trial, or null: the latest
+ * `trial_end` still ahead of now among `trialing` subscriptions with a Stripe id, on the
+ * account (`subscriptionTrialEnd`) or on any of [facilities]
+ * (`platformSubscriptionTrialEnd`). While the owner's free month runs, that is its end;
+ * no other subscription of theirs can trial longer.
+ */
+function runningCardTrialEndMs(input: PlatformCheckoutOfferInput): number | null {
+  let latest: number | null = null;
+  const consider = (status: unknown, subscriptionId: unknown, trialEnd: unknown) => {
+    if (str(status) !== 'trialing' || !isSet(str(subscriptionId))) return;
+    const endMs = trialEndToMillis(trialEnd);
+    if (endMs === null || endMs <= input.nowMs) return;
+    if (latest === null || endMs > latest) latest = endMs;
+  };
+  const account = input.account ?? {};
+  consider(account.subscriptionStatus, account.stripeSubscriptionId, account.subscriptionTrialEnd);
+  for (const f of input.facilities ?? []) {
+    consider(f.platformSubscriptionStatus, f.stripePlatformSubscriptionId, f.platformSubscriptionTrialEnd);
+  }
+  return latest;
+}
+
+/**
  * Free month not used yet: the Stripe trial ends FIRST_MONTH_FREE_DAYS after the end of
  * the owner's trial, where the trial ends
  *   - when a running app trial ends (however little of it is left);
@@ -220,11 +280,17 @@ export type PlatformCheckoutOfferInput = PlatformOfferHistoryInput & {
  *   - now, when the trial was used and is over.
  * That is always at least 30 days away, well past Stripe's 48-hour minimum.
  *
- * Free month used: no fresh time at all. The only trial is the rest of a running app
- * trial (the Stripe trial then ends exactly when the app trial does), checked before
- * any subscription history: an owner mid-trial who subscribes facility 1 and then
- * facility 2 must not be charged for facility 2 before the app trial ends. With under
- * 48 hours (plus margin) left, Stripe cannot hold the trial and there is none.
+ * Free month used: no fresh time at all. The only trial is the rest of time the owner
+ * already has, checked before any subscription history, so a second facility is not
+ * charged before the owner's first charge:
+ *   - while the owner's card-backed trial runs (their free month, on another facility or
+ *     on the account): exactly its end, never later. The new facility's first charge is
+ *     when that free month ends, as on the account path, where an added facility joins
+ *     the trialing subscription;
+ *   - otherwise the rest of a running app trial (the Stripe trial then ends exactly when
+ *     the app trial does).
+ * With under 48 hours (plus margin) left, Stripe cannot hold the trial and there is none.
+ * Nothing further is used up: `firstMonthFree` stays false.
  */
 function decideTrial(input: PlatformCheckoutOfferInput, history: PlatformOfferHistory): PlatformCheckoutTrialDecision {
   const status = str(input.account.subscriptionStatus);
@@ -255,16 +321,32 @@ function decideTrial(input: PlatformCheckoutOfferInput, history: PlatformOfferHi
     };
   }
 
-  if (appTrialRunning && remainingMs >= STRIPE_CHECKOUT_MIN_TRIAL_END_LEAD_MS + TRIAL_END_SAFETY_MARGIN_MS) {
+  // The owner's running free month decides when one is running (it ends after the app
+  // trial it follows); otherwise the rest of a running app trial.
+  const cardTrialEndMs = runningCardTrialEndMs(input);
+  const alignToFreeMonth = cardTrialEndMs !== null;
+  const alignEndMs = alignToFreeMonth ? cardTrialEndMs : appTrialRunning ? appTrialEndMs : null;
+  if (alignEndMs !== null) {
+    if (alignEndMs - input.nowMs >= STRIPE_CHECKOUT_MIN_TRIAL_END_LEAD_MS + TRIAL_END_SAFETY_MARGIN_MS) {
+      return alignToFreeMonth
+        ? {
+            kind: 'align_to_free_month',
+            trialEndSeconds: Math.floor(alignEndMs / 1000),
+            reason: "free month used; the owner's free month is still running, Stripe trial ends when it does",
+          }
+        : {
+            kind: 'align_to_app_trial',
+            trialEndSeconds: Math.floor(alignEndMs / 1000),
+            reason: 'free month used; app trial still running, Stripe trial ends when it does',
+          };
+    }
+    // Stripe cannot hold a trial this short. The owner loses under two days of it.
     return {
-      kind: 'align_to_app_trial',
-      trialEndSeconds: Math.floor(appTrialEndMs! / 1000),
-      reason: 'free month used; app trial still running, Stripe trial ends when it does',
+      kind: 'no_trial',
+      reason: alignToFreeMonth
+        ? "free month used; the owner's free month ends in under 48 hours"
+        : 'free month used; app trial ends in under 48 hours',
     };
-  }
-  if (appTrialRunning) {
-    // Stripe cannot hold a trial this short. The owner loses under two days of trial.
-    return { kind: 'no_trial', reason: 'free month used; app trial ends in under 48 hours' };
   }
   if (history.hadPlatformSubscription) {
     return { kind: 'no_trial', reason: 'owner already had a platform subscription' };
@@ -286,6 +368,7 @@ export function platformCheckoutTrialSubscriptionData(decision: PlatformCheckout
   switch (decision.kind) {
     case 'free_month':
     case 'align_to_app_trial':
+    case 'align_to_free_month':
       return { trial_end: decision.trialEndSeconds };
     case 'no_trial':
       return {};

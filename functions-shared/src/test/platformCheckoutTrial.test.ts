@@ -221,12 +221,13 @@ test('pastDue account with an old trial end: no fresh trial, no free month', () 
   assert.equal(offer.firstMonthFree, false);
 });
 
-test('free month used, app trial still running (second facility): trial_end = app trial end, no free month', () => {
+test('free month used, app trial still running, no free month running: trial_end = app trial end, no free month', () => {
   const end = NOW + 15 * DAY;
   const offer = decidePlatformCheckoutOffer(
     input(
       { ...runningAppTrial(end), platformFirstMonthFreeUsedAt: ts(NOW - DAY) },
-      [{ stripePlatformSubscriptionId: 'sub_fake_fac1', platformSubscriptionStatus: 'trialing', platformSubscriptionTrialEnd: ts(end + FREE_MONTH) }],
+      // Facility 1 had the free month and was cancelled.
+      [{ platformSubscriptionStatus: 'cancelled', platformSubscriptionTrialEnd: ts(end + FREE_MONTH) }],
     ),
   );
   assert.equal(offer.history.hadPlatformSubscription, true);
@@ -237,6 +238,126 @@ test('free month used, app trial still running (second facility): trial_end = ap
     trialDecision: 'align_to_app_trial',
     [FIRST_MONTH_FREE_METADATA_KEY]: 'false',
   });
+});
+
+// --- A facility added while the owner's free month runs -----------------------------------
+
+const cardTrialFacility = (trialEndMs: number) => ({
+  stripePlatformSubscriptionId: 'sub_fake_fac1',
+  platformSubscriptionStatus: 'trialing',
+  platformSubscriptionTrialEnd: ts(trialEndMs),
+});
+
+test('second facility during the app trial: trial_end = the end of facility 1 free month, nothing more used', () => {
+  const end = NOW + 15 * DAY;
+  const offer = decidePlatformCheckoutOffer(
+    input({ ...runningAppTrial(end), platformFirstMonthFreeUsedAt: ts(NOW - DAY) }, [cardTrialFacility(end + FREE_MONTH), {}]),
+  );
+  assert.equal(offer.trial.kind, 'align_to_free_month');
+  assert.deepEqual(platformCheckoutTrialSubscriptionData(offer.trial), { trial_end: sec(end + FREE_MONTH) });
+  assert.equal(offer.firstMonthFree, false);
+  assert.deepEqual(platformCheckoutOfferMetadata(offer.trial), {
+    trialDecision: 'align_to_free_month',
+    [FIRST_MONTH_FREE_METADATA_KEY]: 'false',
+  });
+});
+
+test('second facility after the app trial, during facility 1 free month: trial_end = that free month end', () => {
+  const appTrialEnd = NOW - 2 * DAY;
+  const freeMonthEnd = appTrialEnd + FREE_MONTH;
+  const offer = decidePlatformCheckoutOffer(
+    input(
+      // The rollup keeps the account `trialing`, with the app trial end, while facility 1 is in its free month.
+      {
+        subscriptionStatus: 'trialing',
+        subscriptionTrialEnd: ts(appTrialEnd),
+        platformTrialUsedAt: ts(appTrialEnd - 30 * DAY),
+        platformFirstMonthFreeUsedAt: ts(NOW - 10 * DAY),
+      },
+      [cardTrialFacility(freeMonthEnd), {}],
+    ),
+  );
+  assert.equal(offer.trial.kind, 'align_to_free_month');
+  assert.deepEqual(platformCheckoutTrialSubscriptionData(offer.trial), { trial_end: sec(freeMonthEnd) });
+  assert.equal(offer.firstMonthFree, false);
+});
+
+test('never later than the running free month: the latest running card trial, not a fresh one', () => {
+  const freeMonthEnd = NOW + 20 * DAY;
+  const offer = decidePlatformCheckoutOffer(
+    input(
+      { subscriptionStatus: 'trialing', subscriptionTrialEnd: ts(NOW - 10 * DAY), platformFirstMonthFreeUsedAt: ts(NOW - 10 * DAY) },
+      [
+        // Facility 2, aligned earlier: ends with the free month.
+        { ...cardTrialFacility(freeMonthEnd), stripePlatformSubscriptionId: 'sub_fake_fac2' },
+        cardTrialFacility(freeMonthEnd),
+        // Not a running card-backed trial: ignored.
+        { ...cardTrialFacility(NOW + 90 * DAY), platformSubscriptionStatus: 'active' },
+        { platformSubscriptionStatus: 'trialing', platformSubscriptionTrialEnd: ts(NOW + 90 * DAY) },
+        { ...cardTrialFacility(NOW + 90 * DAY), stripePlatformSubscriptionId: '' },
+        cardTrialFacility(NOW - HOUR),
+      ],
+    ),
+  );
+  assert.equal(offer.trial.kind, 'align_to_free_month');
+  assert.deepEqual(platformCheckoutTrialSubscriptionData(offer.trial), { trial_end: sec(freeMonthEnd) });
+});
+
+test('free month running on the account (account-level subscription): a facility checkout aligns to its end', () => {
+  const freeMonthEnd = NOW + 25 * DAY;
+  const offer = decidePlatformCheckoutOffer(
+    input({
+      subscriptionStatus: 'trialing',
+      stripeSubscriptionId: 'sub_fake_account',
+      subscriptionTrialEnd: ts(freeMonthEnd),
+      platformTrialUsedAt: ts(NOW - 20 * DAY),
+      platformFirstMonthFreeUsedAt: ts(NOW - 5 * DAY),
+    }),
+  );
+  assert.equal(offer.trial.kind, 'align_to_free_month');
+  assert.deepEqual(platformCheckoutTrialSubscriptionData(offer.trial), { trial_end: sec(freeMonthEnd) });
+  assert.equal(offer.firstMonthFree, false);
+});
+
+test('the owner free month ending within 48h10m: no trial (Stripe cannot hold it)', () => {
+  const lead = STRIPE_CHECKOUT_MIN_TRIAL_END_LEAD_MS + TRIAL_END_SAFETY_MARGIN_MS;
+  const account = { subscriptionStatus: 'trialing', subscriptionTrialEnd: ts(NOW - 28 * DAY), platformFirstMonthFreeUsedAt: ts(NOW - 28 * DAY) };
+  for (const left of [HOUR, 47 * HOUR, STRIPE_CHECKOUT_MIN_TRIAL_END_LEAD_MS, lead - 1]) {
+    const offer = decidePlatformCheckoutOffer(input(account, [cardTrialFacility(NOW + left)]));
+    assert.equal(offer.trial.kind, 'no_trial', `${left}ms left`);
+    assert.deepEqual(platformCheckoutTrialSubscriptionData(offer.trial), {});
+  }
+  const atMargin = decidePlatformCheckoutOffer(input(account, [cardTrialFacility(NOW + lead)]));
+  assert.equal(atMargin.trial.kind, 'align_to_free_month');
+  assert.ok(platformCheckoutTrialSubscriptionData(atMargin.trial).trial_end! * 1000 - NOW >= STRIPE_CHECKOUT_MIN_TRIAL_END_LEAD_MS);
+});
+
+// --- The owner's other accounts --------------------------------------------------------------
+
+test('another account of the same owner that used the offer blocks it on this one', () => {
+  const fresh = { subscriptionStatus: 'pendingApproval' };
+  // Had a subscription there, or used the free month there: no trial, no free month.
+  for (const other of [
+    { subscriptionStatus: 'cancelled', stripeSubscriptionIdClearedFrom: 'sub_fake_old' },
+    { subscriptionStatus: 'active', stripeSubscriptionId: 'sub_fake_other' },
+    { subscriptionStatus: 'cancelled', subscriptionCanceledAt: ts(NOW - 5 * DAY) },
+    { subscriptionStatus: 'cancelled', platformFirstMonthFreeUsedAt: ts(NOW - 50 * DAY) },
+  ]) {
+    const offer = decidePlatformCheckoutOffer(input(fresh, [], { otherAccounts: [other] }));
+    assert.equal(offer.trial.kind, 'no_trial', JSON.stringify(other));
+    assert.equal(offer.firstMonthFree, false, JSON.stringify(other));
+    assert.equal(offer.history.firstMonthFreeUsed, true);
+    assert.ok(offer.history.reasons.some((r) => /^O[12] /.test(r)), JSON.stringify(offer.history.reasons));
+  }
+  // Used only the trial there: the free month from now, not trial + free month.
+  const trialOnly = assertFreeMonth(
+    input(fresh, [], { otherAccounts: [{ subscriptionStatus: 'cancelled', platformTrialUsedAt: ts(NOW - 40 * DAY) }] }),
+    NOW,
+  );
+  assert.ok(trialOnly.history.reasons.includes('O3 another account of this owner used the trial'));
+  assertFreeMonth(input(fresh, [], { otherAccounts: [{ subscriptionStatus: 'cancelled', subscriptionTrialEnd: ts(NOW - 10 * DAY) }] }), NOW);
+  // An untouched duplicate (pending, nothing used) changes nothing.
+  assertFreeMonth(input(fresh, [], { otherAccounts: [{ subscriptionStatus: 'pendingApproval' }, {}] }), NOW + 30 * DAY);
 });
 
 test('free month used, app trial with under 48 hours left: no trial', () => {

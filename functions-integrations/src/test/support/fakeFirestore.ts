@@ -81,16 +81,21 @@ class FakeQuery {
     private readonly firestore: FakeFirestore,
     private readonly collection: string,
     private readonly filters: Array<[string, unknown]>,
+    private readonly max: number | null = null,
   ) {}
   where(field: string, op: string, value: unknown): FakeQuery {
     if (op !== '==') throw new Error(`fakeFirestore: unsupported operator ${op}`);
-    return new FakeQuery(this.firestore, this.collection, [...this.filters, [field, value]]);
+    return new FakeQuery(this.firestore, this.collection, [...this.filters, [field, value]], this.max);
+  }
+  limit(n: number): FakeQuery {
+    return new FakeQuery(this.firestore, this.collection, this.filters, n);
   }
   async get() {
-    const docs = this.firestore
+    const matching = this.firestore
       .list(this.collection)
       .filter(([, data]) => this.filters.every(([f, v]) => data[f] === v))
       .map(([id, data]) => new FakeSnapshot(id, new FakeDocRef(this.firestore, `${this.collection}/${id}`, id), data));
+    const docs = this.max === null ? matching : matching.slice(0, this.max);
     return { docs, empty: docs.length === 0, size: docs.length };
   }
 }

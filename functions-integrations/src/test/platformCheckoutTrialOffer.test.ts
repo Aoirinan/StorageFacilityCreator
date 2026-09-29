@@ -313,7 +313,7 @@ test('facility: subscribe, webhook, cancel, resubscribe -> no trial and no free 
   assert.deepEqual(offerOf(second), NOTHING);
 });
 
-test('facility: second facility during a running app trial -> app trial end only, no second free month', async () => {
+test('facility: second facility during a running app trial -> the end of facility 1 free month, no second free month', async () => {
   const end = EXAMPLE_APP_TRIAL_END;
   const w = world(runningAppTrial(end), { fac_fake_1: {}, fac_fake_2: {} });
 
@@ -332,27 +332,120 @@ test('facility: second facility during a running app trial -> app trial end only
     end,
     'a facility subscription leaves the account app trial end alone',
   );
+  const markersAfterFirst = { trial: account.platformTrialUsedAt, freeMonth: account.platformFirstMonthFreeUsedAt };
 
-  // Facility 2, still inside the app trial: not charged before the app trial ends, no free month.
+  // Facility 2, still inside the app trial: first charged when the free month ends, like
+  // facility 1 (and like a facility added on the account path). No second free month.
   const second = await facilityCheckout(w, 'fac_fake_2');
-  assert.deepEqual(offerOf(second), { trial_end: sec(end), trial_period_days: undefined, discounts: undefined, firstMonthFree: 'false' });
+  assert.deepEqual(offerOf(second), {
+    trial_end: sec(EXAMPLE_FREE_MONTH_END),
+    trial_period_days: undefined,
+    discounts: undefined,
+    firstMonthFree: 'false',
+  });
+  assert.equal(second.subscription_data?.metadata?.trialDecision, 'align_to_free_month');
+  assert.equal(second.metadata?.firstMonthFree, 'false');
+
+  // Its webhook uses up nothing new: the markers keep their first values.
+  w.subscriptions.set('sub_fake_fac2', subscriptionFrom('sub_fake_fac2', second));
+  await updateFacilityFromPlatformSubscription('fac_fake_2', 'sub_fake_fac2', { db: w.deps.db, stripe: w.stripe });
+  const after = w.db.read(`facilityCreatorAccounts/${ACCOUNT}`)!;
+  assert.deepEqual({ trial: after.platformTrialUsedAt, freeMonth: after.platformFirstMonthFreeUsedAt }, markersAfterFirst);
+  assert.equal(
+    (w.db.read('facilities/fac_fake_2')!.platformSubscriptionTrialEnd as admin.firestore.Timestamp).toMillis(),
+    EXAMPLE_FREE_MONTH_END,
+  );
 });
 
-test('facility: second facility after the app trial, during facility 1 free month -> no trial', async () => {
-  const appTrialEnd = NOW - 2 * DAY;
-  const w = world(
-    // Rollup keeps the account `trialing` while facility 1 is in its free month.
-    { subscriptionStatus: 'trialing', subscriptionTrialEnd: ts(appTrialEnd), platformTrialUsedAt: ts(appTrialEnd - 30 * DAY), platformFirstMonthFreeUsedAt: ts(NOW - 10 * DAY) },
+/** Per-facility billing after the app trial: facility 1 is in its free month, the account rolls it up as trialing. */
+function freeMonthRunningWorld(freeMonthEndMs: number) {
+  const appTrialEnd = freeMonthEndMs - FREE_MONTH;
+  return world(
+    {
+      subscriptionStatus: 'trialing',
+      subscriptionTrialEnd: ts(appTrialEnd),
+      platformTrialUsedAt: ts(appTrialEnd - 30 * DAY),
+      platformFirstMonthFreeUsedAt: ts(NOW - 10 * DAY),
+    },
     {
       fac_fake_1: {
         stripePlatformSubscriptionId: 'sub_fake_fac1',
         platformSubscriptionStatus: 'trialing',
-        platformSubscriptionTrialEnd: ts(appTrialEnd + FREE_MONTH),
+        platformSubscriptionTrialEnd: ts(freeMonthEndMs),
       },
       fac_fake_2: {},
     },
   );
+}
+
+test('facility: second facility after the app trial, during facility 1 free month -> trial until that free month ends', async () => {
+  const freeMonthEnd = NOW - 2 * DAY + FREE_MONTH;
+  const params = await facilityCheckout(freeMonthRunningWorld(freeMonthEnd), 'fac_fake_2');
+  assert.deepEqual(offerOf(params), {
+    trial_end: sec(freeMonthEnd),
+    trial_period_days: undefined,
+    discounts: undefined,
+    firstMonthFree: 'false',
+  });
+  assert.equal(params.subscription_data?.metadata?.trialDecision, 'align_to_free_month');
+  assert.equal(params.subscription_data?.metadata?.freeMonthTrialEnd, undefined);
+});
+
+test('facility: second facility when facility 1 free month ends within 48h10m -> no trial', async () => {
+  const params = await facilityCheckout(freeMonthRunningWorld(NOW + 48 * HOUR + 5 * 60 * 1000), 'fac_fake_2');
+  assert.deepEqual(offerOf(params), NOTHING);
+  const later = await facilityCheckout(freeMonthRunningWorld(NOW + 48 * HOUR + 10 * 60 * 1000), 'fac_fake_2');
+  assert.equal(later.subscription_data?.trial_end, sec(NOW + 48 * HOUR + 10 * 60 * 1000));
+});
+
+test('facility: second facility after facility 1 free month ended (now active) -> no trial, charged now', async () => {
+  const w = freeMonthRunningWorld(NOW - DAY);
+  await w.deps.db.collection('facilities').doc('fac_fake_1').update({ platformSubscriptionStatus: 'active' });
   assert.deepEqual(offerOf(await facilityCheckout(w, 'fac_fake_2')), NOTHING);
+});
+
+// --- The owner's other accounts and facilities -------------------------------------------
+
+test("owner history: another account of the same owner that used the free month blocks it here", async () => {
+  const w = world({ subscriptionStatus: 'pendingApproval' });
+  // The owner's earlier account (for example deleted and made again, or a duplicate).
+  await w.deps.db.collection('facilityCreatorAccounts').doc('acct_fake_old').set({
+    ownerUid: UID,
+    subscriptionStatus: 'cancelled',
+    stripeSubscriptionIdClearedFrom: 'sub_fake_old',
+    platformTrialUsedAt: ts(NOW - 90 * DAY),
+    platformFirstMonthFreeUsedAt: ts(NOW - 60 * DAY),
+  });
+  // Someone else's account is not this owner's history.
+  await w.deps.db.collection('facilityCreatorAccounts').doc('acct_fake_other_owner').set({
+    ownerUid: 'uid_fake_someone_else',
+    subscriptionStatus: 'active',
+    stripeSubscriptionId: 'sub_fake_someone_else',
+  });
+  assert.deepEqual(offerOf(await accountCheckout(w)), NOTHING);
+  assert.deepEqual(offerOf(await facilityCheckout(w)), NOTHING);
+});
+
+test("owner history: another owner's used offer, or an untouched duplicate, changes nothing", async () => {
+  const w = world({ subscriptionStatus: 'pendingApproval' });
+  await w.deps.db.collection('facilityCreatorAccounts').doc('acct_fake_other_owner').set({
+    ownerUid: 'uid_fake_someone_else',
+    subscriptionStatus: 'cancelled',
+    platformFirstMonthFreeUsedAt: ts(NOW - 60 * DAY),
+  });
+  await w.deps.db.collection('facilityCreatorAccounts').doc('acct_fake_dup').set({ ownerUid: UID, subscriptionStatus: 'pendingApproval' });
+  assertFreeMonthSession(await accountCheckout(w), NOW + 30 * DAY);
+});
+
+test("owner history: a facility the owner owns under another account counts", async () => {
+  const w = world({ subscriptionStatus: 'pendingApproval' });
+  await w.deps.db.collection('facilities').doc('fac_fake_elsewhere').set({
+    ownerUid: UID,
+    facilityCreatorAccountId: 'acct_fake_old',
+    platformSubscriptionStatus: 'cancelled',
+    platformSubscriptionTrialEnd: ts(NOW - 40 * DAY),
+  });
+  assert.deepEqual(offerOf(await facilityCheckout(w)), NOTHING);
 });
 
 // --- Webhook writers ---------------------------------------------------------------------
