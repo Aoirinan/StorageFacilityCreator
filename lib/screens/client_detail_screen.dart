@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../models/tenant_model.dart';
 import '../models/dnr_model.dart';
 import '../models/payment_model.dart';
+import 'package:sfcapp/models/security_deposit_model.dart';
 import '../models/contract_model.dart';
 import '../models/provider_params.dart';
 import '../providers/contract_provider.dart' as contractProv;
@@ -21,6 +22,7 @@ import '../services/reminder_service.dart';
 import '../services/gate_access_service.dart';
 import '../models/reminder_model.dart';
 import '../models/gate_access_model.dart';
+import 'package:sfcapp/providers/facility_provider.dart';
 import '../providers/payment_provider.dart';
 import '../providers/tenant_provider.dart';
 import '../providers/ledger_provider.dart';
@@ -44,6 +46,7 @@ import 'package:intl/intl.dart';
 import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
 import 'package:sfcapp/widgets/move_out_action.dart';
 import 'package:sfcapp/widgets/payment_history_summary.dart';
+import 'package:sfcapp/widgets/security_deposit_dialogs.dart';
 import 'package:sfcapp/widgets/tenant_contact_edit_dialog.dart';
 import 'package:sfcapp/widgets/tenant_prev_next.dart';
 import 'package:sfcapp/screens/tenant_past_history_dialog.dart';
@@ -837,6 +840,11 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
               .value ??
           false,
     );
+    // The facility's usual deposit, prefilled in the Security deposit
+    // dialog. Watched here so it has loaded by the time the pencil is
+    // pressed; null until then, or when the facility has none.
+    final defaultSecurityDeposit = SecurityDeposit.facilityDefault(
+        ref.watch(facilityProvider(tenant.facilityId)).value?.billingSettings);
 
     return SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
@@ -1253,6 +1261,18 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                         label: 'Payment Status',
                         value: tenant.isLate ? 'Late (${tenant.daysLate} days)' : 'Current',
                       ),
+                      // Held for the tenant, off the ledger: not in the
+                      // balance above or in Paid Through. Once settled it
+                      // is history and the pencil goes away.
+                      _buildInfoItem(
+                        context,
+                        icon: Icons.savings_outlined,
+                        label: 'Security Deposit',
+                        value: tenant.securityDeposit?.summary ?? 'None on file',
+                        onEdit: tenant.securityDeposit?.isHeld == false
+                            ? null
+                            : () => editSecurityDeposit(context, tenant, defaultAmount: defaultSecurityDeposit),
+                      ),
                       const SizedBox(height: 16),
                       _buildPaymentHistorySummary(tenant),
                       const SizedBox(height: 16),
@@ -1288,6 +1308,23 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                           ),
                         ),
                       ),
+                      // Apply the held deposit to what is owed, refund the
+                      // rest, or both. From here rather than only move-out:
+                      // a tenant with no contract has no Move out button.
+                      if (tenant.securityDeposit?.isHeld == true) ...[
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: () => settleSecurityDeposit(context, tenant),
+                            icon: const Icon(Icons.savings_outlined),
+                            label: const Text('Settle deposit'),
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),

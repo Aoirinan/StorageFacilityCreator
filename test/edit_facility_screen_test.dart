@@ -104,7 +104,10 @@ Future<GoRouter> _openEditFacility(
   _FakeEditActions actions, {
   _FakeWebsiteActions? websiteActions,
 }) async {
-  tester.view.physicalSize = const Size(1200, 2400);
+  // Tall enough for the whole form: scrollUntilVisible below never scrolls,
+  // because every field of the SingleChildScrollView is already in the tree,
+  // so a tap lands only on what fits in this canvas.
+  tester.view.physicalSize = const Size(1200, 3000);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   final website = websiteActions ?? _FakeWebsiteActions(actions.facilityDoc);

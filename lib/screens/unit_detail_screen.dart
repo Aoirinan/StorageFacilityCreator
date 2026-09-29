@@ -885,7 +885,24 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Unassign Tenant'),
-        content: Text('Are you sure you want to unassign the tenant from unit ${_unit!.unitNumber}?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Are you sure you want to unassign the tenant from unit ${_unit!.unitNumber}?'),
+            // Unassign posts no charges and no refund, so the deposit the
+            // facility still holds is only mentioned here.
+            if (_tenant?.securityDeposit?.isHeld == true) ...[
+              const SizedBox(height: 12),
+              Text(
+                'Security deposit held: '
+                '\$${_tenant!.securityDeposit!.amount.toStringAsFixed(2)}'
+                " — not included above; settle it on the tenant's page.",
+                style: const TextStyle(color: AppTheme.textSecondary),
+              ),
+            ],
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),

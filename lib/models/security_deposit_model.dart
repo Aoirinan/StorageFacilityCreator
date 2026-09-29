@@ -1,6 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-import 'payment_model.dart';
+import 'package:sfcapp/models/payment_model.dart';
 
 /// Whether the facility still holds the deposit, or has given it back
 /// (applied to the balance, refunded, or both).
@@ -75,6 +75,19 @@ class SecurityDeposit {
   /// [day] as the calendar day it names, at noon UTC (see [receivedDate]).
   static DateTime noonUtc(DateTime day) =>
       DateTime.utc(day.year, day.month, day.day, 12);
+
+  /// The facility's usual deposit, `billingSettings.securityDeposit` (the
+  /// key the online move-in quote already falls back to), for prefilling
+  /// the dialogs. Null when unset, blank or not above $0.
+  static double? facilityDefault(Map<String, dynamic>? billingSettings) {
+    final value = billingSettings?['securityDeposit'];
+    if (value is num && value > 0) return toCents(value);
+    if (value is String) {
+      final parsed = double.tryParse(value.trim());
+      if (parsed != null && parsed > 0) return toCents(parsed);
+    }
+    return null;
+  }
 
   static double? _amount(Object? value) =>
       value is num ? toCents(value) : null;

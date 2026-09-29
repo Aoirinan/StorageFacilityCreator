@@ -1,7 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'occupant_model.dart';
 import 'address_model.dart';
-import 'security_deposit_model.dart';
+import 'package:sfcapp/models/security_deposit_model.dart';
 import 'tenant_autopay_model.dart';
 import 'tenant_stripe_model.dart';
 

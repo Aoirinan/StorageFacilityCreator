@@ -2,10 +2,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
-import '../models/ledger_entry_model.dart';
-import '../models/payment_model.dart';
-import '../models/security_deposit_model.dart';
-import 'audit_service.dart';
+import 'package:sfcapp/models/ledger_entry_model.dart';
+import 'package:sfcapp/models/payment_model.dart';
+import 'package:sfcapp/models/security_deposit_model.dart';
+import 'package:sfcapp/services/audit_service.dart';
 
 /// A refusal the owner can read as it is (shown in a snackbar).
 class SecurityDepositException implements Exception {

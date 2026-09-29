@@ -9,6 +9,8 @@ import 'package:sfcapp/constants/location_options.dart';
 import 'package:sfcapp/models/dnr_model.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/lead_source_model.dart';
+import 'package:sfcapp/models/payment_model.dart';
+import 'package:sfcapp/models/security_deposit_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/providers/tenant_provider.dart';
@@ -77,6 +79,14 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
   List<DNRModel>? _dnrMatches;
   bool _smsConsent = false; // SMS consent checkbox state
   SmsConsentMethod? _smsConsentMethod;
+
+  // "Security deposit received": a deposit taken with the move-in, held for
+  // the tenant. Its amount is prefilled from the facility default the first
+  // time the box is ticked.
+  bool _securityDepositReceived = false;
+  final _securityDepositAmountController = TextEditingController();
+  final _securityDepositReferenceController = TextEditingController();
+  PaymentMethod _securityDepositMethod = PaymentMethod.cash;
 
   final Random _random = Random.secure();
 
@@ -883,6 +893,118 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
     );
   }
 
+  /// The Security deposit received section: off by default, and when on the
+  /// amount, how it was paid and a check or reference number. Saved on the
+  /// tenant as held (never on the ledger; see SecurityDeposit).
+  Widget _buildSecurityDepositSection() {
+    return Card(
+      margin: const EdgeInsets.only(top: 16),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Checkbox(
+                  key: const Key('create-tenant-security-deposit'),
+                  value: _securityDepositReceived,
+                  onChanged: _isLoading
+                      ? null
+                      : (v) {
+                          final on = v ?? false;
+                          if (on && _securityDepositAmountController.text.trim().isEmpty) {
+                            final facility = ref.read(facilityProvider(_selectedFacilityId)).value;
+                            final fallback = SecurityDeposit.facilityDefault(facility?.billingSettings);
+                            if (fallback != null) {
+                              _securityDepositAmountController.text = fallback.toStringAsFixed(2);
+                            }
+                          }
+                          setState(() => _securityDepositReceived = on);
+                        },
+                ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('Security deposit received', style: TextStyle(fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Held for the tenant and shown on their page. It is kept off the ledger, so it does not count toward rent or the balance.',
+                        style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            if (_securityDepositReceived) ...[
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _securityDepositAmountController,
+                decoration: const InputDecoration(
+                  labelText: 'Deposit amount *',
+                  hintText: '25.00',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.savings_outlined),
+                ),
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                validator: (value) {
+                  if (!_securityDepositReceived) return null;
+                  final amount = double.tryParse((value ?? '').trim());
+                  if (amount == null || amount <= 0) {
+                    return 'Enter the deposit amount, or untick the box';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<PaymentMethod>(
+                initialValue: _securityDepositMethod,
+                decoration: const InputDecoration(
+                  labelText: 'Method',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.payments_outlined),
+                ),
+                items: manualPaymentMethods
+                    .map((m) => DropdownMenuItem(value: m, child: Text(m.displayName)))
+                    .toList(),
+                onChanged: _isLoading ? null : (m) => setState(() => _securityDepositMethod = m ?? PaymentMethod.cash),
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _securityDepositReferenceController,
+                maxLength: 100,
+                decoration: const InputDecoration(
+                  labelText: 'Check or reference #',
+                  counterText: '',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.tag),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// The deposit to save with the tenant, or null when none was received.
+  /// Received today: the tenant is being created as they move in.
+  SecurityDeposit? _securityDepositInput() {
+    if (!_securityDepositReceived) return null;
+    final amount = double.tryParse(_securityDepositAmountController.text.trim());
+    if (amount == null || amount <= 0) return null;
+    final reference = _securityDepositReferenceController.text.trim();
+    return SecurityDeposit(
+      amount: amount,
+      receivedDate: SecurityDeposit.noonUtc(DateTime.now()),
+      method: _securityDepositMethod,
+      reference: reference.isEmpty ? null : reference,
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -908,6 +1030,8 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
     _idCountryController.dispose();
     _portalAccessCodeController.dispose();
     _portalWelcomeController.dispose();
+    _securityDepositAmountController.dispose();
+    _securityDepositReferenceController.dispose();
     for (final contact in _contactControllers) {
       contact.dispose();
     }
@@ -1003,6 +1127,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
         leadSource: _selectedLeadSource,
         smsOptInDate: _smsConsent ? DateTime.now() : null,
         smsConsentMethod: _smsConsent ? _smsConsentMethod : null,
+        securityDeposit: _securityDepositInput(),
       );
       
       if (kDebugMode) {
@@ -1429,6 +1554,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
           _buildVehiclesSection(),
           _buildPortalAccessSection(),
           _buildAutopaySection(),
+          _buildSecurityDepositSection(),
 
           const SizedBox(height: 16),
 
