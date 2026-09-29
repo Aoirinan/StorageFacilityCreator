@@ -48,6 +48,14 @@ String? safeLogoUrl(String? url) {
 /// "Instance of 'Address'" on the invoice; this uses [Address.formattedAddress],
 /// which leaves out the parts that are blank.
 String? tenantPrintAddress(List<Address> addresses) {
+  final chosen = tenantPrintAddressEntry(addresses);
+  return chosen == null ? null : _clean(chosen.formattedAddress);
+}
+
+/// The entry [tenantPrintAddress] prints, or null. The tenant page's
+/// Mailing Address row edits this same entry, so what the owner sees there
+/// is what the bill prints.
+Address? tenantPrintAddressEntry(List<Address> addresses) {
   final usable = addresses
       .where((a) =>
           a.street1.trim().isNotEmpty ||
@@ -62,11 +70,10 @@ String? tenantPrintAddress(List<Address> addresses) {
     return null;
   }
 
-  final chosen = pick((a) => a.isPrimary) ??
+  return pick((a) => a.isPrimary) ??
       pick((a) => a.type == AddressType.billing) ??
       pick((a) => a.type == AddressType.mailing) ??
       usable.first;
-  return _clean(chosen.formattedAddress);
 }
 
 /// A CSS length in points for a layout number, e.g. `64pt`. The layout's
