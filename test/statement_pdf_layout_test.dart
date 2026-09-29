@@ -217,6 +217,56 @@ List<_Line> _textLines(String pdf) {
   return lines;
 }
 
+/// Every page of [pdf] as [_textLines], in page order. The pdf package
+/// writes one content stream per page, in page order, and with no logo the
+/// page contents are the only streams that hold text.
+List<List<_Line>> _pages(String pdf) => [
+      for (final m in RegExp(r'stream\r?\n(.*?)endstream', dotAll: true)
+          .allMatches(pdf))
+        if (m.group(1)!.contains('TJ')) _textLines(m.group(1)!),
+    ];
+
+int _pageCount(String pdf) =>
+    RegExp(r'/Type\s*/Page\b(?!s)').allMatches(pdf).length;
+
+/// A transactions table row from [_monthlyHistory], or a balance forward.
+final _tableRow = RegExp(
+    r'^[A-Z][a-z]{2} \d{1,2}, \d{4} (Monthly rent|Check payment|Balance forward)');
+
+int _tableRows(List<_Line> page) =>
+    page.where((l) => _tableRow.hasMatch(l.text)).length;
+
+const _columnHeadings = 'Date Description Charges Payments Balance';
+
+/// [_mailedTenant] with a three-line mailing address, a phone and a unit:
+/// the account holder block of the statement that spilled its closing
+/// lines onto a second page.
+final _threeLineTenant = _mailedTenant.copyWith(addresses: [
+  Address(
+    id: 'a1',
+    type: AddressType.mailing,
+    street1: '12 Example Ave',
+    street2: 'Apt 3',
+    city: 'Anytown',
+    state: 'ND',
+    zipCode: '58999',
+    isPrimary: true,
+    createdAt: DateTime(2026, 1, 1),
+  ),
+]);
+
+/// [count] ledger rows of monthly history from January 2025: $144 rent on
+/// the 1st, then the check that paid it on the 5th, so an odd count ends on
+/// a rent charge and owes $144, an even one owes nothing.
+List<LedgerEntry> _monthlyHistory(int count) => [
+      for (var i = 0; i < count; i++)
+        i.isEven
+            ? _entry('r$i', LedgerEntryType.rentCharge, 144,
+                DateTime(2025, 1 + i ~/ 2, 1), 'Monthly rent')
+            : _entry('p$i', LedgerEntryType.payment, -144,
+                DateTime(2025, 1 + i ~/ 2, 5), 'Check payment'),
+    ];
+
 _Line _lineWith(List<_Line> lines, String text) =>
     lines.firstWhere((l) => l.text.contains(text),
         orElse: () => throw StateError('no line contains "$text" in:\n'
@@ -481,6 +531,141 @@ void main() {
       expect(statementBalanceLabel(null), 'Current Balance');
       expect(statementBalanceLabel(DateTime(2026, 9, 23)),
           'Balance as of Sep 23, 2026');
+    });
+  });
+
+  group('fitting the page', () {
+    test('17 rows of all history under a three-line address fit one page, '
+        'the bottom balance and closing lines with them', () async {
+      // 9 rent charges and 8 payments: the statement that used to print
+      // its bottom balance and "Thank you" alone on a second page.
+      final pdf = await _statementPdf(
+        entries: _monthlyHistory(17),
+        tenant: _threeLineTenant,
+        facility: _facility(),
+      );
+      expect(_pageCount(pdf), 1);
+      final pages = _pages(pdf);
+      expect(pages, hasLength(1));
+      final page = pages.single;
+
+      expect(_lineWith(page, 'Apt 3').y,
+          greaterThan(_lineWith(page, 'Anytown, ND 58999').y));
+      expect(_tableRows(page), 17);
+      final bottom = _lineWith(page, r'Current Balance: $144.00');
+      expect(bottom.y, lessThan(_lineWith(page, 'Sep 1, 2025 Monthly rent').y));
+      final thanks = _lineWith(page, 'Thank you for your business!');
+      expect(thanks.y, lessThan(bottom.y));
+      expect(_lineWith(page, 'Please make payment by the due date').y,
+          lessThan(thanks.y));
+      expect(_lineWith(page, 'Questions? Email us at').y, greaterThan(36));
+    });
+
+    test('a year of monthly history fits one page: 25 rows, or 24 and a '
+        'balance forward', () async {
+      final allHistory = await _statementPdf(
+        entries: _monthlyHistory(25),
+        tenant: _threeLineTenant,
+        facility: _facility(),
+      );
+      final period = await _statementPdf(
+        entries: [
+          // Unpaid before the period: the balance forward.
+          _entry('r-dec', LedgerEntryType.rentCharge, 144,
+              DateTime(2024, 12, 1), 'Monthly rent'),
+          ..._monthlyHistory(24),
+        ],
+        tenant: _threeLineTenant,
+        facility: _facility(),
+        startDate: DateTime(2025, 1, 1),
+        endDate: DateTime(2025, 12, 31),
+      );
+      for (final (pdf, balance) in [
+        (allHistory, r'Current Balance: $144.00'),
+        (period, r'Balance as of Dec 31, 2025: $144.00'),
+      ]) {
+        expect(_pageCount(pdf), 1, reason: balance);
+        final page = _pages(pdf).single;
+        expect(_tableRows(page), 25, reason: balance);
+        expect(_lineWith(page, balance).y,
+            greaterThan(_lineWith(page, 'Thank you for your business!').y));
+      }
+      expect(_lineWith(_pages(period).single, 'Balance forward').text,
+          contains(r'$144.00'));
+    });
+
+    test('a 60-row statement ends on a page with table rows above the '
+        'closing block, and each later page repeats the column headings',
+        () async {
+      final pdf = await _statementPdf(
+        entries: _monthlyHistory(60),
+        tenant: _threeLineTenant,
+        facility: _facility(),
+      );
+      final pages = _pages(pdf);
+      expect(pages.length, greaterThan(1));
+      expect(_pageCount(pdf), pages.length);
+
+      final last = pages.last;
+      expect(_tableRows(last), greaterThanOrEqualTo(1));
+      final bottom = _lineWith(last, r'Current Balance: $0.00');
+      expect(last.where((l) => _tableRow.hasMatch(l.text)).last.y,
+          greaterThan(bottom.y));
+      expect(_lineWith(last, 'Thank you for your business!').y,
+          lessThan(bottom.y));
+
+      // Every row once, the closing block only on the last page.
+      expect(pages.fold<int>(0, (n, p) => n + _tableRows(p)), 60);
+      for (final page in pages.take(pages.length - 1)) {
+        expect(_linesWith(page, 'Thank you for your business!'), 0);
+        expect(_linesWith(page, r'Current Balance: $'), 0);
+      }
+      for (final page in pages.skip(1)) {
+        expect(page.first.text, _columnHeadings);
+      }
+    });
+
+    test('whatever its length, the closing block never has a page to itself',
+        () async {
+      for (var n = 1; n <= 60; n++) {
+        final pages = _pages(await _statementPdf(
+          entries: _monthlyHistory(n),
+          tenant: _threeLineTenant,
+          facility: _facility(),
+        ));
+        final last = pages.last;
+        expect(_tableRows(last), greaterThanOrEqualTo(1), reason: '$n rows');
+        expect(_linesWith(last, 'Thank you for your business!'), 1,
+            reason: '$n rows');
+        expect(_linesWith(last, r'Current Balance: $'), 1, reason: '$n rows');
+        expect(pages.fold<int>(0, (sum, p) => sum + _tableRows(p)), n,
+            reason: '$n rows');
+      }
+    });
+
+    test('in a document with other statements (a bulk print), only pages '
+        'after a statement\'s own first page get the column headings on top',
+        () async {
+      final doc = pw.Document(compress: false);
+      for (final count in [45, 5]) {
+        doc.addPage(StatementService.buildStatementPage(
+          lines: buildStatementLines(_monthlyHistory(count)),
+          tenant: _threeLineTenant,
+          unitLabels: const ['B-14'],
+          facility: _facility(),
+          printedOn: DateTime(2026, 9, 28),
+        ));
+      }
+      final pages = _pages(latin1.decode(await doc.save()));
+      expect(pages, hasLength(3));
+      expect(pages[1].first.text, _columnHeadings);
+      // The second statement starts with its letterhead, and its only
+      // column headings are its table's own.
+      expect(pages[2].first.text, isNot(_columnHeadings));
+      expect(_linesWith(pages[2], _columnHeadings), 1);
+      expect(_lineWith(pages[2], _columnHeadings).y,
+          lessThan(_lineWith(pages[2], 'Account Holder:').y));
+      expect(_tableRows(pages[2]), 5);
     });
   });
 

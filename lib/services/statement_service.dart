@@ -211,9 +211,66 @@ class StatementService {
     final balanceForwardDate =
         startDate != null && lines.balanceForward != 0 ? startDate : null;
 
+    final dataRows = <pw.TableRow>[
+      if (balanceForwardDate != null)
+        pw.TableRow(
+          children: [
+            _buildTableCell(_formatDate(balanceForwardDate)),
+            _buildTableCell('Balance forward'),
+            _buildTableCell('', alignRight: true),
+            _buildTableCell('', alignRight: true),
+            _buildTableCell(
+              _formatCurrency(lines.balanceForward),
+              alignRight: true,
+              isBold: true,
+            ),
+          ],
+        ),
+      for (final row in lines.rows)
+        pw.TableRow(
+          children: [
+            _buildTableCell(_formatDate(row.date)),
+            _buildTableCell(row.description),
+            _buildTableCell(
+              row.charge > 0 ? _formatCurrency(row.charge) : '',
+              alignRight: true,
+            ),
+            _buildTableCell(
+              row.payment > 0 ? _formatCurrency(row.payment) : '',
+              alignRight: true,
+            ),
+            _buildTableCell(
+              _formatCurrency(row.runningBalance),
+              alignRight: true,
+              isBold: true,
+            ),
+          ],
+        ),
+    ];
+    // The last few rows travel with the closing block (see below); the rest
+    // form a table that may run over as many pages as it needs. With so few
+    // rows that none are left over, the header travels with them too.
+    final tailCount = dataRows.length < _rowsKeptWithClosing
+        ? dataRows.length
+        : _rowsKeptWithClosing;
+    final leadingRows = dataRows.sublist(0, dataRows.length - tailCount);
+    final tailRows = dataRows.sublist(dataRows.length - tailCount);
+    // This statement's first page. In a bulk print it is not the document's
+    // first page, so the page header compares pages, not page numbers.
+    PdfPage? firstPage;
+
     return pw.MultiPage(
       pageFormat: PdfPageFormat.letter,
-      margin: const pw.EdgeInsets.all(72),
+      margin: _pageMargin,
+      // The column headings again at the top of every page after the first,
+      // over whichever rows continue there: the rest of the table, or the
+      // last rows the closing block took with it.
+      header: (pw.Context context) {
+        firstPage ??= context.page;
+        return identical(context.page, firstPage)
+            ? pw.SizedBox(height: 0)
+            : _statementTable([_headerRow()]);
+      },
       build: (pw.Context context) {
         return [
           PdfLetterhead.build(
@@ -222,7 +279,7 @@ class StatementService {
             titleDetails: ['Date: ${_formatDate(printedOn)}'],
             logo: logo,
           ),
-          pw.SizedBox(height: 28),
+          pw.SizedBox(height: 14),
 
           // Account Information
           pw.Row(
@@ -239,7 +296,7 @@ class StatementService {
                         fontWeight: pw.FontWeight.bold,
                       ),
                     ),
-                    pw.SizedBox(height: 8),
+                    pw.SizedBox(height: 4),
                     pw.Text(tenant.name, style: const pw.TextStyle(fontSize: 11)),
                     for (final line in holderDetails)
                       pw.Text(line, style: const pw.TextStyle(fontSize: 10)),
@@ -262,7 +319,7 @@ class StatementService {
                         '${_formatDate(startDate)} - ${_formatDate(endDate ?? printedOn)}',
                         style: const pw.TextStyle(fontSize: 10),
                       ),
-                      pw.SizedBox(height: 8),
+                      pw.SizedBox(height: 6),
                     ],
                     pw.Text(
                       '$balanceLabel:',
@@ -285,118 +342,86 @@ class StatementService {
             ],
           ),
 
-          pw.SizedBox(height: 30),
+          pw.SizedBox(height: 14),
 
           // Transactions Table
-          pw.Table(
-            border: pw.TableBorder.all(),
-            children: [
-              // Header
-              pw.TableRow(
-                decoration: const pw.BoxDecoration(color: PdfColors.grey200),
-                children: [
-                  _buildTableCell('Date', isHeader: true),
-                  _buildTableCell('Description', isHeader: true),
-                  _buildTableCell('Charges', isHeader: true, alignRight: true),
-                  _buildTableCell('Payments', isHeader: true, alignRight: true),
-                  _buildTableCell('Balance', isHeader: true, alignRight: true),
-                ],
-              ),
-              if (balanceForwardDate != null)
-                pw.TableRow(
-                  children: [
-                    _buildTableCell(_formatDate(balanceForwardDate)),
-                    _buildTableCell('Balance forward'),
-                    _buildTableCell('', alignRight: true),
-                    _buildTableCell('', alignRight: true),
-                    _buildTableCell(
-                      _formatCurrency(lines.balanceForward),
-                      alignRight: true,
-                      isBold: true,
+          if (leadingRows.isNotEmpty)
+            _statementTable([_headerRow(), ...leadingRows]),
+
+          // The last rows, the balance again and the closing lines, kept on
+          // one page: a statement a little too long for its page used to
+          // put the bottom balance and "Thank you" on a page of their own.
+          // Moved over whole, they take a few rows with them, so the last
+          // page always shows where the ledger ends. This table has no
+          // header of its own (the page header gives it one on a new page);
+          // under the leading one the two read as one table.
+          pw.Inseparable(
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+              children: [
+                _statementTable([
+                  if (leadingRows.isEmpty) _headerRow(),
+                  ...tailRows,
+                ]),
+
+                // The balance again under the table: the owner reads the
+                // page top to bottom and the figure that matters is where
+                // the ledger ends, not back at the top.
+                pw.SizedBox(height: 8),
+                pw.Align(
+                  alignment: pw.Alignment.centerRight,
+                  child: pw.Text(
+                    '$balanceLabel: ${_formatCurrency(balance)}',
+                    style: pw.TextStyle(
+                      fontSize: 12,
+                      fontWeight: pw.FontWeight.bold,
+                      color: balanceColor,
                     ),
+                  ),
+                ),
+
+                pw.SizedBox(height: 12),
+
+                // Footer
+                pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.Text(
+                      'Thank you for your business!',
+                      style: pw.TextStyle(
+                        fontSize: 11,
+                        fontWeight: pw.FontWeight.bold,
+                      ),
+                    ),
+                    pw.SizedBox(height: 4),
+                    pw.Text(
+                      customMessage != null && customMessage.isNotEmpty
+                          ? customMessage
+                          : 'Please make payment by the due date to avoid late fees.',
+                      style: const pw.TextStyle(fontSize: 9),
+                    ),
+                    if (remitInFooter) ...[
+                      pw.SizedBox(height: 6),
+                      pw.Text(
+                        'Mail payments to:',
+                        style: pw.TextStyle(
+                          fontSize: 9,
+                          fontWeight: pw.FontWeight.bold,
+                        ),
+                      ),
+                      pw.Text(
+                        '${facility.name}\n$remitTo',
+                        style: const pw.TextStyle(fontSize: 9),
+                      ),
+                    ],
+                    pw.SizedBox(height: 4),
+                    if (facility.email != null)
+                      pw.Text(
+                        'Questions? Email us at ${facility.email}',
+                        style: const pw.TextStyle(fontSize: 9),
+                      ),
                   ],
                 ),
-              // Rows
-              ...lines.rows.map((row) => pw.TableRow(
-                children: [
-                  _buildTableCell(_formatDate(row.date)),
-                  _buildTableCell(row.description),
-                  _buildTableCell(
-                    row.charge > 0 ? _formatCurrency(row.charge) : '',
-                    alignRight: true,
-                  ),
-                  _buildTableCell(
-                    row.payment > 0 ? _formatCurrency(row.payment) : '',
-                    alignRight: true,
-                  ),
-                  _buildTableCell(
-                    _formatCurrency(row.runningBalance),
-                    alignRight: true,
-                    isBold: true,
-                  ),
-                ],
-              )),
-            ],
-          ),
-
-          // The balance again under the table: the owner reads the page top
-          // to bottom and the figure that matters is where the ledger ends,
-          // not back at the top.
-          pw.SizedBox(height: 12),
-          pw.Align(
-            alignment: pw.Alignment.centerRight,
-            child: pw.Text(
-              '$balanceLabel: ${_formatCurrency(balance)}',
-              style: pw.TextStyle(
-                fontSize: 12,
-                fontWeight: pw.FontWeight.bold,
-                color: balanceColor,
-              ),
-            ),
-          ),
-
-          pw.SizedBox(height: 18),
-
-          // Footer
-          pw.Padding(
-            padding: const pw.EdgeInsets.only(top: 20),
-            child: pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Text(
-                  'Thank you for your business!',
-                  style: pw.TextStyle(
-                    fontSize: 11,
-                    fontWeight: pw.FontWeight.bold,
-                  ),
-                ),
-                pw.SizedBox(height: 8),
-                pw.Text(
-                  customMessage != null && customMessage.isNotEmpty
-                      ? customMessage
-                      : 'Please make payment by the due date to avoid late fees.',
-                  style: const pw.TextStyle(fontSize: 9),
-                ),
-                if (remitInFooter) ...[
-                  pw.SizedBox(height: 8),
-                  pw.Text(
-                    'Mail payments to:',
-                    style: pw.TextStyle(
-                      fontSize: 9,
-                      fontWeight: pw.FontWeight.bold,
-                    ),
-                  ),
-                  pw.Text(
-                    '${facility.name}\n$remitTo',
-                    style: const pw.TextStyle(fontSize: 9),
-                  ),
-                ],
-                pw.SizedBox(height: 4),
-                if (facility.email != null)
-                  pw.Text(
-                    'Questions? Email us at ${facility.email}',
-                    style: const pw.TextStyle(fontSize: 9),
-                  ),
               ],
             ),
           ),
@@ -405,9 +430,47 @@ class StatementService {
     );
   }
 
+  /// Half an inch top and bottom, two thirds of an inch at the sides. With
+  /// the inch all round these replaced and roomier table rows, a statement
+  /// under a three-line address held about nine rows with its closing lines
+  /// on one page; now a year of monthly rent and payments fits.
+  static const _pageMargin =
+      pw.EdgeInsets.symmetric(horizontal: 48, vertical: 36);
+
+  /// Table rows moved to the next page with the closing block when it does
+  /// not fit under the table ([buildStatementPage]).
+  static const _rowsKeptWithClosing = 3;
+
+  /// Fixed widths for every column but Description, so the table the
+  /// closing block carries lines up with the one above it.
+  static const Map<int, pw.TableColumnWidth> _columnWidths = {
+    0: pw.FixedColumnWidth(70),
+    1: pw.FlexColumnWidth(),
+    2: pw.FixedColumnWidth(64),
+    3: pw.FixedColumnWidth(64),
+    4: pw.FixedColumnWidth(68),
+  };
+
+  static pw.Table _statementTable(List<pw.TableRow> rows) => pw.Table(
+        border: pw.TableBorder.all(width: 0.5),
+        columnWidths: _columnWidths,
+        children: rows,
+      );
+
+  static pw.TableRow _headerRow() => pw.TableRow(
+        decoration: const pw.BoxDecoration(color: PdfColors.grey200),
+        children: [
+          _buildTableCell('Date', isHeader: true),
+          _buildTableCell('Description', isHeader: true),
+          _buildTableCell('Charges', isHeader: true, alignRight: true),
+          _buildTableCell('Payments', isHeader: true, alignRight: true),
+          _buildTableCell('Balance', isHeader: true, alignRight: true),
+        ],
+      );
+
   static pw.Widget _buildTableCell(String text, {bool isHeader = false, bool alignRight = false, bool isBold = false}) {
     return pw.Padding(
-      padding: const pw.EdgeInsets.all(6),
+      padding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 1.5),
       child: pw.Text(
         text,
         style: pw.TextStyle(
