@@ -15,6 +15,7 @@
       allow create: if false;
 
       // Revoke pending links only. Marking paid should be done with Admin SDK (e.g. webhook).
+      // affectedKeys() so a revoke can't also add or remove other fields.
       allow update: if request.auth != null &&
         resource.data.facilityId is string &&
         isFacilityStaff(resource.data.facilityId) &&
@@ -24,7 +25,7 @@
         request.resource.data.amount == resource.data.amount &&
         resource.data.status == 'pending' &&
         request.resource.data.status == 'revoked' &&
-        request.resource.data.diff(resource.data).changedKeys().hasOnly(['status', 'revokedAt']);
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'revokedAt']);
 
       allow delete: if false;
     }
