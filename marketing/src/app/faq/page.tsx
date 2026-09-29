@@ -18,7 +18,7 @@ const FAQ_ITEMS = [
     category: 'Getting started',
     qas: [
       { q: 'Who is SFC built for?', a: 'SFC is built for independent and multi-facility self-storage operators who want a modern, focused operational platform rather than a broad enterprise suite with more modules than they need.' },
-      { q: 'Do you offer a free trial?', a: 'Yes. Every new subscription starts with a 30-day trial, and the first monthly invoice after the trial is free. You sign up directly in the app, with no sales call required.' },
+      { q: 'Do you offer a free trial?', a: 'Yes. Every new subscription starts with a 30-day trial, and the month after the trial is free too: it is added to your trial when you subscribe, and your first charge comes when that free month ends. You sign up directly in the app, with no sales call required.' },
       { q: 'Is a credit card required to request a demo?', a: 'No. You can request a demo and review fit before committing to a paid subscription. A payment method is collected when you start a trial in the app, but it is not charged until the trial and your free first month have ended.' },
       { q: 'Do you help with setup or migration?', a: 'Yes. Setup and migration guidance is available based on your existing data and workflow complexity.' },
     ],
