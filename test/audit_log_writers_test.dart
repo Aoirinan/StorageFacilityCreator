@@ -297,9 +297,7 @@ void main() {
 
   test('nothing in lib/ writes its own auditLogs map any more', () {
     // Every client write should go through AuditLogEntry.toFirestore, the one
-    // shape the rule lets in. The recurring-charges writer is left for PR #33,
-    // which retires its callers.
-    const allowed = {'lib/services/audit_service.dart#logRecurringChargeGenerated'};
+    // shape the rule lets in.
     final hand = <String>[];
     final files = Directory('lib')
         .listSync(recursive: true)
@@ -307,24 +305,55 @@ void main() {
         .where((f) => f.path.endsWith('.dart'));
     for (final file in files) {
       final path = file.path.replaceAll('\\', '/');
-      final source = file.readAsStringSync();
-      var at = source.indexOf("collection('auditLogs')");
-      while (at != -1) {
-        final end = source.indexOf(';', at);
-        final statement = source.substring(at, end == -1 ? source.length : end);
-        if (RegExp(r'\.(add|set)\(\s*\{').hasMatch(statement)) {
-          final method = RegExp(r'Future<void>\s+(\w+)\(')
-              .allMatches(source.substring(0, at))
-              .lastOrNull
-              ?.group(1);
-          hand.add('$path#$method');
-        }
-        at = source.indexOf("collection('auditLogs')", at + 1);
-      }
+      hand.addAll(_handWrittenAuditRows(file.readAsStringSync())
+          .map((method) => '$path#$method'));
     }
-    // The scan can see a hand-written row: drop this with the allowance once
-    // logRecurringChargeGenerated is deleted.
-    expect(hand, containsAll(allowed));
-    expect(hand.where((w) => !allowed.contains(w)), isEmpty);
+    expect(hand, isEmpty);
   });
+
+  test('the scan finds a hand-written auditLogs row', () {
+    // The last one lib/ had, logRecurringChargeGenerated, before it was
+    // deleted: without this the test above would pass on a scan that
+    // matched nothing.
+    const source = """
+  static Future<void> logRecurringChargeGenerated() async {
+    await _firestore
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('auditLogs')
+        .add({
+      'action': 'recurringcharge.generated',
+      'at': FieldValue.serverTimestamp(),
+    });
+  }
+
+  static Future<void> logEvent() async {
+    await _firestore
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('auditLogs')
+        .add(entry.toFirestore());
+  }
+""";
+    expect(_handWrittenAuditRows(source), ['logRecurringChargeGenerated']);
+  });
+}
+
+/// The methods in [source] that add or set an auditLogs row from a map
+/// literal instead of AuditLogEntry.toFirestore.
+List<String?> _handWrittenAuditRows(String source) {
+  final methods = <String?>[];
+  var at = source.indexOf("collection('auditLogs')");
+  while (at != -1) {
+    final end = source.indexOf(';', at);
+    final statement = source.substring(at, end == -1 ? source.length : end);
+    if (RegExp(r'\.(add|set)\(\s*\{').hasMatch(statement)) {
+      methods.add(RegExp(r'Future<void>\s+(\w+)\(')
+          .allMatches(source.substring(0, at))
+          .lastOrNull
+          ?.group(1));
+    }
+    at = source.indexOf("collection('auditLogs')", at + 1);
+  }
+  return methods;
 }

@@ -408,49 +408,6 @@ class AuditService {
     );
   }
 
-  /// Log recurring charge generation
-  static Future<void> logRecurringChargeGenerated({
-    required String facilityId,
-    required String tenantId,
-    required String entryId,
-    required double amount,
-    required String chargeType,
-    Map<String, dynamic>? details,
-  }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
-
-      if (kDebugMode) {
-        print('📝 Logging recurring charge generation: $entryId for tenant $tenantId');
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-        'action': 'recurringcharge.generated',
-        'actorUid': user.uid,
-        'actorEmail': user.email,
-        'targetId': entryId,
-        'entityType': 'ledgerEntry',
-        'entityId': entryId,
-        'tenantId': tenantId,
-        'details': {
-          'amount': amount,
-          'chargeType': chargeType,
-          ...?details,
-        },
-        'at': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error logging recurring charge generation: $e');
-      }
-    }
-  }
-
   /// Log invoice creation
   static Future<void> logInvoiceCreated({
     required String facilityId,
