@@ -28,6 +28,30 @@ function joinPath(...segments: string[]): string {
   return segments.filter(Boolean).join('/');
 }
 
+/** The query operators the fake applies. */
+const FILTER_OPS = new Set(['==', 'in', '<', '<=', '>', '>=']);
+
+/**
+ * How two field values order: Timestamps and Dates by time, numbers and
+ * strings as themselves. Null when they cannot be compared (different kinds),
+ * which Firestore treats as not matching a range filter.
+ */
+function compareValues(left: unknown, right: unknown): number | null {
+  const millis = (value: unknown): number | null => {
+    if (value instanceof Date) return value.getTime();
+    if (value && typeof (value as { toMillis?: unknown }).toMillis === 'function') {
+      return (value as { toMillis: () => number }).toMillis();
+    }
+    return null;
+  };
+  const leftMillis = millis(left);
+  const rightMillis = millis(right);
+  if (leftMillis !== null && rightMillis !== null) return leftMillis - rightMillis;
+  if (typeof left === 'number' && typeof right === 'number') return left - right;
+  if (typeof left === 'string' && typeof right === 'string') return left < right ? -1 : left > right ? 1 : 0;
+  return null;
+}
+
 /** Firestore's default for a transaction whose reads were written before it committed. */
 const MAX_TRANSACTION_ATTEMPTS = 5;
 
@@ -231,20 +255,41 @@ export class InMemoryFirestore {
     }
 
     /**
-     * A collection query. Equality (`==`) filters are applied; other
-     * operators, ordering and limits are ignored.
+     * A collection query. Filters `==`, `in`, `<`, `<=`, `>` and `>=` are
+     * applied (a doc without the field never matches, as in Firestore), then
+     * `orderBy`, `startAfter` (a doc snapshot) and `limit`. Unlike Firestore,
+     * a doc without an `orderBy` field is kept, sorted last, and with no
+     * `orderBy` docs come in the order they were first written, not by id.
      */
     class Query {
       // [path] is a collection's path, or '**' + '/' + {id} for every
       // collection named {id} (a collection-group query).
       constructor(
         readonly path: string,
-        private readonly equals: Array<[string, unknown]> = [],
+        private readonly filters: Array<{ field: string; op: string; value: unknown }> = [],
+        private readonly orders: Array<{ field: string | null; descending: boolean }> = [],
+        private readonly max: number | null = null,
+        private readonly after: string | null = null,
       ) {}
 
-      where(field?: string, op?: string, value?: unknown): Query {
-        if (field === undefined || op !== '==') return this;
-        return new Query(this.path, [...this.equals, [field, value]]);
+      private with(changes: {
+        filters?: Query['filters'];
+        orders?: Query['orders'];
+        max?: number | null;
+        after?: string | null;
+      }): Query {
+        return new Query(
+          this.path,
+          changes.filters ?? this.filters,
+          changes.orders ?? this.orders,
+          changes.max === undefined ? this.max : changes.max,
+          changes.after === undefined ? this.after : changes.after,
+        );
+      }
+
+      where(field?: unknown, op?: string, value?: unknown): Query {
+        if (typeof field !== 'string' || !op || !FILTER_OPS.has(op)) return this;
+        return this.with({ filters: [...this.filters, { field, op, value }] });
       }
 
       private holds(key: string): boolean {
@@ -256,33 +301,74 @@ export class InMemoryFirestore {
         return key.startsWith(prefix) && !key.slice(prefix.length).includes('/');
       }
 
-      limit(): Query {
-        return this;
+      limit(max?: number): Query {
+        return this.with({ max: typeof max === 'number' ? max : null });
       }
 
-      orderBy(): Query {
-        return this;
+      /** By a field, or by document id for anything else (FieldPath.documentId()). */
+      orderBy(field?: unknown, direction?: string): Query {
+        return this.with({
+          orders: [...this.orders, { field: typeof field === 'string' ? field : null, descending: direction === 'desc' }],
+        });
       }
 
-      /** Cursors are ignored: limits are too, so one page holds every doc. */
-      startAfter(): Query {
-        return this;
+      /** After [cursor], a doc snapshot from an earlier page of this query. */
+      startAfter(cursor?: unknown): Query {
+        const path = (cursor as { ref?: { path?: string } } | undefined)?.ref?.path;
+        return this.with({ after: typeof path === 'string' ? path : null });
+      }
+
+      private matches(data: DocData): boolean {
+        return this.filters.every(({ field, op, value }) => {
+          // A dotted path ('refund.status') reads a field of a map, as Firestore does.
+          const found = fieldAt(data, field);
+          if (!found.exists) return false;
+          if (op === '==') return found.value === value;
+          if (op === 'in') return Array.isArray(value) && value.includes(found.value);
+          const order = compareValues(found.value, value);
+          if (order === null) return false;
+          if (op === '<') return order < 0;
+          if (op === '<=') return order <= 0;
+          if (op === '>') return order > 0;
+          return order >= 0;
+        });
+      }
+
+      private sorted(keys: string[]): string[] {
+        if (this.orders.length === 0) return keys;
+        return [...keys].sort((a, b) => {
+          for (const { field, descending } of this.orders) {
+            let order: number;
+            if (field === null) {
+              order = a < b ? -1 : a > b ? 1 : 0;
+            } else {
+              const left = fieldAt(store.get(a) || {}, field);
+              const right = fieldAt(store.get(b) || {}, field);
+              if (!left.exists || !right.exists) {
+                order = Number(!left.exists) - Number(!right.exists);
+                if (order !== 0) return order;
+                continue;
+              }
+              order = compareValues(left.value, right.value) ?? 0;
+            }
+            if (order !== 0) return descending ? -order : order;
+          }
+          return a < b ? -1 : a > b ? 1 : 0;
+        });
       }
 
       async get(): Promise<{ empty: boolean; size: number; docs: DocSnapshot[] }> {
         const queryError = owner.queryErrors.get(this.path);
         if (queryError) throw queryError;
-        const docs = [...store.keys()]
-          .filter((key) => this.holds(key))
-          .filter((key) => {
-            const data = store.get(key) || {};
-            return this.equals.every(([field, value]) => {
-              // A dotted path ('refund.status') reads a field of a map, as Firestore does.
-              const found = fieldAt(data, field);
-              return found.exists && found.value === value;
-            });
-          })
-          .map((key) => new DocSnapshot(new DocRef(key), key));
+        let keys = this.sorted(
+          [...store.keys()].filter((key) => this.holds(key)).filter((key) => this.matches(store.get(key) || {})),
+        );
+        if (this.after !== null) {
+          const at = keys.indexOf(this.after);
+          keys = at >= 0 ? keys.slice(at + 1) : keys;
+        }
+        if (this.max !== null) keys = keys.slice(0, this.max);
+        const docs = keys.map((key) => new DocSnapshot(new DocRef(key), key));
         return { empty: docs.length === 0, size: docs.length, docs };
       }
 
