@@ -361,10 +361,15 @@ service cloud.firestore {
         get(inviteDocPath(facilityId, inviteId)).data.invitedBy == assignedBy;
     }
 
+    // The accept write is set({roles: {<own uid>: <invite role>}, acceptingInviteId}, merge).
+    // affectedKeys(), not changedKeys(): changedKeys() leaves out keys that are
+    // added or removed, so the accept could also add or remove other fields
+    // or other users' roles. With no roles map yet, the new one may hold only
+    // the invitee's own entry.
     function facilityInviteRoleMergeAllowed(facilityId) {
       return request.auth != null &&
         request.resource.data.acceptingInviteId is string &&
-        request.resource.data.roles != null &&
+        request.resource.data.roles is map &&
         request.resource.data.roles[request.auth.uid] is string &&
         pendingInviteMatchesUserRoleWrite(
           facilityId,
@@ -372,11 +377,11 @@ service cloud.firestore {
           request.resource.data.roles[request.auth.uid],
           get(inviteDocPath(facilityId, request.resource.data.acceptingInviteId)).data.invitedBy
         ) &&
-        request.resource.data.diff(resource.data).changedKeys().hasOnly(['roles', 'acceptingInviteId']) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['roles', 'acceptingInviteId']) &&
         (
-          !('roles' in resource.data) ||
-          resource.data.roles == null ||
-          request.resource.data.roles.diff(resource.data.roles).changedKeys().hasOnly([request.auth.uid])
+          ('roles' in resource.data && resource.data.roles is map)
+            ? request.resource.data.roles.diff(resource.data.roles).affectedKeys().hasOnly([request.auth.uid])
+            : request.resource.data.roles.keys().hasOnly([request.auth.uid])
         );
     }
 
@@ -2058,6 +2063,7 @@ service cloud.firestore {
       allow create: if false;
 
       // Revoke pending links only. Marking paid should be done with Admin SDK (e.g. webhook).
+      // affectedKeys() so a revoke can't also add or remove other fields.
       allow update: if request.auth != null &&
         resource.data.facilityId is string &&
         isFacilityStaff(resource.data.facilityId) &&
@@ -2067,7 +2073,7 @@ service cloud.firestore {
         request.resource.data.amount == resource.data.amount &&
         resource.data.status == 'pending' &&
         request.resource.data.status == 'revoked' &&
-        request.resource.data.diff(resource.data).changedKeys().hasOnly(['status', 'revokedAt']);
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'revokedAt']);
 
       allow delete: if false;
     }

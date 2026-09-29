@@ -1419,6 +1419,137 @@ test('an invitee can list the pending invites addressed to their own verified em
   await assertFails(facilityInvites(testEnv.authenticatedContext(STAFF_UID).firestore()));
 });
 
+const INVITEE_UID = 'invitee-user';
+
+async function seedPendingInvite(facilityDoc) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('facilities').doc(FACILITY_ID).set(facilityDoc);
+    await db.collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-1').set({
+      facilityId: FACILITY_ID,
+      email: 'invitee@example.com',
+      emailLower: 'invitee@example.com',
+      roleType: 'employee',
+      status: 'pending',
+      invitedAt: new Date(),
+      invitedBy: OWNER_UID,
+    });
+  });
+}
+
+function inviteeFacilityRef() {
+  return testEnv
+    .authenticatedContext(INVITEE_UID, { email: 'Invitee@Example.com', email_verified: true })
+    .firestore()
+    .collection('facilities')
+    .doc(FACILITY_ID);
+}
+
+// PermissionService.assignRole's facility write when accepting an invite.
+function acceptWrite(extra = {}, extraRoles = {}) {
+  return inviteeFacilityRef().set(
+    { roles: { [INVITEE_UID]: 'employee', ...extraRoles }, acceptingInviteId: 'inv-1', ...extra },
+    { merge: true },
+  );
+}
+
+test('invite accept: the invitee adds their own role and the invite id, and nothing else', async () => {
+  // The rule checked changed keys, which leave out keys that are added or
+  // removed. Added fields the facility doc did not have yet, and other
+  // users' roles, went through.
+  await seedPendingInvite({
+    ownerUid: OWNER_UID,
+    name: 'Test Storage',
+    roles: { [OWNER_UID]: 'owner', [STAFF_UID]: 'employee' },
+  });
+
+  // Fields the facility doc does not have yet.
+  await assertFails(
+    acceptWrite({ platformSubscriptionStatus: 'trialing', stripePlatformSubscriptionId: 'sub_x' }),
+  );
+  await assertFails(acceptWrite({ platformSubscriptionStatus: 'trialing' }));
+  await assertFails(acceptWrite({ stripePlatformSubscriptionId: 'sub_x' }));
+  await assertFails(acceptWrite({ billingExempt: true }));
+  await assertFails(acceptWrite({ facilityCreatorAccountId: 'account-1' }));
+  await assertFails(acceptWrite({ someNewField: 'x' }));
+  // Removing a field, or changing one that is there (already refused).
+  await assertFails(acceptWrite({ name: deleteField() }));
+  await assertFails(acceptWrite({ name: 'Renamed' }));
+  // Another user's role: added, changed or removed.
+  await assertFails(acceptWrite({}, { 'other-user': 'manager' }));
+  await assertFails(acceptWrite({}, { [STAFF_UID]: 'manager' }));
+  await assertFails(acceptWrite({}, { [STAFF_UID]: deleteField() }));
+  // A role the invite does not grant (already refused).
+  await assertFails(
+    inviteeFacilityRef().set(
+      { roles: { [INVITEE_UID]: 'manager' }, acceptingInviteId: 'inv-1' },
+      { merge: true },
+    ),
+  );
+
+  await assertSucceeds(acceptWrite());
+  let after;
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    after = (await context.firestore().collection('facilities').doc(FACILITY_ID).get()).data();
+  });
+  assert.deepEqual(after, {
+    ownerUid: OWNER_UID,
+    name: 'Test Storage',
+    roles: { [OWNER_UID]: 'owner', [STAFF_UID]: 'employee', [INVITEE_UID]: 'employee' },
+    acceptingInviteId: 'inv-1',
+  });
+});
+
+test('invite accept: with no roles map yet, the new one holds only the invitee', async () => {
+  await seedPendingInvite({ ownerUid: OWNER_UID, name: 'Test Storage' });
+
+  await assertFails(acceptWrite({}, { 'other-user': 'manager' }));
+  await assertFails(acceptWrite({}, { [OWNER_UID]: 'owner' }));
+  await assertFails(acceptWrite({ billingExempt: true }));
+  await assertSucceeds(acceptWrite());
+});
+
+test('invite accept: a later invitee overwrites acceptingInviteId and adds only their role', async () => {
+  // acceptingInviteId is left on the facility by the previous accept, so a
+  // second accept changes it rather than adding it.
+  await seedPendingInvite({
+    ownerUid: OWNER_UID,
+    roles: { [OWNER_UID]: 'owner', [STAFF_UID]: 'employee' },
+    acceptingInviteId: 'inv-earlier',
+  });
+
+  await assertFails(acceptWrite({ billingExempt: true }));
+  await assertSucceeds(acceptWrite());
+});
+
+test('staff revoke a pending payment link and change nothing else', async () => {
+  await seedFacility();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('publicPaymentLinks').doc('token-1').set({
+      facilityId: FACILITY_ID,
+      tenantId: TENANT_ID,
+      token: 'token-1',
+      amount: 50,
+      status: 'pending',
+      expiresAt: new Date(Date.now() + 86400000),
+    });
+  });
+  const linkAs = (uid) =>
+    testEnv.authenticatedContext(uid).firestore().collection('publicPaymentLinks').doc('token-1');
+  const revoke = { status: 'revoked', revokedAt: serverTimestamp() };
+
+  // Fields the link does not have yet, or removing one.
+  await assertFails(linkAs(STAFF_UID).update({ ...revoke, paidAt: serverTimestamp() }));
+  await assertFails(linkAs(STAFF_UID).update({ ...revoke, stripePaymentIntentId: 'pi_x' }));
+  await assertFails(linkAs(STAFF_UID).update({ ...revoke, expiresAt: deleteField() }));
+  // Not a revoke, or not staff (already refused).
+  await assertFails(linkAs(STAFF_UID).update({ status: 'paid' }));
+  await assertFails(linkAs(OUTSIDER_UID).update(revoke));
+
+  // PublicPaymentLinkService.revokePaymentLink's write.
+  await assertSucceeds(linkAs(STAFF_UID).update(revoke));
+});
+
 test('facility notifications: staff may mark one read and change nothing else', async () => {
   // Written only by Cloud Functions (autopay events, and a paid online
   // move-in into a unit taken off online rental). Every client write was
