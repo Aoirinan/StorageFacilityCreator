@@ -35,6 +35,26 @@ class MailingAddressFields {
 Address? currentMailingAddress(List<Address> addresses) =>
     tenantPrintAddressEntry(addresses);
 
+/// What [address] still needs before a statement can be mailed to it, as
+/// the tenant page says it under the street: "City, state and ZIP missing",
+/// "ZIP missing", and so on. Null when city, state and ZIP are all there:
+/// the same three the dialog's Save requires. A workbook import usually
+/// leaves only the street, and the owner has to be able to see which
+/// tenants are still like that without opening every pencil to find out.
+String? mailingAddressGap(Address address) {
+  final missing = [
+    if (address.city.trim().isEmpty) 'city',
+    if (address.state.trim().isEmpty) 'state',
+    if (address.zipCode.trim().isEmpty) 'ZIP',
+  ];
+  if (missing.isEmpty) return null;
+  final listed = missing.length == 1
+      ? missing.single
+      : '${missing.take(missing.length - 1).join(', ')} and ${missing.last}';
+  final gap = '$listed missing';
+  return gap[0].toUpperCase() + gap.substring(1);
+}
+
 /// [existing] with the mailing address set to [fields]: the entry
 /// [currentMailingAddress] picks is replaced in place, keeping its id, type,
 /// createdAt, country and notes and marking it updated at [now]; the other

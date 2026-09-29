@@ -183,6 +183,24 @@ void main() {
     });
   });
 
+  group('mailingAddressGap (what the tenant page says under the street)', () {
+    test('a street-only import is missing all three', () {
+      expect(mailingAddressGap(address()), 'City, state and ZIP missing');
+    });
+
+    test('names only what is blank', () {
+      expect(mailingAddressGap(address(city: 'Anytown')), 'State and ZIP missing');
+      expect(mailingAddressGap(address(city: 'Anytown', state: 'ND')), 'ZIP missing');
+      expect(mailingAddressGap(address(state: 'ND', zipCode: '79401')), 'City missing');
+      expect(mailingAddressGap(address(city: 'Anytown', zipCode: '79401')), 'State missing');
+    });
+
+    test('nothing to say once city, state and ZIP are there; spaces do not count', () {
+      expect(mailingAddressGap(address(city: 'Anytown', state: 'ND', zipCode: '79401')), isNull);
+      expect(mailingAddressGap(address(city: 'Anytown', state: ' ', zipCode: '79401')), 'State missing');
+    });
+  });
+
   group('TenantService.setMailingAddress', () {
     // Nobody signed in unless the test passes actingUid. Without this the
     // "refuses" test below would read FirebaseAuth.instance, which throws
