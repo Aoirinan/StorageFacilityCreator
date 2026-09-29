@@ -33,13 +33,20 @@ final overdueInvoicesProvider = FutureProvider.family<List<InvoiceModel>, String
 /// invoice's charges still read "On invoice" until she generated again or
 /// reloaded the app. The invoice page also invalidates it after a void, for
 /// the ledger still open underneath.
+///
+/// No retries: a staff login that can read ledgers but not invoices, or an
+/// owner offline, would otherwise wait through Riverpod's default retries
+/// (about 50 seconds) before Generate Invoice said anything.
 final liveInvoiceCoverageProvider = FutureProvider.autoDispose
-    .family<LiveInvoiceCoverage, InvoiceParams>((ref, params) {
-  return InvoiceService.liveInvoiceCoverage(
-    facilityId: params.facilityId,
-    tenantId: params.tenantId,
-  );
-});
+    .family<LiveInvoiceCoverage, InvoiceParams>(
+  (ref, params) {
+    return InvoiceService.liveInvoiceCoverage(
+      facilityId: params.facilityId,
+      tenantId: params.tenantId,
+    );
+  },
+  retry: (retryCount, error) => null,
+);
 
 /// Provider for invoice operations
 final invoiceOperationsProvider = StateNotifierProvider<InvoiceOperationsNotifier, AsyncValue<void>>((ref) {

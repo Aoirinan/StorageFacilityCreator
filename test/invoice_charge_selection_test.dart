@@ -402,6 +402,57 @@ void main() {
       expect(voided.isActive, isFalse);
     });
 
+    test('refund and credit rows stored positive are not charges', () {
+      for (final type in [
+        LedgerEntryType.refund,
+        LedgerEntryType.credit,
+        LedgerEntryType.payment,
+      ]) {
+        final c =
+            SelectableCharge.fromLedgerEntry(entry(amount: 50, type: type));
+        expect(c.isCharge, isFalse, reason: '$type');
+      }
+      final adjustment = SelectableCharge.fromLedgerEntry(
+        entry(amount: 15, type: LedgerEntryType.adjustment),
+      );
+      expect(adjustment.isCharge, isTrue);
+    });
+
+    test('a positive refund raises the balance but real rent fills the invoice',
+        () {
+      LedgerEntry row(String id, double amount, LedgerEntryType type, int day,
+              String description) =>
+          LedgerEntry(
+            id: id,
+            tenantId: 't1',
+            facilityId: 'f1',
+            type: type,
+            amount: amount,
+            description: description,
+            entryDate: DateTime(2026, 8, day),
+            status: LedgerEntryStatus.posted,
+            createdAt: DateTime(2026, 8, day),
+            createdBy: 'owner',
+          );
+      final rows = [
+        row('aug', 130, LedgerEntryType.rentCharge, 1, 'Rent - August'),
+        row('pay', -180, LedgerEntryType.payment, 2, 'Check'),
+        row('sep', 130, LedgerEntryType.rentCharge, 28, 'Rent - September'),
+        row('ref', 50, LedgerEntryType.refund, 29, 'Refund of overpayment'),
+      ];
+      final balance = rows.fold<double>(0, (sum, e) => sum + e.amount);
+      expect(balance, 130);
+      final lines = openChargesForInvoice(
+        charges: rows.map(SelectableCharge.fromLedgerEntry),
+        idsOnLiveInvoices: const {},
+        ledgerBalance: balance,
+        liveInvoiceBalance: 0,
+      );
+      expect(lines.map((l) => l.id), ['sep']);
+      expect(lines.single.amount, 130);
+      expect(lines.single.isPartial, isFalse);
+    });
+
     test('reads allocatedAmount from the entry metadata', () {
       final c = SelectableCharge.fromLedgerEntry(
         entry(amount: 130, metadata: {'allocatedAmount': 50}),

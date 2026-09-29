@@ -973,9 +973,9 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
         // order instead.
         content: Text(
           'Are you sure you want to mark invoice ${_invoice.invoiceNumber} as paid? This will set the balance to \$0.00.\n\n'
-          'This only closes the invoice. Record the payment on the tenant\'s '
-          'ledger (Record payment) first, or the balance will still show as '
-          'owed.',
+          'This only closes the invoice. Record the payment first with '
+          '"Record payment" on the tenant\'s page, or the balance will still '
+          'show as owed.',
         ),
         actions: [
           TextButton(

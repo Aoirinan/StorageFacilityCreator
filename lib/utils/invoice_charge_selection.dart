@@ -65,10 +65,16 @@ class SelectableCharge {
   /// so they cannot disagree on what counts as a charge. They used to: the
   /// dialog left out positive credit and refund rows that the service then
   /// billed, so the saved invoice was not the one previewed.
+  ///
+  /// A charge is a positive amount of a type that bills the tenant. Refund
+  /// and credit rows can be stored positive (move-out refunds since #39, and
+  /// the transfer credit's sign bug); they raise the balance but are not
+  /// something to bill, so they never become invoice lines. The balance still
+  /// counts them, so real charges fill the amount instead.
   factory SelectableCharge.fromLedgerEntry(LedgerEntry entry) {
     return SelectableCharge(
       id: entry.id,
-      isCharge: entry.isCharge,
+      isCharge: entry.amount > 0 && !_notBillable.contains(entry.type),
       isActive: entry.isActive,
       amount: entry.amount,
       allocatedAmount:
@@ -78,6 +84,13 @@ class SelectableCharge {
     );
   }
 }
+
+/// Ledger types that never become an invoice line, whatever their sign.
+const Set<LedgerEntryType> _notBillable = {
+  LedgerEntryType.payment,
+  LedgerEntryType.credit,
+  LedgerEntryType.refund,
+};
 
 /// One line of the invoice to generate: which charge, and how much of it.
 class OpenCharge {
