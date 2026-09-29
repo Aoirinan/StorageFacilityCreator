@@ -65,8 +65,11 @@ const REFUSALS_THAT_END_CHECKOUT = new Set([
   'Online move-in is not available. Please contact the facility directly.',
 ]);
 
-/** A Checkout Session to send the renter to. */
-export type PayableSession = { id: string; url: string };
+/**
+ * A Checkout Session to send the renter to. [expiresAt]: when Stripe closes
+ * it, for one made earlier and handed back.
+ */
+export type PayableSession = { id: string; url: string; expiresAt?: Date };
 
 /** The session recorded on a reservation. No account: recorded before accounts were. */
 export type RecordedSession = { id: string; accountId: string | null };
@@ -153,7 +156,7 @@ export async function reusableCheckoutSession(
       reservationId: lookup.reservationId,
       sessionId: session.id,
     });
-    return { id: session.id, url: session.url };
+    return { id: session.id, url: session.url, expiresAt: new Date((session.expires_at ?? 0) * 1000) };
   }
   // Expired before a new one is made. If Stripe refuses (it has just been
   // paid, say), this throws and no second session is made.

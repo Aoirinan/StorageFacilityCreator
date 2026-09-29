@@ -3,6 +3,7 @@ import * as admin from 'firebase-admin';
 import { getStripeClient } from '@sfc/functions-shared';
 import { ONLINE_MOVE_IN_REVIEW_TYPE } from './onlineMoveInReview';
 import { resolveMoveInPaymentStripeAccountId } from './moveInPayment';
+import { CHECKOUT_PAID_FIELD, CHECKOUT_SESSION_EXPIRES_FIELD } from './checkoutHold';
 
 /**
  * One document per PaymentIntent that has completed an online move-in, or
@@ -186,18 +187,21 @@ function paymentUnderReviewError(refusal: PaidMoveInRefusal, payment: OfferedPay
   );
 }
 
+export type PaymentOwnership = 'this-reservation' | 'another' | 'unknown';
+
 /**
  * Whether [payment] was made for this reservation, which is what makes a
  * refund safe: refunding a payment made for something else would take the
- * owner's money on a stranger's say-so. Its metadata says so (checkout sets it
- * from now on), or else the Checkout Session that took it does (older
- * sessions set only their own metadata). 'unknown' when Stripe cannot be
- * asked.
+ * owner's money on a stranger's say-so. Completion asks it too before a
+ * payment naming no reservation finishes a move-in whose hold has lapsed.
+ * Its metadata says so (checkout sets it from now on), or else the Checkout
+ * Session that took it does (older sessions set only their own metadata).
+ * 'unknown' when Stripe cannot be asked.
  */
-async function paymentOwnership(
-  ctx: PaidMoveInContext,
+export async function paymentOwnership(
+  ctx: Pick<PaidMoveInContext, 'facilityId' | 'connectAccountId' | 'reservationId'>,
   payment: OfferedPayment,
-): Promise<'this-reservation' | 'another' | 'unknown'> {
+): Promise<PaymentOwnership> {
   const meta = payment.metadata || {};
   if (meta.type || meta.reservationId) {
     return meta.type === 'public_move_in' && meta.reservationId === ctx.reservationId
@@ -323,9 +327,13 @@ export async function refusePaidMoveIn(params: PaidMoveInContext & {
   refusal: PaidMoveInRefusal;
   unpaidError: functions.https.HttpsError;
   payment: OfferedPayment;
+  /** Already shown to be this reservation's (paymentOwnership), so Stripe is not asked again. */
+  knownToBeThisReservations?: boolean;
 }): Promise<never> {
   const { refusal, payment } = params;
-  const ownership = await paymentOwnership(params, payment);
+  const ownership = params.knownToBeThisReservations
+    ? 'this-reservation' as const
+    : await paymentOwnership(params, payment);
   if (ownership === 'another') throw params.unpaidError;
 
   const useRef = paymentUseRef(payment.paymentIntentId);
@@ -441,6 +449,18 @@ export async function refusePaidMoveIn(params: PaidMoveInContext & {
       if (holdRef && holdSnap?.exists && holdSnap.data()?.reservationId === params.reservationId) {
         tx.delete(holdRef);
       }
+    } else if (reservationSnap.exists && ['pending', 'confirmed', 'expired'].includes(reservationStatus)) {
+      // Left open to pay the new amount. Until the renter starts paying
+      // again they are paying for nothing: their session was paid, and this
+      // payment is being refunded. Counted as paying (holderMayBePaying), a
+      // renter whose own hold had lapsed was refunded for them.
+      tx.update(reservationRef, {
+        [CHECKOUT_SESSION_EXPIRES_FIELD]: admin.firestore.Timestamp.now(),
+        ...(reservation[CHECKOUT_PAID_FIELD] === payment.paymentIntentId
+          ? { [CHECKOUT_PAID_FIELD]: admin.firestore.FieldValue.delete() }
+          : {}),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
     }
     return { kind: 'decided' as const };
   });
@@ -500,11 +520,19 @@ const STALLED_REFUND_BATCH = 50;
  * again finished one: a renter who gave up was never refunded, and the
  * owner's alert still said the refund was under way. Same idempotency key as
  * the first attempt, so a refund Stripe did make is not made again.
+ *
+ * Only refunds already stalled are read, oldest first (index: refund.status,
+ * createdAt in firestore.indexes.json). Read unordered and unfiltered, a
+ * batch could fill with refunds too recent to finish, and older stalled ones
+ * behind them waited for good.
  */
 export async function sweepStalledMoveInRefunds(now: Date): Promise<{ finished: number; skipped: number }> {
+  const stalledBefore = admin.firestore.Timestamp.fromMillis(now.getTime() - STALLED_REFUND_MINUTES * 60 * 1000);
   const snap = await admin.firestore()
     .collection(PUBLIC_MOVE_IN_PAYMENTS_COLLECTION)
     .where('refund.status', '==', 'pending')
+    .where('createdAt', '<=', stalledBefore)
+    .orderBy('createdAt', 'asc')
     .limit(STALLED_REFUND_BATCH)
     .get();
   let finished = 0;

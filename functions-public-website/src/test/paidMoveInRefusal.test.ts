@@ -866,6 +866,107 @@ test('the sweep refunds a stalled refund nobody retried, and leaves the rest alo
   for (const [path, data] of Object.entries(others)) assert.deepEqual(inMemory.read(path), data);
 });
 
+test('the sweep reads stalled refunds oldest first, so a batch of recent or newer ones cannot starve them', async () => {
+  const inMemory = new InMemoryFirestore();
+  const paidCents = seedPaidRental(inMemory);
+  const record = (paymentIntentId: string, minutesAgo: number) => ({
+    ...pendingRefundRecord(paidCents, minutesAgo),
+    paymentIntentId,
+    connectAccountId: ACCOUNT,
+  });
+  // Written first, so an unordered read returns them first: a full batch
+  // too recent to finish, then a full batch stalled less long than PI's.
+  const young: string[] = [];
+  for (let i = 0; i < 50; i += 1) {
+    young.push(`pi_young_${i}`);
+    inMemory.seed(`publicMoveInPayments/pi_young_${i}`, record(`pi_young_${i}`, 5));
+  }
+  for (let i = 0; i < 50; i += 1) {
+    inMemory.seed(`publicMoveInPayments/pi_newer_${i}`, record(`pi_newer_${i}`, 20));
+  }
+  inMemory.seed(USE_PATH, record(PI, 60));
+  const { calls, sweep } = loadPublicMoveIn(inMemory, paidCents);
+
+  await sweep();
+
+  // Before: the batch was the first 50 pending records, all too recent, and
+  // this one waited however many runs it took for them to clear.
+  const refunded = calls.refunds.map((call) => call.params.payment_intent);
+  assert.ok(refunded.includes(PI), 'the oldest stalled refund is finished first');
+  assert.equal(refunded.length, 50);
+  assert.equal(refunded.some((id) => young.includes(id)), false);
+  assert.equal((inMemory.read(USE_PATH) as Record<string, any>).refund.status, 'refunded');
+  for (const id of young) {
+    assert.equal((inMemory.read(`publicMoveInPayments/${id}`) as Record<string, any>).refund.status, 'pending');
+  }
+});
+
+test('the sweep reads only refunds that have stalled, not ones a completion may still be finishing', async () => {
+  const inMemory = new InMemoryFirestore();
+  const paidCents = seedPaidRental(inMemory);
+  inMemory.seed(USE_PATH, { ...pendingRefundRecord(paidCents, 20), connectAccountId: ACCOUNT });
+  for (let i = 0; i < 3; i += 1) {
+    inMemory.seed(`publicMoveInPayments/pi_young_${i}`, {
+      ...pendingRefundRecord(paidCents, 5),
+      paymentIntentId: `pi_young_${i}`,
+      connectAccountId: ACCOUNT,
+    });
+  }
+  const { calls } = loadPublicMoveIn(inMemory, paidCents);
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const refunds = require('../paidMoveInRefund') as typeof import('../paidMoveInRefund');
+
+  const outcome = await refunds.sweepStalledMoveInRefunds(new Date());
+
+  // Read and passed over, they took places in the batch meant for stalled ones.
+  assert.deepEqual(outcome, { finished: 1, skipped: 0 });
+  assertRefundedOnce(calls);
+});
+
+test('the sweep\'s query has its index declared', () => {
+  // Without it Firestore refuses the query, and no stalled refund is finished.
+  const indexes = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '..', '..', '..', 'firestore.indexes.json'), 'utf8'),
+  ) as { indexes: Array<{ collectionGroup: string; queryScope: string; fields: Array<Record<string, string>> }> };
+  const declared = indexes.indexes.some((index) =>
+    index.collectionGroup === 'publicMoveInPayments' &&
+    index.queryScope === 'COLLECTION' &&
+    JSON.stringify(index.fields.map((f) => [f.fieldPath, f.order])) ===
+      JSON.stringify([['refund.status', 'ASCENDING'], ['createdAt', 'ASCENDING']]));
+  assert.ok(declared, 'firestore.indexes.json needs publicMoveInPayments (refund.status, createdAt)');
+});
+
+// The payment's ledger row
+
+test('the move-in payment is posted with the charges it pays, so a completion that dies after its commit leaves nothing owing', async () => {
+  const inMemory = new InMemoryFirestore();
+  const paidCents = seedPaidRental(inMemory);
+  // The instance dies once the move-in has committed: every later ledger write fails.
+  inMemory.writeErrorsOutsideTransactions.set(`facilities/${FACILITY}/ledgers`, new Error('instance died'));
+  const { complete } = loadPublicMoveIn(inMemory, paidCents);
+
+  const result = await complete();
+
+  // Before: the tenant was moved in with their charges posted and no payment,
+  // so they showed as owing what they had paid, and a retry was refused as
+  // the payment already used.
+  assert.equal(result.success, true);
+  const rows = inMemory
+    .listCollection(`facilities/${FACILITY}/ledgers`)
+    .map((rowPath): Record<string, any> => ({ path: rowPath, ...inMemory.read(rowPath) }));
+  const payments = rows.filter((row) => row.type === 'payment');
+  assert.equal(payments.length, 1);
+  assert.equal(payments[0].path, `facilities/${FACILITY}/ledgers/publicMoveInPayment_${PI}`);
+  assert.equal(payments[0].tenantId, result.tenantId);
+  assert.equal(payments[0].referenceId, PI);
+  assert.equal(payments[0].description, 'Move-in payment');
+  assert.equal(payments[0].status, 'posted');
+  assert.equal(payments[0].createdBy, 'publicMoveIn');
+  const owed = rows.reduce((sum, row) => sum + Math.round(Number(row.amount) * 100), 0);
+  assert.equal(owed, 0);
+  assert.equal(Math.round(-payments[0].amount * 100), paidCents);
+});
+
 test.after(() => {
   testEnv.cleanup();
 });

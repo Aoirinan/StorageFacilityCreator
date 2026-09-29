@@ -342,6 +342,27 @@ test('an open session for a different amount is expired and replaced', async () 
   assert.equal(recordedSession(inMemory), second.sessionId);
 });
 
+test('the reservation records when its session stops taking payment, also for a session handed back', async () => {
+  const inMemory = new InMemoryFirestore();
+  seed(inMemory);
+  const { checkout, sessions } = loadPublicMoveIn(inMemory);
+  const payableUntil = () => (inMemory.read(RESERVATION_PATH)?.checkoutSessionExpiresAt as Timestamp).toMillis();
+
+  const first = await checkout();
+  const firstExpiry = sessions.get(first.sessionId)!.expires_at * 1000;
+  assert.ok(payableUntil() >= firstExpiry && payableUntil() < firstExpiry + 1000);
+
+  // Pressed again with 20 minutes left on the page: it is handed back.
+  sessions.get(first.sessionId)!.expires_at = Math.floor((Date.now() + 20 * MINUTE) / 1000);
+  const second = await checkout();
+
+  assert.equal(second.sessionId, first.sessionId);
+  // Not the 35 minutes a new session would have had: a renter holding the
+  // unit with no page to pay on would count as paying for 15 minutes more
+  // (holderMayBePaying), and a renter who had paid would be refunded for them.
+  assert.equal(payableUntil(), sessions.get(first.sessionId)!.expires_at * 1000);
+});
+
 test('an open session with too little time left to pay is expired and replaced', async () => {
   const inMemory = new InMemoryFirestore();
   seed(inMemory);
