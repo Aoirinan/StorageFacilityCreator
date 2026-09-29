@@ -194,6 +194,38 @@ List<OpenCharge> openChargesForInvoice({
   return lines;
 }
 
+/// What the operator is told when [openChargesForInvoice] comes back empty.
+///
+/// The ledger's Generate Invoice snackbar and the service's exception both
+/// say this, so the two cannot drift apart. "No balance due" is true only
+/// when the tenant owes nothing. Every other empty result was worded the
+/// same, so a tenant owing $433 whose old draft still asked for $1,170 got
+/// "No balance due" directly under a header reading $433.00, with no hint
+/// that the draft had to be voided first. The same words met an owner who
+/// had recorded a check on the ledger but not marked the invoice paid.
+String nothingToInvoiceMessage({
+  required double ledgerBalance,
+  required double liveInvoiceBalance,
+}) {
+  if (_cents(ledgerBalance) <= 0) {
+    return 'No balance due — nothing to invoice';
+  }
+  if (_cents(liveInvoiceBalance) > 0) {
+    return "This tenant's balance is already on an invoice: open invoices "
+        'ask for ${_money(liveInvoiceBalance)} and the ledger balance is '
+        '${_money(ledgerBalance)}. Void it or mark it paid under '
+        'Rent & payments › Invoices before generating another.';
+  }
+  // Owed, nothing live asking for it, and still no charge to bill: every
+  // charge is on a paid invoice or recorded as settled, so the balance is
+  // made of entries an invoice cannot carry.
+  return 'This tenant owes ${_money(ledgerBalance)}, but every charge on '
+      'the ledger is already on an invoice or recorded as settled, so there '
+      'is nothing to put on a new one. Check Rent & payments › Invoices.';
+}
+
+String _money(double value) => '\$${_cents(value).toStringAsFixed(2)}';
+
 /// Money to the cent, the same way the ledger balance is rounded: summing
 /// doubles drifts, and a drift of a fraction of a cent must not leave a
 /// charge "partly" billed.

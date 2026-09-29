@@ -301,6 +301,55 @@ void main() {
     });
   });
 
+  group('nothingToInvoiceMessage', () {
+    test('a tenant in credit, or paid up, owes nothing', () {
+      for (final balance in [-250.0, 0.0, 0.004]) {
+        expect(
+          nothingToInvoiceMessage(
+            ledgerBalance: balance,
+            liveInvoiceBalance: 0,
+          ),
+          'No balance due — nothing to invoice',
+          reason: 'balance $balance',
+        );
+      }
+    });
+
+    // The state found on a live facility: the ledger said $433 and an old
+    // draft asked for $1,170. "No balance due" under a header reading
+    // $433.00 gave the owner no way to see that the draft had to go first.
+    test('money owed that a live invoice already asks for names the invoice',
+        () {
+      expect(
+        nothingToInvoiceMessage(ledgerBalance: 433, liveInvoiceBalance: 1170),
+        "This tenant's balance is already on an invoice: open invoices ask "
+        'for \$1170.00 and the ledger balance is \$433.00. Void it or mark it '
+        'paid under Rent & payments › Invoices before generating another.',
+      );
+    });
+
+    // A check recorded on the ledger while the invoice it paid stays Sent:
+    // next month's rent posts, ledger $130, live invoice $130.
+    test('an invoice the ledger has paid but nobody marked paid is named too',
+        () {
+      expect(
+        nothingToInvoiceMessage(ledgerBalance: 130, liveInvoiceBalance: 130),
+        startsWith("This tenant's balance is already on an invoice: open "
+            'invoices ask for \$130.00 and the ledger balance is \$130.00.'),
+      );
+    });
+
+    test('money owed with nothing live asking for it and no charge to bill '
+        'says so', () {
+      expect(
+        nothingToInvoiceMessage(ledgerBalance: 433, liveInvoiceBalance: 0),
+        'This tenant owes \$433.00, but every charge on the ledger is already '
+        'on an invoice or recorded as settled, so there is nothing to put on '
+        'a new one. Check Rent & payments › Invoices.',
+      );
+    });
+  });
+
   group('SelectableCharge.fromLedgerEntry', () {
     LedgerEntry entry({
       required double amount,

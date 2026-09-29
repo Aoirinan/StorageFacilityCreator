@@ -796,18 +796,25 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
       // The balance the header shows, less what live invoices already ask
       // for, is all an invoice may bill. Charges are taken newest first
       // until it is covered; the oldest taken may be for part of itself.
+      final ledgerBalance = sumPostedLedgerEntries(entries);
       final lines = openChargesForInvoice(
         charges: entries.map(SelectableCharge.fromLedgerEntry),
         idsOnLiveInvoices: coverage.ledgerEntryIds,
-        ledgerBalance: sumPostedLedgerEntries(entries),
+        ledgerBalance: ledgerBalance,
         liveInvoiceBalance: coverage.balance,
       );
 
       if (lines.isEmpty) {
+        // "No balance due" only when none is: a tenant who owes money that
+        // an existing invoice already asks for is sent to that invoice.
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No balance due — nothing to invoice'),
+          SnackBar(
+            content: Text(nothingToInvoiceMessage(
+              ledgerBalance: ledgerBalance,
+              liveInvoiceBalance: coverage.balance,
+            )),
             backgroundColor: AppTheme.warning,
+            duration: const Duration(seconds: 8),
           ),
         );
         return;
@@ -826,7 +833,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'This will create an invoice for ${lines.length} unpaid charge(s):',
+                  'This will create an invoice for ${lines.length} charge(s) to invoice:',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 const SizedBox(height: 16),

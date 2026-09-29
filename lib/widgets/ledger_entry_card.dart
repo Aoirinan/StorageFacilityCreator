@@ -56,14 +56,26 @@ class LedgerEntryCard extends StatelessWidget {
                   Row(
                     children: [
                       Expanded(
-                        child: Text(
-                          entry.typeDisplayName,
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w600,
-                            decoration: isVoided ? TextDecoration.lineThrough : null,
-                          ),
+                        // A Wrap, not a Row: beside the type name the "On
+                        // invoice" chip drops under it on a phone instead of
+                        // pushing the amount off the card.
+                        child: Wrap(
+                          spacing: 8,
+                          runSpacing: 4,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            Text(
+                              entry.typeDisplayName,
+                              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w600,
+                                decoration: isVoided ? TextDecoration.lineThrough : null,
+                              ),
+                            ),
+                            if (onInvoice) _chip('On invoice', AppTheme.info),
+                          ],
                         ),
                       ),
+                      const SizedBox(width: 8),
                       Text(
                         entry.formattedAmount,
                         style: Theme.of(context).textTheme.titleMedium?.copyWith(
@@ -86,61 +98,35 @@ class LedgerEntryCard extends StatelessWidget {
                     ),
                   ],
                   const SizedBox(height: 8),
+                  // The dates wrap onto a second line when the card is
+                  // narrow, with the status chip staying at the right. As
+                  // one Row this overflowed a phone-width card whenever the
+                  // charge had a due date (move-in and monthly rent do).
                   Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(Icons.calendar_today, size: 14, color: AppTheme.textTertiary),
-                      const SizedBox(width: 4),
-                      Text(
-                        DateFormat('MM/dd/yyyy').format(entry.entryDate),
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: AppTheme.textTertiary,
-                        ),
-                      ),
-                      if (entry.dueDate != null) ...[
-                        const SizedBox(width: 16),
-                        Icon(Icons.event, size: 14, color: AppTheme.textTertiary),
-                        const SizedBox(width: 4),
-                        Text(
-                          'Due: ${DateFormat('MM/dd/yyyy').format(entry.dueDate!)}',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: AppTheme.textTertiary,
-                          ),
-                        ),
-                      ],
-                      const Spacer(),
-                      if (onInvoice) ...[
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: AppTheme.info.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: const Text(
-                            'On invoice',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: AppTheme.info,
-                              fontWeight: FontWeight.w500,
+                      Expanded(
+                        child: Wrap(
+                          spacing: 16,
+                          runSpacing: 4,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            _dated(
+                              context,
+                              Icons.calendar_today,
+                              DateFormat('MM/dd/yyyy').format(entry.entryDate),
                             ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                      ],
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: _getStatusColor(entry.status).withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          entry.statusDisplayName,
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: _getStatusColor(entry.status),
-                            fontWeight: FontWeight.w500,
-                          ),
+                            if (entry.dueDate != null)
+                              _dated(
+                                context,
+                                Icons.event,
+                                'Due: ${DateFormat('MM/dd/yyyy').format(entry.dueDate!)}',
+                              ),
+                          ],
                         ),
                       ),
+                      const SizedBox(width: 8),
+                      _chip(entry.statusDisplayName, _getStatusColor(entry.status)),
                     ],
                   ),
                   if (entry.referenceId != null) ...[
@@ -172,6 +158,44 @@ class LedgerEntryCard extends StatelessWidget {
                 tooltip: 'Void Entry',
               ),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// An icon and a date. The text may shrink, so a date wider than the room
+  /// left beside the status chip wraps instead of overflowing the card.
+  Widget _dated(BuildContext context, IconData icon, String text) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 14, color: AppTheme.textTertiary),
+        const SizedBox(width: 4),
+        Flexible(
+          child: Text(
+            text,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: AppTheme.textTertiary,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _chip(String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 11,
+          color: color,
+          fontWeight: FontWeight.w500,
         ),
       ),
     );

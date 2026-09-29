@@ -201,7 +201,11 @@ class InvoiceService {
       );
 
       if (lines.isEmpty) {
-        throw Exception('No balance due — nothing to invoice');
+        // The same words the ledger's dialog uses for this case.
+        throw Exception(nothingToInvoiceMessage(
+          ledgerBalance: ledgerBalance,
+          liveInvoiceBalance: coverage.balance,
+        ));
       }
 
       final entriesById = {for (final e in allEntries) e.id: e};

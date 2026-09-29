@@ -965,8 +965,17 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Mark Invoice as Paid'),
+        // Mark paid writes nothing to the ledger, and the ledger is what
+        // Generate Invoice bills from. An owner who marks paid without
+        // recording the payment sees the same money offered again on the
+        // next invoice. Posting a payment from here would double count for
+        // the owners who record the payment first, so the dialog says the
+        // order instead.
         content: Text(
-          'Are you sure you want to mark invoice ${_invoice.invoiceNumber} as paid? This will set the balance to \$0.00.',
+          'Are you sure you want to mark invoice ${_invoice.invoiceNumber} as paid? This will set the balance to \$0.00.\n\n'
+          'This only closes the invoice. Record the payment on the tenant\'s '
+          'ledger (Record payment) first, or the balance will still show as '
+          'owed.',
         ),
         actions: [
           TextButton(
@@ -1068,6 +1077,14 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
       );
 
       if (mounted) {
+        // The voided invoice's charges are billable again, so the ledger's
+        // "On invoice" marks come off. The ledger this page was opened from
+        // is still underneath, watching the cached value; without this it
+        // kept marking them.
+        ref.invalidate(liveInvoiceCoverageProvider(InvoiceParams(
+          tenantId: _invoice.tenantId,
+          facilityId: widget.facilityId,
+        )));
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Invoice ${_invoice.invoiceNumber} has been voided'),

@@ -26,8 +26,15 @@ final overdueInvoicesProvider = FutureProvider.family<List<InvoiceModel>, String
 /// watches it to mark the charges on an invoice, and Generate Invoice
 /// refreshes it (ref.refresh) each time it opens: the invoice made a moment
 /// ago has to count, and a cached read would not know about it.
-final liveInvoiceCoverageProvider =
-    FutureProvider.family<LiveInvoiceCoverage, InvoiceParams>((ref, params) {
+///
+/// autoDispose, so the value goes with the ledger that watched it and the
+/// next visit reads afresh. Kept for the session, it outlived a void made
+/// from the invoice page: the owner came back to the ledger and the voided
+/// invoice's charges still read "On invoice" until she generated again or
+/// reloaded the app. The invoice page also invalidates it after a void, for
+/// the ledger still open underneath.
+final liveInvoiceCoverageProvider = FutureProvider.autoDispose
+    .family<LiveInvoiceCoverage, InvoiceParams>((ref, params) {
   return InvoiceService.liveInvoiceCoverage(
     facilityId: params.facilityId,
     tenantId: params.tenantId,
