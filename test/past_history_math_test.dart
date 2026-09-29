@@ -6,6 +6,7 @@ import 'package:sfcapp/models/payment_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/providers/ledger_provider.dart';
 import 'package:sfcapp/screens/tenant_past_history_dialog.dart';
+import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/past_history_math.dart';
 
 // All names are made up. The owner's case: moved in 2026-02-10 at $80 a
@@ -577,11 +578,14 @@ void main() {
     );
     await tester.enterText(amount, '160');
     await tester.pumpAndSettle();
-    expect(
-      find.text('\$160.00 is not this tenant\'s rate of \$80.00. '
-          'If they rent more than one unit, add the other unit first (Units › the unit › Assign Tenant) so the rate is the total.'),
-      findsOneWidget,
-    );
+    // The other unit is usually on a duplicate record, so the copy has to
+    // name Unassign before Assign: Assign Tenant alone stops on "occupied".
+    final warning = find.text('\$160.00 is not this tenant\'s rate of \$80.00. '
+        'If they rent more than one unit, put every unit on this record first: on the other unit\'s page '
+        '(Units › Unit List), Unassign Tenant if another record holds it, then Assign Tenant to this tenant. '
+        'The rate then becomes the total.');
+    expect(warning, findsOneWidget);
+    expect(tester.widget<Text>(warning).style?.color, AppTheme.warning);
     // A warning only: ticking the confirm box still lets the owner save.
     await tester.tap(find.text('I checked these months, amounts and dates against my records'));
     await tester.pumpAndSettle();
@@ -593,6 +597,36 @@ void main() {
     await tester.enterText(amount, '8');
     await tester.pumpAndSettle();
     expect(find.textContaining('is not this tenant\'s rate'), findsNothing);
+  });
+
+  testWidgets('a month dated the 1st typed below the rate is named without the multi-unit warning', (tester) async {
+    // Rent was lower before a raise, or a month was discounted: the helper
+    // text invites the change, so it must not read as a two-unit mistake.
+    await _pumpDialog(tester, const []);
+    await tester.tap(find.text('Choose move-in date *'));
+    await tester.pumpAndSettle();
+    // The picker opens on September 2026; move in on the 1st.
+    await tester.tap(find.text('1'));
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle();
+    expect(find.text('September 2026'), findsOneWidget);
+
+    final amount = find.descendant(
+      of: find.byKey(const ValueKey('history-charge-2026-9')),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(amount, '40');
+    await tester.pumpAndSettle();
+    final note = find.text('\$40.00 is not this tenant\'s rate of \$80.00. Fine if the rent was different then.');
+    expect(note, findsOneWidget);
+    expect(tester.widget<Text>(note).style?.color, AppTheme.textSecondary);
+    expect(find.textContaining('If they rent more than one unit'), findsNothing);
+
+    // Above the rate on the same month is still the two-unit case.
+    await tester.enterText(amount, '160');
+    await tester.pumpAndSettle();
+    expect(find.textContaining('If they rent more than one unit'), findsOneWidget);
+    expect(find.textContaining('Fine if the rent was different then'), findsNothing);
   });
 
   group('payment dates', () {

@@ -499,17 +499,30 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
           Text('No months to add: rent is already on the ledger from the move-in month.', style: theme.textTheme.bodySmall)
         else ...[
           for (var i = 0; i < _charges.length; i++) _buildChargeRow(i),
-          // A warning only: a person renting two units was entered at their
-          // combined rent on a record whose rate was one unit's, and nothing
-          // said so. Saving still goes ahead; the rate is theirs to fix.
+          // A person renting two units was entered at their combined rent on
+          // a record whose rate was one unit's, and nothing said so. Above
+          // the rate is that case and gets the warning. The other unit is
+          // usually held by a duplicate record of the same person, so Assign
+          // Tenant alone stops on "occupied": the copy names Unassign first.
+          // Below the rate is what the helper text invites (a rent raise, a
+          // discounted month), so it is only named, in case of a slip.
+          // Saving goes ahead either way; the rate is theirs to fix.
           for (final amount in historyAmountsOffRate(charges: _charges, monthlyRate: widget.tenant.monthlyRate))
             Padding(
               padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                '${_money(amount)} is not this tenant\'s rate of ${_money(widget.tenant.monthlyRate)}. '
-                'If they rent more than one unit, add the other unit first (Units › the unit › Assign Tenant) so the rate is the total.',
-                style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.warning),
-              ),
+              child: amount > widget.tenant.monthlyRate
+                  ? Text(
+                      '${_money(amount)} is not this tenant\'s rate of ${_money(widget.tenant.monthlyRate)}. '
+                      'If they rent more than one unit, put every unit on this record first: on the other unit\'s page '
+                      '(Units › Unit List), Unassign Tenant if another record holds it, then Assign Tenant to this tenant. '
+                      'The rate then becomes the total.',
+                      style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.warning),
+                    )
+                  : Text(
+                      '${_money(amount)} is not this tenant\'s rate of ${_money(widget.tenant.monthlyRate)}. '
+                      'Fine if the rent was different then.',
+                      style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
+                    ),
             ),
         ],
         const SizedBox(height: 20),
