@@ -95,7 +95,51 @@ void main() {
       expect(lines.rows.map((r) => r.runningBalance), [130, 10]);
     });
 
-    test('same day and same sign: creation order, then id', () {
+    test('on one local day the charge prints first even when the payment '
+        'is earlier in the day', () {
+      // A check logged at 09:00 and the rent posted at 12:00 the same day
+      // used to print payment first, the Balance column reading -$120 then
+      // $10. Local times, so the day is the same whatever zone runs this.
+      final payAt = DateTime(2026, 9, 1, 9);
+      final rentAt = DateTime(2026, 9, 1, 12);
+      final lines = buildStatementLines([
+        _entry('a-pay', LedgerEntryType.payment, -120, payAt,
+            description: 'Payment - Check #1001'),
+        _entry('b-rent', LedgerEntryType.rentCharge, 130, rentAt,
+            description: 'September rent'),
+      ]);
+      expect(lines.rows.map((r) => r.description),
+          ['September rent', 'Payment - Check #1001']);
+      expect(lines.rows.map((r) => r.runningBalance), [130, 10]);
+      expect(lines.rows.every((r) => r.runningBalance >= 0), isTrue);
+      expect(lines.closingBalance, 10);
+    });
+
+    test('a payment the day before a charge still prints first', () {
+      final lines = buildStatementLines([
+        _entry('b-rent', LedgerEntryType.rentCharge, 130,
+            DateTime(2026, 9, 2, 0, 5),
+            description: 'September rent'),
+        _entry('a-pay', LedgerEntryType.payment, -120,
+            DateTime(2026, 9, 1, 23, 55),
+            description: 'Payment - Check #1001'),
+      ]);
+      expect(lines.rows.map((r) => r.description),
+          ['Payment - Check #1001', 'September rent']);
+      expect(lines.rows.map((r) => r.runningBalance), [-120, 10]);
+    });
+
+    test('same day and same sign: earlier time first', () {
+      final lines = buildStatementLines([
+        _entry('late', LedgerEntryType.lateFee, 10, DateTime(2026, 3, 1, 8),
+            description: 'late'),
+        _entry('admin', LedgerEntryType.adminFee, 5, DateTime(2026, 3, 1, 7),
+            description: 'admin'),
+      ]);
+      expect(lines.rows.map((r) => r.description), ['admin', 'late']);
+    });
+
+    test('same moment and same sign: creation order, then id', () {
       final lines = buildStatementLines([
         _entry('z', LedgerEntryType.lateFee, 10, _noonUtc(2026, 3, 1),
             description: 'late', createdAt: DateTime.utc(2026, 3, 1, 9)),

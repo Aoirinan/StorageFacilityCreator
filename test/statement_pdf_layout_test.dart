@@ -76,10 +76,10 @@ final _mailedTenant = TenantModel(
   name: 'Pat Example',
   email: '',
   phone: '(555) 010-0199',
-  unitNumber: 'C2-6',
+  unitNumber: 'B-14',
   unitId: 'u6',
-  unitArea: 'Complex 2',
-  monthlyRate: 110,
+  unitArea: 'Building B',
+  monthlyRate: 144,
   createdAt: DateTime(2026, 1, 1),
   addresses: [
     Address(
@@ -88,7 +88,7 @@ final _mailedTenant = TenantModel(
       street1: '12 Example Ave',
       city: 'Anytown',
       state: 'ND',
-      zipCode: '79401',
+      zipCode: '58999',
       isPrimary: true,
       createdAt: DateTime(2026, 1, 1),
     ),
@@ -119,7 +119,7 @@ UnitModel _unit(String id, String number, {String? area, UnitStatus status = Uni
       unitType: 'standard',
       status: status,
       tenantId: 't2',
-      monthlyRate: 55,
+      monthlyRate: 72,
       area: area,
       createdAt: DateTime(2026, 1, 1),
       updatedAt: DateTime(2026, 1, 1),
@@ -292,23 +292,23 @@ void main() {
         'then the units; no line for a missing email', () async {
       final lines = _textLines(await _statementPdf(
         entries: [
-          _entry('e1', LedgerEntryType.rentCharge, 110, DateTime(2026, 9, 1),
+          _entry('e1', LedgerEntryType.rentCharge, 144, DateTime(2026, 9, 1),
               'September rent'),
         ],
         tenant: _mailedTenant,
         facility: _facility(repeat: true),
         unitLabels: statementUnitLabels(_mailedTenant, _facility(repeat: true),
             units: [
-              _unit('u7', 'C2-7', area: 'Complex 2'),
-              _unit('u6', 'C2-6', area: 'Complex 2'),
+              _unit('u7', 'B-15', area: 'Building B'),
+              _unit('u6', 'B-14', area: 'Building B'),
             ]),
       ));
 
       final name = _lineWith(lines, 'Pat Example');
       final street = _lineWith(lines, '12 Example Ave');
-      final city = _lineWith(lines, 'Anytown, ND 79401');
+      final city = _lineWith(lines, 'Anytown, ND 58999');
       final phone = _lineWith(lines, '(555) 010-0199');
-      final units = _lineWith(lines, 'Units: C2-6, C2-7 (Complex 2)');
+      final units = _lineWith(lines, 'Units: B-14, B-15 (Building B)');
 
       // Each line lower than the one before it.
       expect(name.y, greaterThan(street.y));
@@ -325,8 +325,8 @@ void main() {
 
     test('holder details never carry an empty line', () {
       expect(
-        statementHolderDetails(_mailedTenant, ['C2-6 (Complex 2)']),
-        ['12 Example Ave', 'Anytown, ND 79401', '(555) 010-0199', 'Unit: C2-6 (Complex 2)'],
+        statementHolderDetails(_mailedTenant, ['B-14 (Building B)']),
+        ['12 Example Ave', 'Anytown, ND 58999', '(555) 010-0199', 'Unit: B-14 (Building B)'],
       );
       // No address, no phone, no email, no unit: nothing under the name.
       expect(
@@ -345,37 +345,37 @@ void main() {
         'named once when it is shared', () {
       final on = _facility(repeat: true);
       final labels = statementUnitLabels(_mailedTenant, on, units: [
-        _unit('u10', 'C2-10', area: 'Complex 2'),
-        _unit('u6', 'C2-6', area: 'Complex 2'),
+        _unit('u10', 'B-102', area: 'Building B'),
+        _unit('u6', 'B-14', area: 'Building B'),
         // Marked available: not held, whatever its tenantId says.
-        _unit('u9', 'C2-9', area: 'Complex 2', status: UnitStatus.available),
+        _unit('u9', 'B-16', area: 'Building B', status: UnitStatus.available),
       ]);
-      expect(labels, ['C2-6 (Complex 2)', 'C2-10 (Complex 2)']);
-      expect(statementUnitsLine(labels), 'Units: C2-6, C2-10 (Complex 2)');
+      expect(labels, ['B-14 (Building B)', 'B-102 (Building B)']);
+      expect(statementUnitsLine(labels), 'Units: B-14, B-102 (Building B)');
 
       // Different areas keep their own.
       expect(
         statementUnitsLine(statementUnitLabels(_mailedTenant, on, units: [
-          _unit('u17', 'C2-17', area: 'Complex 2'),
-          _unit('u7', 'C3-7', area: 'Complex 3'),
+          _unit('u17', 'B-17', area: 'Building B'),
+          _unit('u7', 'D-3', area: 'Building D'),
         ])),
-        'Units: C2-17 (Complex 2), C3-7 (Complex 3)',
+        'Units: B-17 (Building B), D-3 (Building D)',
       );
 
       // The setting off: numbers alone, as before.
       expect(
         statementUnitsLine(statementUnitLabels(_mailedTenant, _facility(), units: [
-          _unit('u7', 'C2-7', area: 'Complex 2'),
-          _unit('u6', 'C2-6', area: 'Complex 2'),
+          _unit('u7', 'B-15', area: 'Building B'),
+          _unit('u6', 'B-14', area: 'Building B'),
         ])),
-        'Units: C2-6, C2-7',
+        'Units: B-14, B-15',
       );
 
       // No unit list: the tenant's own unit, as the ledger screen falls
       // back to when the read fails.
-      expect(statementUnitLabels(_mailedTenant, on), ['C2-6 (Complex 2)']);
+      expect(statementUnitLabels(_mailedTenant, on), ['B-14 (Building B)']);
       expect(statementUnitsLine(statementUnitLabels(_mailedTenant, _facility())),
-          'Unit: C2-6');
+          'Unit: B-14');
       expect(statementUnitsLine(const []), isNull);
     });
   });
