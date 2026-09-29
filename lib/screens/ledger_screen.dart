@@ -943,41 +943,22 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
           throw Exception('Facility not found');
         }
 
-        // Apply filters if any
-        var filteredEntries = entries;
-        if (_startDate != null) {
-          filteredEntries = filteredEntries.where((e) => e.entryDate.isAfter(_startDate!.subtract(const Duration(seconds: 1))) || e.entryDate.isAtSameMomentAs(_startDate!)).toList();
-        }
-        if (_endDate != null) {
-          filteredEntries = filteredEntries.where((e) => e.entryDate.isBefore(_endDate!.add(const Duration(days: 1))) || e.entryDate.isAtSameMomentAs(_endDate!)).toList();
-        }
+        // Every unit the tenant holds, so a two-unit tenant's statement
+        // names both, not just the record's own unit.
+        final unitLabels =
+            await StatementService.unitLabelsFor(widget.tenant, facility);
 
-        // Calculate balance forward
-        double balanceForward = 0.0;
-        if (_startDate != null) {
-          final earlierEntries = entries.where((e) => e.entryDate.isBefore(_startDate!)).toList();
-          balanceForward = 0.0;
-          for (final entry in earlierEntries) {
-            if (entry.status != LedgerEntryStatus.voided) {
-              if (entry.type == LedgerEntryType.payment || 
-                  entry.type == LedgerEntryType.credit || 
-                  entry.type == LedgerEntryType.refund) {
-                balanceForward -= entry.amount.abs();
-              } else {
-                balanceForward += entry.amount;
-              }
-            }
-          }
-        }
-
-        // Generate PDF
+        // Generate PDF. The whole ledger goes in: the statement cuts the
+        // period and the balance forward from it itself (statement_lines.dart).
+        // The end date stays null when none was chosen, so the statement can
+        // label the figure "Current Balance" rather than "as of" today.
         final pdfData = await StatementService.generateStatementPDF(
-          entries: filteredEntries,
+          entries: entries,
           tenant: widget.tenant,
           facility: facility,
           startDate: _startDate,
-          endDate: _endDate ?? DateTime.now(),
-          balanceForward: balanceForward,
+          endDate: _endDate,
+          unitLabels: unitLabels,
         );
 
         // Show print dialog
