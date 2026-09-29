@@ -344,11 +344,19 @@ export type { LedgerBalanceSplit } from './ledger/disputeEntries';
 export {
   DISPUTE_LEDGER_TYPE,
   DISPUTE_REVERSAL_LEDGER_TYPE,
+  disputeCredit,
   isDisputeLedgerRow,
   splitLedgerBalance,
 } from './ledger/disputeEntries';
 export type { DisputePaymentCheck, DisputePaymentRefusal } from './ledger/disputePayment';
-export { checkDisputeForPayment, disputeLedgerEntryId, disputeOutstanding } from './ledger/disputePayment';
+export {
+  checkDisputeForPayment,
+  DISPUTE_OVERPAID_NOTIFICATION_PREFIX,
+  disputeLedgerEntryId,
+  disputeOutstanding,
+  disputeOverpaidNotificationId,
+  notifyIfDisputeOverpaid,
+} from './ledger/disputePayment';
 
 export type { UnitNotOfferedReason } from './units/onlineRental';
 export {

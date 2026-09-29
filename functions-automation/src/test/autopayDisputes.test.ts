@@ -333,3 +333,81 @@ test('and the delinquency job still sees April owed after the dispute is paid by
   assert.deepEqual(fees.map((row) => row.amount), [10]);
   assert.equal(await reminderBalance('f1', 't1'), 110);
 });
+
+// --- A dispute the tenant paid twice ------------------------------------------
+
+test('a dispute paid by link and then won: March was paid twice, so autopay charges nothing for April', async () => {
+  // The tenant paid the dispute link, then withdrew the dispute with their
+  // bank, so Stripe closed it as won and returned the money.
+  const fake = setup([
+    ['march', rent()],
+    ['payment_pi_march', paid()],
+    ['dispute_du_1', disputeRow()],
+    ['payment_pi_link', { type: 'payment', amount: -100, metadata: { paymentIntentId: 'pi_link', disputeId: 'du_1' } }],
+    ['dispute_du_1_reinstated', reversalRow()],
+    ['april', rent()],
+  ]);
+
+  await runAutopay(fake);
+
+  // Before: $100 charged on a $0 balance; the tenant had then paid March
+  // twice and April once, with the extra $100 a dispute credit nobody saw.
+  assert.deepEqual(charged, []);
+  assert.equal(ledgerTotal(fake), 0);
+  assert.equal(await reminderBalance('f1', 't1'), 0);
+
+  // Staff refund the extra payment (the webhook tags the refund with the
+  // dispute): April is owed again, and next run charges it.
+  fake.seed(`${LEDGERS}/refund_re_link`, {
+    tenantId: 't1',
+    facilityId: 'f1',
+    status: 'posted',
+    type: 'refund',
+    amount: 100,
+    metadata: { refundId: 're_link', disputeId: 'du_1' },
+  });
+  nextMonth(fake);
+  await runAutopay(fake);
+  assert.deepEqual(charged, [100]);
+  assert.equal(ledgerTotal(fake), 0);
+});
+
+test('the delinquency job leaves alone a tenant whose dispute credit covers the rent', async () => {
+  const fake = setup([
+    ['march', rent()],
+    ['payment_pi_march', paid()],
+    ['dispute_du_1', disputeRow()],
+    ['hand_du_1', disputeHandPayment()],
+    ['dispute_du_1_reinstated', reversalRow()],
+    ['april', rent()],
+  ]);
+  fake.seed('facilities/f1', {
+    ...fake.read('facilities/f1')!,
+    billingSettings: { enableAutoLateFees: true, lateFeeType: 'flat', lateFeeAmount: 25, enableAutoNotices: false },
+  });
+  fake.seed('facilities/f1/tenants/t1', {
+    ...fake.read('facilities/f1/tenants/t1')!,
+    paidThrough: admin.firestore.Timestamp.fromDate(new Date(Date.now() - 90 * 24 * 3600 * 1000)),
+  });
+
+  const result = await processDelinquencyForFacility('f1', false);
+
+  assert.equal(result.success, true);
+  assert.equal(fake.list(LEDGERS).some((id) => fake.read(`${LEDGERS}/${id}`)!.type === 'lateFee'), false);
+});
+
+test('a reversal left after staff voided its dispute row is not a credit: April is still charged', async () => {
+  const fake = setup([
+    ['march', rent()],
+    ['payment_pi_march', paid()],
+    ['april', rent()],
+  ]);
+  fake.seed(`${LEDGERS}/dispute_du_1`, { tenantId: 't1', facilityId: 'f1', status: 'voided', ...disputeRow() });
+  fake.seed(`${LEDGERS}/dispute_du_1_reinstated`, { tenantId: 't1', facilityId: 'f1', status: 'posted', ...reversalRow() });
+
+  await runAutopay(fake);
+
+  // The facility has March's money and not April's: the reversal alone is
+  // not money the tenant paid.
+  assert.deepEqual(charged, [100]);
+});

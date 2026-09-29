@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { isDisputeLedgerRow, splitLedgerBalance } from '../ledger/disputeEntries';
+import { disputeCredit, isDisputeLedgerRow, splitLedgerBalance } from '../ledger/disputeEntries';
 import { disputeOutstanding } from '../ledger/disputePayment';
 
 type Row = { type?: unknown; amount?: unknown; metadata?: unknown };
@@ -12,6 +12,7 @@ const parity = JSON.parse(
   rows: Array<{ name: string; row: Row; isDispute: boolean }>;
   balances: Array<{ name: string; rows: Row[]; total: number; disputed: number; collectible: number }>;
   outstanding: Array<{ name: string; disputeId: string; rows: Array<Row & { status?: unknown }>; outstanding: number }>;
+  credit: Array<{ name: string; disputeId: string; rows: Array<Row & { status?: unknown }>; credit: number }>;
 };
 
 for (const c of parity.rows) {
@@ -33,6 +34,12 @@ for (const c of parity.balances) {
 for (const c of parity.outstanding) {
   test(`dispute outstanding: ${c.name}`, () => {
     assert.equal(disputeOutstanding(c.rows, c.disputeId), c.outstanding);
+  });
+}
+
+for (const c of parity.credit) {
+  test(`dispute credit: ${c.name}`, () => {
+    assert.equal(disputeCredit(c.rows, c.disputeId), c.credit);
   });
 }
 

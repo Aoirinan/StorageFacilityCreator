@@ -1,7 +1,7 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
-import { isPublicLinkPaymentIntent } from '@sfc/functions-shared';
+import { isPublicLinkPaymentIntent, notifyIfDisputeOverpaid } from '@sfc/functions-shared';
 import { isAlreadyExistsError } from './firestoreErrors';
 import { eventAccountMatchesFacility } from './connectedAccountGuard';
 
@@ -153,26 +153,57 @@ export async function handlePaymentIntentSucceeded(
         .collection('ledgers')
         .doc(`payment_${paymentIntent.id}`);
 
-      await ledgerRef.set({
-        tenantId: tenantId,
-        facilityId: facilityId,
-        type: 'payment',
-        amount: -(paymentIntent.amount / 100), // Negative for payments
-        description: disputeId
-          ? `Card dispute payment via Stripe - ${paymentIntent.id}`
-          : `Payment via Stripe - ${paymentIntent.id}`,
-        referenceId: paymentRecordId,
-        entryDate: admin.firestore.FieldValue.serverTimestamp(),
-        status: 'posted',
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      const metadata: Record<string, unknown> = {
+        paymentIntentId: paymentIntent.id,
+        invoiceId: invoiceId || null,
+        // Nets the payment against the dispute instead of counting it as
+        // rent: autopay and the delinquency job read only the rest.
+        ...(disputeId ? { disputeId } : {}),
+      };
+      try {
+        await ledgerRef.create({
+          tenantId: tenantId,
+          facilityId: facilityId,
+          type: 'payment',
+          amount: -(paymentIntent.amount / 100), // Negative for payments
+          description: disputeId
+            ? `Card dispute payment via Stripe - ${paymentIntent.id}`
+            : `Payment via Stripe - ${paymentIntent.id}`,
+          referenceId: paymentRecordId,
+          entryDate: admin.firestore.FieldValue.serverTimestamp(),
+          status: 'posted',
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          createdBy: 'system@stripe-webhook',
+          metadata,
+        });
+      } catch (error) {
+        if (!isAlreadyExistsError(error)) throw error;
+        // Written already: by autopay (same id), or by an earlier delivery of
+        // this event (a resend, or a retry after the processed mark failed).
+        // Its status is left alone: a set() here put a row staff had voided
+        // back to 'posted', crediting the tenant again. Only what this event
+        // adds is merged: the payment record link and the metadata.
+        const existing = await ledgerRef.get();
+        const existingMetadata = (existing.get('metadata') as Record<string, unknown> | undefined) ?? {};
+        const update: Record<string, unknown> = { referenceId: paymentRecordId };
+        for (const [key, value] of Object.entries(metadata)) {
+          if (value !== null && existingMetadata[key] === undefined) update[`metadata.${key}`] = value;
+        }
+        await ledgerRef.update(update);
+      }
+    }
+
+    // A dispute link paid after the dispute was won (or paid by hand, or
+    // voided) is money the tenant is owed back. It is still booked: the card
+    // was charged. Staff are told to refund it (the ledger counts it as a
+    // credit until they do).
+    if (disputeId) {
+      await notifyIfDisputeOverpaid({
+        db: admin.firestore(),
+        facilityId,
+        tenantId,
+        disputeId,
         createdBy: 'system@stripe-webhook',
-        metadata: {
-          paymentIntentId: paymentIntent.id,
-          invoiceId: invoiceId || null,
-          // Nets the payment against the dispute instead of counting it as
-          // rent: autopay and the delinquency job read only the rest.
-          ...(disputeId ? { disputeId } : {}),
-        },
       });
     }
 

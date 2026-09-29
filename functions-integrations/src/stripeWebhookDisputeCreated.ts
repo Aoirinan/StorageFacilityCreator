@@ -5,6 +5,8 @@ import {
   DISPUTE_LEDGER_TYPE,
   DISPUTE_REVERSAL_LEDGER_TYPE,
   getStripeClient,
+  notifyIfDisputeOverpaid,
+  writeAuditLog,
 } from '@sfc/functions-shared';
 import { eventAccountMatchesFacility } from './connectedAccountGuard';
 
@@ -134,6 +136,12 @@ export function disputeMoneyMovement(
  * - Once reversed, the original counts as settled (`metadata.allocatedAmount`)
  *   so the app never offers it for an invoice again, and any unpaid invoice
  *   staff made from it is voided: a won dispute leaves nothing to bill.
+ * - A dispute staff voided (they chose not to collect it) gets its reversal
+ *   posted voided too: posted, it was a credit for money the tenant never
+ *   paid.
+ * - A dispute that was collected by hand before it was won leaves the tenant
+ *   having paid it twice: staff get a notification to refund it
+ *   (functions-shared notifyIfDisputeOverpaid).
  * - Autopay, the delinquency job and the payment reminders leave both rows
  *   out of what they collect or ask for (functions-shared
  *   ledger/disputeEntries.ts), and the tenant portal leaves the `disputed`
@@ -232,6 +240,9 @@ export async function handleDisputeCreated(
         : null;
     const postedReversal = movement.reinstated && !reversalSnap.exists && originalAmount !== null;
     const reversed = reversalSnap.exists || postedReversal;
+    // Staff voided the dispute: the reversal nets against nothing, so it is
+    // recorded voided alongside it rather than left as a credit.
+    const originalVoided = originalSnap.exists && originalSnap.get('status') !== 'posted';
 
     if (paymentSnap?.exists) {
       const update: Record<string, unknown> = { disputeId: dispute.id, updatedAt: now };
@@ -307,10 +318,18 @@ export async function handleDisputeCreated(
             : `Dispute funds returned (${reason})`,
         referenceId: paymentRef ? paymentRef.id : null,
         entryDate: now,
-        status: 'posted',
+        status: originalVoided ? 'voided' : 'posted',
+        ...(originalVoided ? { voidedAt: now, voidedBy: 'system@stripe-webhook' } : {}),
         createdAt: now,
         createdBy: 'system@stripe-webhook',
-        metadata: { ...ledgerMetadata, reversesEntryId: originalRef.id },
+        metadata: {
+          ...ledgerMetadata,
+          reversesEntryId: originalRef.id,
+          // Where the app's own void keeps its reason.
+          ...(originalVoided
+            ? { voidReason: 'Its card dispute was voided on the ledger, so the money coming back is not a credit.' }
+            : {}),
+        },
       });
     }
     return { postedOriginal, postedReversal, reversed };
@@ -327,6 +346,19 @@ export async function handleDisputeCreated(
       })
     : [];
 
+  // Won after staff had already collected it by hand (or by link): the
+  // tenant has paid it twice. Nobody was told, and the money sat on the
+  // ledger as a dispute credit. Same every-time rule as above.
+  const overpaid = posted.reversed
+    ? await notifyIfDisputeOverpaid({
+        db,
+        facilityId,
+        tenantId: tenantId || null,
+        disputeId: dispute.id,
+        createdBy: 'system@stripe-webhook',
+      })
+    : 0;
+
   functions.logger.info(`Dispute ${eventType}: ${dispute.id} is ${dispute.status}`, {
     paymentIntentId,
     connectedAccount: !!connectedAccountId,
@@ -334,6 +366,7 @@ export async function handleDisputeCreated(
     ...movement,
     ...posted,
     voidedInvoices,
+    overpaid,
   });
 }
 
@@ -377,21 +410,24 @@ async function voidInvoicesForReversedDispute(params: {
       updatedAt: now,
       updatedBy: 'system@stripe-webhook',
     });
-    await facilityRef.collection('auditLogs').add({
-      action: 'invoice.voided',
+    // The standard audit schema (eventType, timestamp): the Audit Log screen
+    // orders by timestamp and filters by eventType, so a row written as
+    // action/at never showed there.
+    await writeAuditLog(facilityRef.id, {
+      eventType: 'invoice.voided',
       actorUid: 'system',
-      actorEmail: 'system@stripe-webhook',
+      targetType: 'invoice',
       targetId: invoice.id,
-      entityType: 'invoice',
-      entityId: invoice.id,
-      tenantId: (invoice.get('tenantId') as string | undefined) ?? params.tenantId,
-      details: {
+      tenantId: ((invoice.get('tenantId') as string | undefined) ?? params.tenantId) || undefined,
+      before: { status },
+      after: { status: 'voided', voidReason },
+      metadata: {
         invoiceNumber: invoice.get('invoiceNumber') ?? null,
         reason: voidReason,
         disputeId,
         ledgerEntryId,
+        source: 'system@stripe-webhook',
       },
-      at: now,
     });
     voided.push(invoice.id);
   }

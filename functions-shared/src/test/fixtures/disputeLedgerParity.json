@@ -58,6 +58,56 @@
       "total": 45.43,
       "disputed": 12.1,
       "collectible": 33.33
+    },
+    {
+      "name": "paid by link, then the cardholder withdrew it (won): the tenant paid March twice, so April is covered",
+      "rows": [
+        { "type": "rentCharge", "amount": 100 },
+        { "type": "payment", "amount": -100, "metadata": { "paymentIntentId": "pi_march" } },
+        { "type": "dispute", "amount": 100, "metadata": { "disputeId": "du_1" } },
+        { "type": "payment", "amount": -100, "metadata": { "paymentIntentId": "pi_link", "disputeId": "du_1" } },
+        { "type": "dispute_reversal", "amount": -100, "metadata": { "disputeId": "du_1" } },
+        { "type": "rentCharge", "amount": 100 }
+      ],
+      "total": 0,
+      "disputed": 0,
+      "collectible": 0
+    },
+    {
+      "name": "a reversal left after staff voided its dispute row is not money the tenant paid",
+      "rows": [
+        { "type": "rentCharge", "amount": 100 },
+        { "type": "payment", "amount": -100, "metadata": { "paymentIntentId": "pi_march" } },
+        { "type": "dispute_reversal", "amount": -100, "metadata": { "disputeId": "du_1" } },
+        { "type": "rentCharge", "amount": 100 }
+      ],
+      "total": 0,
+      "disputed": 0,
+      "collectible": 100
+    },
+    {
+      "name": "one dispute open, another paid twice: the open one is held out, the other's credit counts",
+      "rows": [
+        { "type": "rentCharge", "amount": 100 },
+        { "type": "dispute", "amount": 100, "metadata": { "disputeId": "du_1" } },
+        { "type": "dispute", "amount": 50, "metadata": { "disputeId": "du_2" } },
+        { "type": "payment", "amount": -50, "metadata": { "paymentMethod": "cash", "disputeId": "du_2" } },
+        { "type": "dispute_reversal", "amount": -50, "metadata": { "disputeId": "du_2" } }
+      ],
+      "total": 150,
+      "disputed": 100,
+      "collectible": 50
+    },
+    {
+      "name": "old id-less dispute rows net against each other",
+      "rows": [
+        { "type": "rentCharge", "amount": 100 },
+        { "type": "dispute", "amount": 50 },
+        { "type": "dispute_reversal", "amount": -50 }
+      ],
+      "total": 100,
+      "disputed": 0,
+      "collectible": 100
     }
   ],
   "outstanding": [
@@ -100,6 +150,58 @@
         { "type": "dispute_reversal", "amount": -100, "status": "posted", "metadata": { "disputeId": "du_1" } }
       ],
       "outstanding": -100
+    }
+  ],
+  "credit": [
+    {
+      "name": "paid by hand and then won: the refund owed",
+      "disputeId": "du_1",
+      "rows": [
+        { "type": "dispute", "amount": 100, "status": "posted", "metadata": { "disputeId": "du_1" } },
+        { "type": "payment", "amount": -100, "status": "posted", "metadata": { "paymentMethod": "cash", "disputeId": "du_1" } },
+        { "type": "dispute_reversal", "amount": -100, "status": "posted", "metadata": { "disputeId": "du_1" } }
+      ],
+      "credit": 100
+    },
+    {
+      "name": "part paid by hand, still open: nothing owed back",
+      "disputeId": "du_1",
+      "rows": [
+        { "type": "dispute", "amount": 100, "status": "posted", "metadata": { "disputeId": "du_1" } },
+        { "type": "payment", "amount": -40, "status": "posted", "metadata": { "paymentMethod": "cash", "disputeId": "du_1" } }
+      ],
+      "credit": 0
+    },
+    {
+      "name": "dispute row voided by staff, then won: the reversal alone is no credit",
+      "disputeId": "du_1",
+      "rows": [
+        { "type": "dispute", "amount": 100, "status": "voided", "metadata": { "disputeId": "du_1" } },
+        { "type": "dispute_reversal", "amount": -100, "status": "posted", "metadata": { "disputeId": "du_1" } }
+      ],
+      "credit": 0
+    },
+    {
+      "name": "dispute row voided by staff, then paid by link: all of it",
+      "disputeId": "du_1",
+      "rows": [
+        { "type": "dispute", "amount": 100, "status": "voided", "metadata": { "disputeId": "du_1" } },
+        { "type": "dispute_reversal", "amount": -100, "status": "voided", "metadata": { "disputeId": "du_1" } },
+        { "type": "payment", "amount": -100, "status": "posted", "metadata": { "paymentIntentId": "pi_link", "disputeId": "du_1" } },
+        { "type": "payment", "amount": -30, "status": "posted", "metadata": { "paymentIntentId": "pi_other", "disputeId": "du_2" } }
+      ],
+      "credit": 100
+    },
+    {
+      "name": "paid twice, then one payment refunded: settled",
+      "disputeId": "du_1",
+      "rows": [
+        { "type": "dispute", "amount": 100, "status": "posted", "metadata": { "disputeId": "du_1" } },
+        { "type": "payment", "amount": -100, "status": "posted", "metadata": { "paymentIntentId": "pi_link", "disputeId": "du_1" } },
+        { "type": "dispute_reversal", "amount": -100, "status": "posted", "metadata": { "disputeId": "du_1" } },
+        { "type": "refund", "amount": 100, "status": "posted", "metadata": { "refundId": "re_1", "disputeId": "du_1" } }
+      ],
+      "credit": 0
     }
   ]
 }

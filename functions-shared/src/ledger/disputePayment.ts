@@ -1,5 +1,5 @@
-import type * as admin from 'firebase-admin';
-import { DISPUTE_LEDGER_TYPE } from './disputeEntries';
+import * as admin from 'firebase-admin';
+import { disputeCredit, DISPUTE_LEDGER_TYPE } from './disputeEntries';
 
 /**
  * A payment staff take by hand for a card dispute (charge the card on file,
@@ -14,10 +14,13 @@ import { DISPUTE_LEDGER_TYPE } from './disputeEntries';
  * The id is checked against the webhook's own row (`ledgers/dispute_{id}`,
  * stripeWebhookDisputeCreated.ts) because a tagged payment moves money out of
  * what automation collects: tagging an ordinary payment would raise the
- * collectible balance autopay charges. For the same reason the amount may not
- * be more than the dispute still has out: the excess would sit in `disputed`
- * as a credit that no rent is ever set against, while autopay kept charging
- * the rent in full.
+ * collectible balance autopay charges. The amount may not be more than the
+ * dispute still has out: the excess is money the tenant would have to be
+ * refunded, not a payment anyone asked for.
+ *
+ * A dispute can still end up paid twice (collected by hand, then won, or a
+ * link paid after the win): [notifyIfDisputeOverpaid] tells staff to refund
+ * it, and until they do it is a credit against rent (disputeEntries.ts).
  *
  * The app's "Record payment for this dispute" (lib/widgets/dispute_payment_dialog.dart,
  * with the amount from lib/providers/ledger_provider.dart openDisputeOutstanding)
@@ -37,7 +40,8 @@ export type DisputePaymentRefusal =
   | 'dispute_not_found'
   | 'dispute_of_another_tenant'
   | 'dispute_not_open'
-  | 'amount_over_dispute';
+  | 'amount_over_dispute'
+  | 'fraud_dispute_card_charge';
 
 export type DisputePaymentCheck =
   | { ok: true; disputeId: string | null }
@@ -66,10 +70,18 @@ export function disputeOutstanding(
   return cents(total);
 }
 
+/** The reason Stripe gives for a dispute where the cardholder says they never made the charge. */
+const FRAUDULENT_DISPUTE_REASON = 'fraudulent';
+
 /**
  * Whether [raw] (a callable's optional `disputeId`) names a dispute this
  * tenant still owes, and [amount] is no more than it has out. Absent or
  * blank is fine: an ordinary payment.
+ *
+ * [options.cardOnFile]: the payment would charge the tenant's saved card.
+ * Refused for a `fraudulent` dispute: the cardholder has told their bank
+ * they never made the charge, so charging a card on file again needs them
+ * to pay it themselves (cash, check, or a payment link they complete).
  */
 export async function checkDisputeForPayment(
   db: admin.firestore.Firestore,
@@ -77,6 +89,7 @@ export async function checkDisputeForPayment(
   tenantId: string,
   raw: unknown,
   amount: number,
+  options: { cardOnFile?: boolean } = {},
 ): Promise<DisputePaymentCheck> {
   if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')) {
     return { ok: true, disputeId: null };
@@ -100,6 +113,15 @@ export async function checkDisputeForPayment(
   if (data.status !== 'posted' || metadata.settledByEntryId) {
     return { ok: false, reason: 'dispute_not_open', message: 'That card dispute has nothing left to collect.' };
   }
+  if (options.cardOnFile && metadata.reason === FRAUDULENT_DISPUTE_REASON) {
+    return {
+      ok: false,
+      reason: 'fraud_dispute_card_charge',
+      message:
+        'The cardholder told their bank they did not make this charge, so it cannot go on the card on file. ' +
+        'Take it by cash or check, or send a payment link the tenant pays themselves.',
+    };
+  }
   const tenantRows = await ledgers.where('tenantId', '==', tenantId).get();
   const outstanding = disputeOutstanding(
     tenantRows.docs.map((doc) => doc.data()),
@@ -116,4 +138,79 @@ export async function checkDisputeForPayment(
     };
   }
   return { ok: true, disputeId };
+}
+
+/** Notifications/{id} for a dispute the tenant has paid twice. */
+export const DISPUTE_OVERPAID_NOTIFICATION_PREFIX = 'disputeOverpaid_';
+
+export function disputeOverpaidNotificationId(disputeId: string): string {
+  return `${DISPUTE_OVERPAID_NOTIFICATION_PREFIX}${disputeId}`;
+}
+
+function disputeOverpaidMessage(credit: number, disputeId: string): string {
+  const amount = `$${credit.toFixed(2)}`;
+  return (
+    `The tenant has paid ${amount} more towards card dispute ${disputeId} than the dispute took back: ` +
+    'it was collected by hand (cash, the card on file or a payment link) and then won or voided, ' +
+    `so they have paid it twice. Refund ${amount} to them. Until it is refunded it is a credit on ` +
+    'their ledger, and autopay and the reminders ask for that much less.'
+  );
+}
+
+/**
+ * Tells staff when the tenant has paid card dispute [disputeId] twice: a
+ * payment was taken for it by hand (or by link), and then the facility won
+ * it (Stripe returned the money) or staff voided it, or a dispute link was
+ * paid after that. Before, the money sat on the ledger as a dispute credit
+ * nobody was told about.
+ *
+ * Writes `Notifications/disputeOverpaid_{disputeId}` (STRIPE_ACTION_REQUIRED)
+ * when the tenant's posted rows for the dispute show a credit
+ * ([disputeCredit]). Safe to call on every delivery of every event: the
+ * notification is only rewritten (and shown unread again) when the amount
+ * changes. Returns the credit, 0 when there is none. Throws on Firestore
+ * failure, so a webhook caller returns 500 and Stripe retries.
+ */
+export async function notifyIfDisputeOverpaid(params: {
+  db: admin.firestore.Firestore;
+  facilityId: string;
+  tenantId: string | null | undefined;
+  disputeId: string;
+  createdBy: string;
+  now?: Date;
+}): Promise<number> {
+  const { db, facilityId, tenantId, disputeId } = params;
+  if (!facilityId || !tenantId || !DISPUTE_ID_PATTERN.test(disputeId)) return 0;
+  const facilityRef = db.collection('facilities').doc(facilityId);
+  const rows = await facilityRef.collection('ledgers').where('tenantId', '==', tenantId).get();
+  const credit = disputeCredit(
+    rows.docs.map((doc) => doc.data()),
+    disputeId,
+  );
+  if (credit <= 0) return 0;
+
+  const creditCents = Math.round(credit * 100);
+  const notificationRef = facilityRef.collection('Notifications').doc(disputeOverpaidNotificationId(disputeId));
+  const tenantRef = facilityRef.collection('tenants').doc(tenantId);
+  const timestamp = admin.firestore.Timestamp.fromDate(params.now ?? new Date());
+  await db.runTransaction(async (tx) => {
+    const existing = await tx.get(notificationRef);
+    const told = existing.exists ? (existing.get('metadata') as { creditCents?: unknown } | undefined) : undefined;
+    // Already told about this amount: leave it, and whether staff read it, alone.
+    if (told?.creditCents === creditCents) return;
+    const tenantSnap = await tx.get(tenantRef);
+    const name = tenantSnap.exists ? tenantSnap.get('name') : null;
+    tx.set(notificationRef, {
+      facilityId,
+      tenantId,
+      tenantName: typeof name === 'string' && name.trim() ? name.trim() : null,
+      type: 'STRIPE_ACTION_REQUIRED',
+      message: disputeOverpaidMessage(credit, disputeId),
+      readAt: null,
+      createdAt: timestamp,
+      createdBy: params.createdBy,
+      metadata: { reason: 'dispute_paid_twice', disputeId, creditCents },
+    });
+  });
+  return credit;
 }

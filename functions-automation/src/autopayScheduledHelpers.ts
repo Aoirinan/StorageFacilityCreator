@@ -66,7 +66,8 @@ export function isAutopayDue(
  * the same card: re-billing without consent, which card networks forbid, and
  * when the facility then won, the tenant had paid it twice. The same sum set
  * the delinquency job's late-fee basis. Staff collect a disputed amount by
- * hand.
+ * hand. A dispute the tenant has paid twice (collected by hand, then won) is
+ * the exception: that is a credit here (functions-shared disputeEntries.ts).
  */
 export function collectibleLedgerBalance(
   entries: ReadonlyArray<{ amount?: unknown; type?: unknown; metadata?: unknown }>,

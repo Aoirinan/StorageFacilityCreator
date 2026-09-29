@@ -70,6 +70,18 @@ void main() {
             reason: '${c['name']}');
       }
     });
+
+    // A dispute paid twice (collected by hand, then won): the refund owed,
+    // which the balance split counts as a credit against rent until then.
+    test('what the tenant is owed back for one dispute', () {
+      final cases = maps(parity['credit']);
+      expect(cases, isNotEmpty);
+      for (final c in cases) {
+        expect(disputeCredit(maps(c['rows']), c['disputeId'] as String),
+            (c['credit'] as num).toDouble(),
+            reason: '${c['name']}');
+      }
+    });
   });
 
   test('entries read from Firestore split by their stored type, posted only', () {

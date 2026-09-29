@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checkDisputeForPayment, disputeLedgerEntryId } from '../ledger/disputePayment';
+import {
+  checkDisputeForPayment,
+  disputeLedgerEntryId,
+  disputeOverpaidNotificationId,
+  notifyIfDisputeOverpaid,
+} from '../ledger/disputePayment';
 import { FakeFirestore } from '../testing/fakeFirestore';
 
 /** Facility f1 with the webhook's row for a $100 dispute du_1 on tenant t1. */
@@ -90,4 +95,101 @@ test('a dispute already paid in full by hand has nothing left to collect', async
   const result = await checkDisputeForPayment(fake.firestore(), 'f1', 't1', 'du_1', 100);
 
   assert.equal(!result.ok && result.reason, 'dispute_not_open');
+});
+
+test('a fraudulent dispute is never charged to the card on file, but can be taken another way', async () => {
+  const db = withDispute({ metadata: { disputeId: 'du_1', reason: 'fraudulent' } }).firestore();
+
+  const card = await checkDisputeForPayment(db, 'f1', 't1', 'du_1', 100, { cardOnFile: true });
+  assert.equal(!card.ok && card.reason, 'fraud_dispute_card_charge');
+  assert.deepEqual(await checkDisputeForPayment(db, 'f1', 't1', 'du_1', 100), { ok: true, disputeId: 'du_1' });
+
+  // Any other reason may go on the card, with the tenant's consent (the app asks).
+  const other = withDispute({ metadata: { disputeId: 'du_1', reason: 'product_not_received' } }).firestore();
+  assert.deepEqual(
+    await checkDisputeForPayment(other, 'f1', 't1', 'du_1', 100, { cardOnFile: true }),
+    { ok: true, disputeId: 'du_1' },
+  );
+});
+
+/** $100 dispute du_1 collected by hand; [won] adds the webhook's reversal. */
+function paidByHand(won: boolean) {
+  const fake = withDispute();
+  fake.seed('facilities/f1/tenants/t1', { name: ' Pat Tenant ' });
+  fake.seed('facilities/f1/ledgers/hand_1', {
+    tenantId: 't1',
+    type: 'payment',
+    amount: -100,
+    status: 'posted',
+    metadata: { paymentMethod: 'cash', disputeId: 'du_1' },
+  });
+  if (won) {
+    fake.seed('facilities/f1/ledgers/dispute_du_1_reinstated', {
+      tenantId: 't1',
+      type: 'dispute_reversal',
+      amount: -100,
+      status: 'posted',
+      metadata: { disputeId: 'du_1' },
+    });
+  }
+  return fake;
+}
+
+const NOTIFICATION = `facilities/f1/Notifications/${disputeOverpaidNotificationId('du_1')}`;
+
+test('a dispute paid by hand and then won tells staff to refund it, once per amount', async () => {
+  const fake = paidByHand(true);
+  const db = fake.firestore();
+  const notify = () => notifyIfDisputeOverpaid({ db, facilityId: 'f1', tenantId: 't1', disputeId: 'du_1', createdBy: 'system@stripe-webhook' });
+
+  assert.equal(await notify(), 100);
+  const row = fake.read(NOTIFICATION)!;
+  assert.equal(row.type, 'STRIPE_ACTION_REQUIRED');
+  assert.equal(row.tenantId, 't1');
+  assert.equal(row.tenantName, 'Pat Tenant');
+  assert.equal(row.readAt, null);
+  assert.match(String(row.message), /paid \$100\.00 more towards card dispute du_1/);
+  assert.match(String(row.message), /Refund \$100\.00/);
+  assert.deepEqual(row.metadata, { reason: 'dispute_paid_twice', disputeId: 'du_1', creditCents: 10000 });
+
+  // Staff read it; a redelivered event does not bring it back.
+  fake.seed(NOTIFICATION, { ...row, readAt: row.createdAt });
+  const writes = fake.writesTo(NOTIFICATION).length;
+  assert.equal(await notify(), 100);
+  assert.equal(fake.writesTo(NOTIFICATION).length, writes);
+  assert.notEqual(fake.read(NOTIFICATION)!.readAt, null);
+
+  // A second payment on top changes the amount: told again.
+  fake.seed('facilities/f1/ledgers/hand_2', {
+    tenantId: 't1',
+    type: 'payment',
+    amount: -20,
+    status: 'posted',
+    metadata: { paymentMethod: 'cash', disputeId: 'du_1' },
+  });
+  assert.equal(await notify(), 120);
+  assert.equal(fake.read(NOTIFICATION)!.readAt, null);
+  assert.equal((fake.read(NOTIFICATION)!.metadata as Record<string, unknown>).creditCents, 12000);
+});
+
+test('nothing is said while the dispute is open, lost and paid once, or when only a stranded reversal is left', async () => {
+  for (const fake of [paidByHand(false), withDispute()]) {
+    const credit = await notifyIfDisputeOverpaid({ db: fake.firestore(), facilityId: 'f1', tenantId: 't1', disputeId: 'du_1', createdBy: 'x' });
+    assert.equal(credit, 0);
+    assert.deepEqual(fake.list('facilities/f1/Notifications'), []);
+  }
+  // Staff voided the dispute row after the win: the reversal is not money the tenant paid.
+  const stranded = withDispute({ status: 'voided' });
+  stranded.seed('facilities/f1/ledgers/dispute_du_1_reinstated', {
+    tenantId: 't1',
+    type: 'dispute_reversal',
+    amount: -100,
+    status: 'posted',
+    metadata: { disputeId: 'du_1' },
+  });
+  assert.equal(
+    await notifyIfDisputeOverpaid({ db: stranded.firestore(), facilityId: 'f1', tenantId: 't1', disputeId: 'du_1', createdBy: 'x' }),
+    0,
+  );
+  assert.deepEqual(stranded.list('facilities/f1/Notifications'), []);
 });

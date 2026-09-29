@@ -398,9 +398,16 @@ test('an unpaid invoice staff made from the dispute is voided when the facility 
   assert.match(String(open.voidReason), /other charges can go on a new invoice/);
   assert.equal(fake.read('facilities/f1/invoices/inv_paid')!.status, 'paid');
   assert.equal(fake.read('facilities/f1/invoices/inv_other')!.status, 'sent');
+  // In the schema the Audit Log screen reads (it orders by timestamp and
+  // filters by eventType). Written as action/at, the void never showed there.
   const audit = fake
     .list('facilities/f1/auditLogs')
     .map((id) => fake.read(`facilities/f1/auditLogs/${id}`)!)
-    .filter((row) => row.action === 'invoice.voided');
+    .filter((row) => row.eventType === 'invoice.voided');
   assert.deepEqual(audit.map((row) => row.targetId), ['inv_open']);
+  assert.ok(audit[0].timestamp, 'timestamp');
+  assert.equal(audit[0].targetType, 'invoice');
+  assert.equal(audit[0].facilityId, 'f1');
+  assert.equal(audit[0].tenantId, 't1');
+  assert.equal((audit[0].metadata as Record<string, unknown>).disputeId, 'du_1');
 });
