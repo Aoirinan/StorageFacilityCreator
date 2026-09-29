@@ -9,6 +9,7 @@ import 'package:sfcapp/providers/active_facility_provider.dart';
 import 'package:sfcapp/providers/support_access_provider.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/screens/super_admin/widgets/create_facility_for_owner_dialog.dart';
+import 'package:sfcapp/services/platform_trial_markers.dart';
 import 'package:sfcapp/services/super_admin_data_service.dart';
 import 'package:sfcapp/services/super_admin_user_service.dart';
 import 'package:sfcapp/services/support_access_service.dart';
@@ -654,8 +655,19 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
     final a = widget.account;
     final color = _statusColor(a.subscriptionStatus);
     final fmt = DateFormat('MMM d, yyyy');
-    final isTrialing = a.subscriptionStatus == SubscriptionStatus.trialing;
     final isPending = a.subscriptionStatus == SubscriptionStatus.pendingApproval;
+    // Trial actions for the trial the app does not count as paid (hasTrial):
+    // the unpaid app trial, and a stale card-backed trial (trial end long
+    // past, or none), which can still be revoked. A card-backed free month
+    // that counts as paid is a subscription, like active: nothing here
+    // rewrites it while Stripe bills on. Extend never touches an account
+    // with a Stripe subscription, and the service refuses grant/approve on
+    // one with a message.
+    final trialActions = AdminTrialActions.of(
+      onTrial: a.hasTrial,
+      pendingApproval: isPending,
+      hasStripeSubscription: a.hasStripeSubscription,
+    );
     final isSuspended = a.suspended;
 
     return Container(
@@ -827,7 +839,7 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
                 ),
 
                 // Grant Trial — shown when NOT currently trialing and NOT pending
-                if (!isTrialing && !isPending)
+                if (trialActions.grant)
                   PopupMenuButton<int>(
                     tooltip: 'Grant Trial',
                     itemBuilder: (_) => const [
@@ -845,8 +857,8 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
                     ),
                   ),
 
-                // Extend Trial — shown only while trialing
-                if (isTrialing)
+                // Extend Trial — the unpaid app trial only
+                if (trialActions.extend)
                   PopupMenuButton<int>(
                     tooltip: 'Extend Trial',
                     itemBuilder: (_) => const [
@@ -862,8 +874,8 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
                     ),
                   ),
 
-                // Revoke Trial — shown only while trialing
-                if (isTrialing)
+                // Revoke Trial — while trialing on a trial not counted as paid
+                if (trialActions.revoke)
                   TextButton.icon(
                     icon: Icon(Icons.block, size: 14, color: AppTheme.error),
                     label: Text('Revoke Trial',

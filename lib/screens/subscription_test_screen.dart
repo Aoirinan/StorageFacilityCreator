@@ -17,6 +17,7 @@ import 'package:sfcapp/services/modern_navigation_service.dart';
 import 'package:sfcapp/services/referral_program_service.dart';
 import 'package:sfcapp/services/stripe_service.dart';
 import 'package:sfcapp/services/superadmin_service.dart';
+import 'package:sfcapp/services/subscription_trial_notice.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/router/back_navigation.dart';
@@ -58,6 +59,27 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
   bool _hasShownTrialExpiredDialog = false;
   String? _referralShareLink;
   bool _referralFacilityPrefBusy = false;
+
+  /// What the status card says about trials. An owner who subscribed with a
+  /// card (on the account or on a facility) gets no trial countdown or
+  /// "trial expired" through the free month, and is shown as active.
+  SubscriptionTrialNotice get _notice =>
+      SubscriptionTrialNotice.of(_account!, _subscribedFacilities);
+
+  /// A facility's plan line: in the card-backed free month it names the date
+  /// of the first charge (the Stripe trial end) instead of the raw status, or
+  /// the date it ends when it is set to cancel (then there is no charge).
+  String _facilityPlanLine(FacilityModel f) {
+    final firstCharge = SubscriptionTrialNotice.facilityFirstCharge(f);
+    if (firstCharge != null) {
+      return 'First charge ${_formatDate(firstCharge)} • \$75/mo';
+    }
+    final endsOn = SubscriptionTrialNotice.facilityEndsOn(f);
+    if (endsOn != null) {
+      return 'Ends ${_formatDate(endsOn)}';
+    }
+    return '${f.platformSubscriptionStatus ?? "Active"} • \$75/mo';
+  }
 
   @override
   void initState() {
@@ -217,10 +239,13 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
         }
       });
 
-      // Show trial-expired reminder dialog when redirected or when account is expired
+      // Show trial-expired reminder dialog when redirected or when account is expired.
+      // Never to an owner who subscribed with a card: in the free month the
+      // account can still read `trialing` with the app trial's end date.
       if (mounted &&
           !_hasShownTrialExpiredDialog &&
-          (widget.showTrialExpiredDialog || (account.hasTrial && account.isTrialExpired))) {
+          SubscriptionTrialNotice.of(_account ?? account, _subscribedFacilities)
+              .showTrialExpiredDialog(redirectedForExpiredTrial: widget.showTrialExpiredDialog)) {
         _hasShownTrialExpiredDialog = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
@@ -836,7 +861,7 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
             '• You cannot refer yourself or your own company.\n'
             '• We may disqualify referrals that abuse the program or do not represent a good-faith customer.\n\n'
             'What referred operators get\n'
-            '• Their facility’s platform subscription checkout uses the standard 30-day trial before the first bill.\n\n'
+            '• Their facility’s platform subscription checkout uses the standard 30-day trial, then the first month free, before the first bill.\n\n'
             'What you get\n'
             '• After their first paid invoice on that referred facility’s platform subscription, you receive '
             'one month at no charge on one of your own facility platform subscriptions (the one you pick above, '
@@ -1042,7 +1067,7 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
                         elevation: 2,
                         color: AppTheme.surface,
                         shape: RoundedRectangleBorder(
-                          side: BorderSide(color: _getStatusColor(_account!.subscriptionStatus) ?? AppTheme.borderLight, width: 1),
+                          side: BorderSide(color: _getStatusColor(_notice.displayStatus) ?? AppTheme.borderLight, width: 1),
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Padding(
@@ -1057,19 +1082,19 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
                                   Container(
                                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                                     decoration: BoxDecoration(
-                                      color: _getStatusColor(_account!.subscriptionStatus) ?? AppTheme.backgroundSecondary,
+                                      color: _getStatusColor(_notice.displayStatus) ?? AppTheme.backgroundSecondary,
                                       borderRadius: BorderRadius.circular(6),
                                     ),
                                     child: Text(
-                                      _account!.subscriptionStatus.displayName,
+                                      _notice.displayStatus.displayName,
                                       style: TextStyle(
                                         fontSize: 14,
                                         fontWeight: FontWeight.w600,
-                                        color: _getStatusTextColor(_account!.subscriptionStatus),
+                                        color: _getStatusTextColor(_notice.displayStatus),
                                       ),
                                     ),
                                   ),
-                                  if (_account!.subscriptionCurrentPeriodEnd != null) ...[
+                                  if (_account!.subscriptionCurrentPeriodEnd != null && _notice.showAccountPeriod) ...[
                                     const SizedBox(width: 12),
                                     Text(
                                       'Until ${_formatDate(_account!.subscriptionCurrentPeriodEnd!)}',
@@ -1079,7 +1104,9 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
                                       ),
                                     ),
                                   ],
-                                  if (_account!.daysUntilExpiration != null && _account!.daysUntilExpiration! > 0) ...[
+                                  if (_account!.daysUntilExpiration != null &&
+                                      _account!.daysUntilExpiration! > 0 &&
+                                      _notice.showAccountPeriod) ...[
                                     const SizedBox(width: 8),
                                     Text(
                                       '• ${_account!.daysUntilExpiration} days left',
@@ -1091,8 +1118,28 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
                                   ],
                                 ],
                               ),
-                              // Inline alerts (trial, past due, cancel warning)
-                              if (_account!.hasTrial && _account!.daysUntilTrialExpiration != null && !_account!.isTrialExpired)
+                              // Inline alerts (trial, past due, cancel warning).
+                              // The trial lines are for the unpaid app trial only;
+                              // an owner in the card-backed free month sees the
+                              // date of the first charge instead, or the date it
+                              // ends once it is set to cancel (no charge then).
+                              if (_notice.firstCharge != null)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 6),
+                                  child: Text(
+                                    'First charge ${_formatDate(_notice.firstCharge!)}',
+                                    style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                                  ),
+                                ),
+                              if (_notice.endsOn != null)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 6),
+                                  child: Text(
+                                    'Ends ${_formatDate(_notice.endsOn!)}',
+                                    style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                                  ),
+                                ),
+                              if (_notice.showTrialDaysLeft)
                                 Padding(
                                   padding: const EdgeInsets.only(top: 6),
                                   child: Text(
@@ -1100,7 +1147,7 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
                                     style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
                                   ),
                                 ),
-                              if (_account!.isTrialExpired)
+                              if (_notice.showTrialExpired)
                                 Padding(
                                   padding: const EdgeInsets.only(top: 6),
                                   child: Text(
@@ -1108,7 +1155,7 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
                                     style: const TextStyle(fontSize: 12, color: AppTheme.error, fontWeight: FontWeight.w600),
                                   ),
                                 )
-                              else if (_account!.isTrialExpiringSoon)
+                              else if (_notice.showTrialEndingSoon)
                                 Padding(
                                   padding: const EdgeInsets.only(top: 6),
                                   child: Text(
@@ -1392,7 +1439,7 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
                                                 const SizedBox(height: 4),
                                                 Text(
                                                   f.hasActivePlatformSubscription
-                                                      ? '${f.platformSubscriptionStatus ?? "Active"} • \$75/mo'
+                                                      ? _facilityPlanLine(f)
                                                       : (f.platformSubscriptionStatus == 'past_due' ? 'Past due' : 'No subscription'),
                                                   style: TextStyle(
                                                     fontSize: 12,

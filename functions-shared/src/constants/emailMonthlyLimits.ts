@@ -8,6 +8,11 @@
 export const EMAIL_MONTHLY_LIMIT_TRIALING = 500;
 export const EMAIL_MONTHLY_LIMIT_PAID = 5000;
 
+/**
+ * [isTrialing] means the unpaid app trial (`isUnpaidAppTrial` in
+ * subscription/paidSubscription.ts): an owner in the card-backed free month reads
+ * `trialing` but gets the paid cap.
+ */
 export function emailMonthlyLimitForAccount(isTrialing: boolean): number {
   return isTrialing ? EMAIL_MONTHLY_LIMIT_TRIALING : EMAIL_MONTHLY_LIMIT_PAID;
 }
