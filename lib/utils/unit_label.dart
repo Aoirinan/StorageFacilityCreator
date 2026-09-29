@@ -131,34 +131,98 @@ String fillTenantQuickMessage(
       .replaceAll('{{phone}}', tenant.phone);
 }
 
+/// One of the units a tenant holds, as a screen that lists every one names
+/// it. [unit] is the unit doc, for a link to its page; null when the label
+/// is the record's `unitNumber` with no unit doc found behind it (the
+/// facility's units not loaded, or a tenant imported with a number and never
+/// assigned through a unit).
+typedef HeldUnitLabel = ({String label, UnitModel? unit});
+
+/// The units [tenant] holds, labelled ("C2-6, C2-7"): the unit their record
+/// names first, as [tenantUnitLabel] (so a tenant with one unit reads as
+/// before), then [TenantUnitAreaIndex.otherUnitsFor]. A record's
+/// `unitNumber` names one unit however many it holds; the others are only
+/// found through `units.tenantId`. With [units] null (the facility's units
+/// not loaded) it is the record's unit alone. Empty for a record with no
+/// unit number and no units: callers keep their own "no unit" wording.
+List<HeldUnitLabel> tenantHeldUnitLabels(
+  TenantModel tenant, {
+  required TenantUnitAreaIndex? units,
+  required bool includeArea,
+}) {
+  final named = units?.namedUnit(tenant);
+  final first = tenantUnitLabel(tenant,
+      includeArea: includeArea, fallbackArea: named?.area);
+  final labels = <HeldUnitLabel>[
+    if (first.isNotEmpty) (label: first, unit: named),
+  ];
+  if (units == null) return labels;
+  for (final u in units.otherUnitsFor(tenant)) {
+    final label = formatUnitLabel(
+        number: u.unitNumber, area: u.area, includeArea: includeArea);
+    // With the setting off, two units numbered alike would read as one.
+    if (label.isEmpty || labels.any((l) => l.label == label)) continue;
+    labels.add((label: label, unit: u));
+  }
+  return labels;
+}
+
+/// The Assign Tenant picker's line for a tenant's current units: "Unit 12
+/// (Complex 2)", "Units C2-6, C2-7", or "No unit". Always with the area, as
+/// the picker names the unit being assigned ([unitPickerLabel]), so two
+/// records with one name and one phone can be told apart by what they hold.
+String tenantPickerUnitsText(TenantModel tenant, TenantUnitAreaIndex units) {
+  final labels = tenantHeldUnitLabels(tenant, units: units, includeArea: true);
+  if (labels.isEmpty) return 'No unit';
+  return '${labels.length == 1 ? 'Unit' : 'Units'} '
+      '${labels.map((l) => l.label).join(', ')}';
+}
+
 /// The Tenants list card's unit line. [areas] are the areas of every unit
 /// the tenant holds ([TenantUnitAreaIndex.areasFor]); [labelUnitArea] is the
-/// area of the unit their label names, when the list has it.
+/// area of the unit their label names, when the list has it; [otherUnits]
+/// are the rest of the units they hold ([TenantUnitAreaIndex.otherUnitsFor]),
+/// listed after it: "Unit: C2-6, C2-7".
 ///
 /// Off: "Unit: 12", or "Unit: 12 · Complex 2, Outdoor" when the tenant's
 /// units have areas, as before the setting existed. On: the area moves into
-/// the label, "Unit: 12 (Complex 2)", and only areas of their other units
+/// the label, "Unit: 12 (Complex 2)", and only areas of units not listed
 /// follow the dot.
 String tenantListUnitLine(
   TenantModel tenant, {
   required bool includeArea,
   List<String> areas = const [],
   String? labelUnitArea,
+  List<UnitModel> otherUnits = const [],
 }) {
   if (!includeArea) {
+    final numbers = [
+      if (tenant.unitNumber.isNotEmpty) tenant.unitNumber,
+      for (final u in otherUnits) u.unitNumber,
+    ].join(', ');
     return areas.isEmpty
-        ? 'Unit: ${tenant.unitNumber}'
-        : 'Unit: ${tenant.unitNumber} · ${areas.join(', ')}';
+        ? 'Unit: $numbers'
+        : 'Unit: $numbers · ${areas.join(', ')}';
   }
   final labelArea = tenantLabelArea(tenant, fallbackArea: labelUnitArea);
   final label = tenantUnitLabel(tenant,
       includeArea: true, fallbackArea: labelUnitArea);
-  final labelKey = label.isEmpty ? null : unitAreaKey(labelArea);
+  final labels = [
+    if (label.isNotEmpty) label,
+    for (final u in otherUnits)
+      formatUnitLabel(number: u.unitNumber, area: u.area, includeArea: true),
+  ].join(', ');
+  // Areas already in a listed label do not follow the dot. A label with no
+  // area carries none (a null key, which no area has).
+  final carried = {
+    if (label.isNotEmpty) unitAreaKey(labelArea),
+    for (final u in otherUnits) unitAreaKey(u.area),
+  };
   final others = [
     for (final a in areas)
-      if (unitAreaKey(a) != labelKey) a,
+      if (!carried.contains(unitAreaKey(a))) a,
   ];
   return others.isEmpty
-      ? 'Unit: $label'
-      : 'Unit: $label · ${others.join(', ')}';
+      ? 'Unit: $labels'
+      : 'Unit: $labels · ${others.join(', ')}';
 }
