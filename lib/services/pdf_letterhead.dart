@@ -46,6 +46,16 @@ class PdfLetterhead {
     return null;
   }
 
+  /// Whether the letterhead prints its own "Mail payments to:" line: the
+  /// facility has a mailing address and it is not simply the physical one
+  /// again. A document that also names the remit address elsewhere (the
+  /// statement footer) checks this first, or the address prints twice.
+  static bool printsMailingLine(FacilityModel facility) {
+    final physical = facility.address?.trim() ?? '';
+    final mailing = facility.mailingAddress?.trim() ?? '';
+    return mailing.isNotEmpty && mailing != physical;
+  }
+
   static pw.Widget build({
     required FacilityModel facility,
     required String title,
@@ -55,7 +65,7 @@ class PdfLetterhead {
     final layout = facility.documentLogo;
     final physical = facility.address?.trim() ?? '';
     final mailing = facility.mailingAddress?.trim() ?? '';
-    final showMailing = mailing.isNotEmpty && mailing != physical;
+    final showMailing = printsMailingLine(facility);
     final showName = layout.nameVisible(logoShown: logo != null);
     const detailStyle = pw.TextStyle(fontSize: 9, color: PdfColors.grey800);
 
