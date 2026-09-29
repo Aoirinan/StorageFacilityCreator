@@ -797,8 +797,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                                 tenant,
                                 shownTenants: tenants,
                                 areas: areaIndex?.areasFor(tenant) ?? const [],
-                                labelUnitArea:
-                                    areaIndex?.namedUnit(tenant)?.area,
+                                labelUnit: unitIndex?.namedUnit(tenant),
                                 otherUnits: unitIndex?.otherUnitsFor(tenant) ??
                                     const [],
                                 includeUnitArea: includeUnitArea,
@@ -943,7 +942,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
     TenantModel tenant, {
     required List<TenantModel> shownTenants,
     List<String> areas = const [],
-    String? labelUnitArea,
+    UnitModel? labelUnit,
     List<UnitModel> otherUnits = const [],
     bool includeUnitArea = false,
     int? gracePeriodDays,
@@ -994,7 +993,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
               tenant,
               includeArea: includeUnitArea,
               areas: areas,
-              labelUnitArea: labelUnitArea,
+              labelUnit: labelUnit,
               otherUnits: otherUnits,
             )),
             Text('Email: ${tenant.email}'),

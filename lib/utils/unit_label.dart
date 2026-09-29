@@ -2,6 +2,7 @@ import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/utils/unit_areas.dart';
+import 'package:sfcapp/utils/unit_number.dart';
 
 /// [UnitLabelStyle.plain]: "12 (Complex 2)". [UnitLabelStyle.withPrefix]:
 /// "Unit 12 (Complex 2)".
@@ -151,13 +152,20 @@ List<HeldUnitLabel> tenantHeldUnitLabels(
   required bool includeArea,
 }) {
   final named = units?.namedUnit(tenant);
-  final first = tenantUnitLabel(tenant,
-      includeArea: includeArea, fallbackArea: named?.area);
+  final others = units?.otherUnitsFor(tenant) ?? const <UnitModel>[];
+  // A record with no unitId holding two units numbered alike (one per
+  // area) names neither, so both are "other" units; its bare number would
+  // then read as a third unit. The held units carry that number already.
+  final bareNumberIsHeld = named == null &&
+      others.any((u) => sameUnitNumber(u.unitNumber, tenant.unitNumber));
+  final first = bareNumberIsHeld
+      ? ''
+      : tenantUnitLabel(tenant,
+          includeArea: includeArea, fallbackArea: named?.area);
   final labels = <HeldUnitLabel>[
     if (first.isNotEmpty) (label: first, unit: named),
   ];
-  if (units == null) return labels;
-  for (final u in units.otherUnitsFor(tenant)) {
+  for (final u in others) {
     final label = formatUnitLabel(
         number: u.unitNumber, area: u.area, includeArea: includeArea);
     // With the setting off, two units numbered alike would read as one.
@@ -179,10 +187,13 @@ String tenantPickerUnitsText(TenantModel tenant, TenantUnitAreaIndex units) {
 }
 
 /// The Tenants list card's unit line. [areas] are the areas of every unit
-/// the tenant holds ([TenantUnitAreaIndex.areasFor]); [labelUnitArea] is the
-/// area of the unit their label names, when the list has it; [otherUnits]
-/// are the rest of the units they hold ([TenantUnitAreaIndex.otherUnitsFor]),
-/// listed after it: "Unit: C2-6, C2-7".
+/// the tenant holds ([TenantUnitAreaIndex.areasFor]); [labelUnit] is the
+/// unit their label names ([TenantUnitAreaIndex.namedUnit]), when the list
+/// has it, for its area; [otherUnits] are the rest of the units they hold
+/// ([TenantUnitAreaIndex.otherUnitsFor]), listed after it: "Unit: C2-6,
+/// C2-7". A record with no unitId holding two units numbered alike names
+/// neither ([labelUnit] null), and its bare number is left out rather than
+/// read as a third unit, as [tenantHeldUnitLabels] leaves it out.
 ///
 /// Off: "Unit: 12", or "Unit: 12 · Complex 2, Outdoor" when the tenant's
 /// units have areas, as before the setting existed. On: the area moves into
@@ -192,21 +203,25 @@ String tenantListUnitLine(
   TenantModel tenant, {
   required bool includeArea,
   List<String> areas = const [],
-  String? labelUnitArea,
+  UnitModel? labelUnit,
   List<UnitModel> otherUnits = const [],
 }) {
+  final bareNumberIsHeld = labelUnit == null &&
+      otherUnits.any((u) => sameUnitNumber(u.unitNumber, tenant.unitNumber));
   if (!includeArea) {
     final numbers = [
-      if (tenant.unitNumber.isNotEmpty) tenant.unitNumber,
+      if (tenant.unitNumber.isNotEmpty && !bareNumberIsHeld) tenant.unitNumber,
       for (final u in otherUnits) u.unitNumber,
     ].join(', ');
     return areas.isEmpty
         ? 'Unit: $numbers'
         : 'Unit: $numbers · ${areas.join(', ')}';
   }
-  final labelArea = tenantLabelArea(tenant, fallbackArea: labelUnitArea);
-  final label = tenantUnitLabel(tenant,
-      includeArea: true, fallbackArea: labelUnitArea);
+  final labelArea = tenantLabelArea(tenant, fallbackArea: labelUnit?.area);
+  final label = bareNumberIsHeld
+      ? ''
+      : tenantUnitLabel(tenant,
+          includeArea: true, fallbackArea: labelUnit?.area);
   final labels = [
     if (label.isNotEmpty) label,
     for (final u in otherUnits)

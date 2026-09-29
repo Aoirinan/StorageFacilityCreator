@@ -121,6 +121,23 @@ void main() {
         ['12 (Complex 2)', '12 (Outdoor)'],
       );
     });
+
+    test('a record with no unitId holding two units numbered alike: no third, bare entry', () {
+      // The number names neither unit (TenantUnitAreaIndex.namedUnit is
+      // null), so both are "other" units; the record's bare "12" used to be
+      // listed in front of them.
+      final alike = TenantUnitAreaIndex([
+        _unit('a12', '12', area: 'Complex 2'),
+        _unit('b12', '12', area: 'Outdoor'),
+      ]);
+      final t = _tenant(unitNumber: '12', unitId: null);
+      final on = tenantHeldUnitLabels(t, units: alike, includeArea: true);
+      expect(on.map((l) => l.label), ['12 (Complex 2)', '12 (Outdoor)']);
+      expect(on.map((l) => l.unit?.id), ['a12', 'b12']);
+      final off = tenantHeldUnitLabels(t, units: alike, includeArea: false);
+      expect(off.map((l) => l.label), ['12']);
+      expect(off.single.unit?.id, 'a12');
+    });
   });
 
   group('the Assign Tenant picker\'s unit line', () {
@@ -167,6 +184,31 @@ void main() {
       expect(
         tenantListUnitLine(_tenant(), includeArea: true, areas: const ['Complex 2', 'Outdoor'], otherUnits: [outdoor]),
         'Unit: C2-6, OUT-1 (Outdoor) · Complex 2',
+      );
+    });
+
+    test('a record with no unitId holding two units numbered alike: no third, bare number', () {
+      // The list has no unit for the label (namedUnit is null), and both
+      // held units are "other" units carrying the record's number.
+      final complex = _unit('a12', '12', area: 'Complex 2');
+      final outdoor12 = _unit('b12', '12', area: 'Outdoor');
+      final t = _tenant(unitNumber: '12', unitId: null);
+      expect(
+        tenantListUnitLine(t,
+            includeArea: true, areas: const ['Complex 2', 'Outdoor'], otherUnits: [complex, outdoor12]),
+        'Unit: 12 (Complex 2), 12 (Outdoor)',
+      );
+      expect(
+        tenantListUnitLine(t,
+            includeArea: false, areas: const ['Complex 2', 'Outdoor'], otherUnits: [complex, outdoor12]),
+        'Unit: 12, 12 · Complex 2, Outdoor',
+      );
+      // With a unit behind the label, the same two units read as before.
+      final named = _tenant(unitNumber: '12', unitId: 'a12', unitArea: 'Complex 2');
+      expect(
+        tenantListUnitLine(named,
+            includeArea: true, areas: const ['Complex 2', 'Outdoor'], labelUnit: complex, otherUnits: [outdoor12]),
+        'Unit: 12 (Complex 2), 12 (Outdoor)',
       );
     });
   });
