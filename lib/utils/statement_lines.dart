@@ -9,11 +9,13 @@ import 'package:sfcapp/models/ledger_entry_model.dart';
 ///
 /// The sign is whatever the writer stored, and the writers do not all agree
 /// with the model's "payments and credits negative" contract: refunds are
-/// written positive by the move-out flow, the manual entry dialog and the
-/// Stripe webhook (money handed back raises what is owed) but negative by
-/// the portal move-out hold, and the transfer flow writes its prorated
-/// "Transfer refund" credit positive where the manual dialog writes credits
-/// negative. Such an entry prints on the side its sign says and moves the
+/// written positive by the move-out flow, the portal move-out hold
+/// (functions-tenant-lifecycle moveOutPortalHold.ts, since PR #39), the
+/// manual entry dialog and the Stripe webhook (money handed back raises what
+/// is owed), though refunds the portal hold wrote before PR #39 are still
+/// stored negative; and the transfer flow writes its prorated "Transfer
+/// refund" credit positive where the manual dialog writes credits negative.
+/// Such an entry prints on the side its stored sign says and moves the
 /// balance the way the ledger header already moves it; the fix belongs with
 /// the writer, not with a second balance rule here.
 ///
@@ -82,15 +84,26 @@ DateTime _dayAfter(DateTime day) =>
 
 double _cents(double v) => double.parse(v.toStringAsFixed(2));
 
-/// Oldest first; on one day, charges before payments so a rent charge and
-/// the check that paid it never read as a credit followed by a charge; then
-/// creation order, then id so two runs print the same page.
+/// [date]'s calendar day where the statement is read, as a number that
+/// orders by day: rows print by the day the owner sees in the Date column.
+int _localDay(DateTime date) {
+  final local = date.toLocal();
+  return local.year * 10000 + local.month * 100 + local.day;
+}
+
+/// Oldest day first. On one local calendar day, entries that raise the
+/// balance before entries that lower it, whatever their times, so a rent
+/// charge and the check that paid it never read as a credit followed by a
+/// charge; then by time, then creation order, then id so two runs print the
+/// same page.
 int _compareForStatement(LedgerEntry a, LedgerEntry b) {
-  final byDate = a.entryDate.compareTo(b.entryDate);
-  if (byDate != 0) return byDate;
+  final byDay = _localDay(a.entryDate).compareTo(_localDay(b.entryDate));
+  if (byDay != 0) return byDay;
   final aLowers = a.amount < 0;
   final bLowers = b.amount < 0;
   if (aLowers != bLowers) return aLowers ? 1 : -1;
+  final byTime = a.entryDate.compareTo(b.entryDate);
+  if (byTime != 0) return byTime;
   final byCreated = a.createdAt.compareTo(b.createdAt);
   if (byCreated != 0) return byCreated;
   return a.id.compareTo(b.id);
