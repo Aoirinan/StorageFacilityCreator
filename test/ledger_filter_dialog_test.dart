@@ -106,6 +106,26 @@ void main() {
     expect(find.text('January rent'), findsOneWidget);
     expect(find.text('Check #1001'), findsOneWidget);
     expect(find.text('Late fee'), findsOneWidget);
+
+    // The screen only showed the old bug at its next rebuild, and nothing
+    // above forced one, so look where the pick would have landed: the dialog
+    // opens on the screen's dates, and End Date must still be None.
+    await _openFilter(tester);
+    expect(
+        find.descendant(
+            of: find.widgetWithText(ListTile, 'End Date'),
+            matching: find.text('None')),
+        findsOneWidget);
+    expect(_dialogDate('01/15/2026'), findsNothing);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    // Opening and closing the dialog rebuilt the screen behind it; the
+    // filter bar still shows no end date and every entry is still there.
+    expect(find.textContaining('To:'), findsNothing);
+    expect(find.text('January rent'), findsOneWidget);
+    expect(find.text('Check #1001'), findsOneWidget);
+    expect(find.text('Late fee'), findsOneWidget);
   });
 
   testWidgets('Apply keeps entries on the end day; Clear puts every date back',

@@ -3,9 +3,19 @@ import 'package:sfcapp/models/ledger_entry_model.dart';
 /// The rows of a tenant's account statement, worked out from their ledger
 /// with the ledger's own balance rule: posted entries only, signed amounts
 /// summed (lib/providers/ledger_provider.dart sumPostedLedgerEntries). The
-/// statement used to keep a rule of its own that subtracted refunds (stored
-/// positive everywhere they are written) and counted pending entries, so a
-/// refunded tenant's printed balance disagreed with the ledger page.
+/// statement used to keep a rule of its own that subtracted every payment,
+/// credit and refund whatever its stored sign and counted pending entries,
+/// so a refunded tenant's printed balance disagreed with the ledger page.
+///
+/// The sign is whatever the writer stored, and the writers do not all agree
+/// with the model's "payments and credits negative" contract: refunds are
+/// written positive by the move-out flow, the manual entry dialog and the
+/// Stripe webhook (money handed back raises what is owed) but negative by
+/// the portal move-out hold, and the transfer flow writes its prorated
+/// "Transfer refund" credit positive where the manual dialog writes credits
+/// negative. Such an entry prints on the side its sign says and moves the
+/// balance the way the ledger header already moves it; the fix belongs with
+/// the writer, not with a second balance rule here.
 ///
 /// Pure: no Firebase, so the ledger screen, the emailed statement and a bulk
 /// print all get the same figures from the same entries.
