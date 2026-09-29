@@ -1058,6 +1058,8 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
             facilityId: _selectedFacilityId,
             action: 'dnr.override',
             targetId: result,
+            targetType: 'tenant',
+            tenantId: result,
             details: {
               'tenantName': _nameController.text.trim(),
               'tenantEmail': _emailController.text.trim(),
