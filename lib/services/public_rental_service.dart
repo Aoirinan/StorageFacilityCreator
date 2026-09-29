@@ -9,6 +9,26 @@ import 'package:sfcapp/models/unit_model.dart';
 class PublicRentalService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
+  static Future<Object?> Function(String name, Map<String, dynamic> data)?
+      _callableForTesting;
+
+  /// Answers the move-in callables in place of Cloud Functions, so a test
+  /// runs this service's own requests and parsing against a fake server.
+  @visibleForTesting
+  static set callableForTesting(
+          Future<Object?> Function(String name, Map<String, dynamic> data)?
+              call) =>
+      _callableForTesting = call;
+
+  /// Calls the Cloud Function [name] with [data] and returns what it answered.
+  static Future<Object?> _call(String name, Map<String, dynamic> data) async {
+    final fake = _callableForTesting;
+    if (fake != null) return fake(name, data);
+    final result =
+        await FirebaseFunctions.instance.httpsCallable(name).call(data);
+    return result.data;
+  }
+
   /// Get available units for a facility (public view)
   static Future<List<UnitModel>> getAvailableUnits(String facilityId) async {
     try {
@@ -117,11 +137,9 @@ class PublicRentalService {
   /// Get reservation by token
   static Future<Reservation?> getReservationByToken(String token) async {
     try {
-      final callable = FirebaseFunctions.instance
-          .httpsCallable('getPublicReservationByToken');
-      final response =
-          await callable.call(<String, dynamic>{'token': token.trim()});
-      final payload = Map<String, dynamic>.from(response.data as Map);
+      final response = await _call(
+          'getPublicReservationByToken', <String, dynamic>{'token': token.trim()});
+      final payload = Map<String, dynamic>.from(response as Map);
       if (payload['found'] != true || payload['reservation'] is! Map) {
         return null;
       }
@@ -272,10 +290,7 @@ class PublicRentalService {
       // 5. Complete the move-in workflow
       // 6. Update reservation status
 
-      final functions = FirebaseFunctions.instance;
-      final callable = functions.httpsCallable('completePublicMoveIn');
-
-      final result = await callable.call(<String, dynamic>{
+      final result = await _call('completePublicMoveIn', <String, dynamic>{
         'reservationId': reservationId,
         'token': token,
         'name': name,
@@ -310,7 +325,7 @@ class PublicRentalService {
         },
       );
 
-      final response = Map<String, dynamic>.from(result.data);
+      final response = Map<String, dynamic>.from(result as Map);
 
       if (kDebugMode) {
         print('✅ [PublicRental] Public move-in completed: $response');
@@ -333,9 +348,7 @@ class PublicRentalService {
     String? description,
   }) async {
     try {
-      final callable = FirebaseFunctions.instance
-          .httpsCallable('createPublicMoveInCheckout');
-      final result = await callable.call(<String, dynamic>{
+      final result = await _call('createPublicMoveInCheckout', <String, dynamic>{
         'reservationId': reservationId,
         'token': token,
         'amount': amount,
@@ -345,7 +358,7 @@ class PublicRentalService {
         onTimeout: () =>
             throw Exception('Request timed out. Please try again.'),
       );
-      return Map<String, dynamic>.from(result.data as Map);
+      return Map<String, dynamic>.from(result as Map);
     } catch (e) {
       if (kDebugMode) {
         print('❌ [PublicRental] Error creating public move-in checkout: $e');
@@ -366,9 +379,7 @@ class PublicRentalService {
     String? sessionId,
   }) async {
     try {
-      final callable = FirebaseFunctions.instance
-          .httpsCallable('confirmPublicMoveInCheckout');
-      final result = await callable.call(<String, dynamic>{
+      final result = await _call('confirmPublicMoveInCheckout', <String, dynamic>{
         'reservationId': reservationId,
         'token': token,
         if (sessionId != null && sessionId.isNotEmpty) 'sessionId': sessionId,
@@ -377,7 +388,7 @@ class PublicRentalService {
         onTimeout: () =>
             throw Exception('Request timed out. Please try again.'),
       );
-      return Map<String, dynamic>.from(result.data as Map);
+      return Map<String, dynamic>.from(result as Map);
     } catch (e) {
       if (kDebugMode) {
         print('❌ [PublicRental] Error confirming move-in checkout: $e');

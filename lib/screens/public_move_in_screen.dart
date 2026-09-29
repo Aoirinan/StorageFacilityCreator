@@ -9,6 +9,7 @@ import '../models/reservation_model.dart';
 import '../services/public_rental_service.dart';
 import '../models/unit_model.dart';
 import '../models/facility_model.dart';
+import 'package:sfcapp/models/facility_public_settings_model.dart';
 import '../services/move_in_service.dart';
 import '../services/unit_service.dart';
 import '../services/facility_service.dart';
@@ -16,18 +17,38 @@ import '../services/facility_public_service.dart';
 import '../models/invoice_line_item_model.dart';
 import '../theme/app_theme.dart';
 import '../widgets/keyboard_scrollable.dart';
-import '../router/app_router.dart';
 import 'package:sfcapp/utils/move_in_checkout_return.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
+/// What the move-in page reads besides the move-in callables
+/// (PublicRentalService), and how it opens Stripe's page. Replaced in tests.
+class PublicMoveInScreenSources {
+  const PublicMoveInScreenSources({
+    this.getUnit = UnitService.getUnit,
+    this.getFacility = FacilityService.getFacility,
+    this.getPublicSettings = FacilityPublicService.getPublicSettings,
+    this.openCheckout = launchUrl,
+  });
+
+  final Future<UnitModel?> Function(String facilityId, String unitId) getUnit;
+  final Future<FacilityModel?> Function(String facilityId) getFacility;
+  final Future<FacilityPublicSettings?> Function(String facilityId)
+      getPublicSettings;
+
+  /// Opens Stripe's Checkout page; false when it could not be opened.
+  final Future<bool> Function(Uri checkoutUrl) openCheckout;
+}
+
 /// Public-facing move-in wizard for completing reservations
 class PublicMoveInScreen extends ConsumerStatefulWidget {
   final String? token;
+  final PublicMoveInScreenSources sources;
 
   const PublicMoveInScreen({
     super.key,
     this.token,
+    this.sources = const PublicMoveInScreenSources(),
   });
 
   @override
@@ -179,15 +200,15 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
         return;
       }
 
-      final unit = await UnitService.getUnit(
+      final unit = await widget.sources.getUnit(
         reservation.facilityId,
         reservation.unitId!,
       );
 
       final facility =
-          await FacilityService.getFacility(reservation.facilityId);
+          await widget.sources.getFacility(reservation.facilityId);
       final publicSettings =
-          await FacilityPublicService.getPublicSettings(reservation.facilityId);
+          await widget.sources.getPublicSettings(reservation.facilityId);
 
       if (unit == null || facility == null) {
         setState(() {
@@ -447,7 +468,7 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
         throw Exception('Checkout URL not returned.');
       }
       final uri = Uri.parse(checkoutUrl);
-      final launched = await launchUrl(uri);
+      final launched = await widget.sources.openCheckout(uri);
       if (!launched) {
         throw Exception('Unable to open Stripe Checkout.');
       }
