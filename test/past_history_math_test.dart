@@ -570,7 +570,7 @@ void main() {
     await tester.tap(find.text('OK'));
     await tester.pumpAndSettle();
     expect(find.text('September 2026 (from 9/28)'), findsOneWidget);
-    expect(find.textContaining('is not this tenant\'s rate'), findsNothing);
+    expect(find.textContaining('this tenant\'s rate of'), findsNothing);
 
     final amount = find.descendant(
       of: find.byKey(const ValueKey('history-charge-2026-9')),
@@ -578,12 +578,17 @@ void main() {
     );
     await tester.enterText(amount, '160');
     await tester.pumpAndSettle();
-    // The other unit is usually on a duplicate record, so the copy has to
-    // name Unassign before Assign: Assign Tenant alone stops on "occupied".
-    final warning = find.text('\$160.00 is not this tenant\'s rate of \$80.00. '
-        'If they rent more than one unit, put every unit on this record first: on the other unit\'s page '
-        '(Units › Unit List), Unassign Tenant if another record holds it, then Assign Tenant to this tenant. '
-        'The rate then becomes the total.');
+    // The other unit is usually on a duplicate copy of the tenant, so the
+    // copy has to name Unassign before Assign (Assign Tenant alone stops on
+    // "occupied"), say that Unassign switches that copy off with its ledger
+    // kept, and that the rate only follows when it matched the unit already
+    // held; otherwise the owner is asked to check it.
+    final warning = find.text('\$160.00 is more than this tenant\'s rate of \$80.00. '
+        'Do they rent another unit? Add it to this tenant first: open the other unit (Units › Unit List). '
+        'If it shows a second copy of this tenant, choose Unassign Tenant there (that copy is switched off '
+        'once it holds no unit; anything already entered on it stays there), then Assign Tenant and pick '
+        'this tenant. Their rate becomes the total when it matched the rate of the unit they already hold; '
+        'otherwise you are asked to check it under Edit Tenant.');
     expect(warning, findsOneWidget);
     expect(tester.widget<Text>(warning).style?.color, AppTheme.warning);
     // A warning only: ticking the confirm box still lets the owner save.
@@ -596,7 +601,7 @@ void main() {
     // Below the rate on a mid-month move-in: a proration, nothing to say.
     await tester.enterText(amount, '8');
     await tester.pumpAndSettle();
-    expect(find.textContaining('is not this tenant\'s rate'), findsNothing);
+    expect(find.textContaining('this tenant\'s rate of'), findsNothing);
   });
 
   testWidgets('a month dated the 1st typed below the rate is named without the multi-unit warning', (tester) async {
@@ -620,12 +625,12 @@ void main() {
     final note = find.text('\$40.00 is not this tenant\'s rate of \$80.00. Fine if the rent was different then.');
     expect(note, findsOneWidget);
     expect(tester.widget<Text>(note).style?.color, AppTheme.textSecondary);
-    expect(find.textContaining('If they rent more than one unit'), findsNothing);
+    expect(find.textContaining('Do they rent another unit?'), findsNothing);
 
     // Above the rate on the same month is still the two-unit case.
     await tester.enterText(amount, '160');
     await tester.pumpAndSettle();
-    expect(find.textContaining('If they rent more than one unit'), findsOneWidget);
+    expect(find.textContaining('Do they rent another unit?'), findsOneWidget);
     expect(find.textContaining('Fine if the rent was different then'), findsNothing);
   });
 
