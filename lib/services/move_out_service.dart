@@ -364,6 +364,9 @@ class MoveOutService {
               amount: calculation.refundAmount,
               refundMethod: refundMethod,
               referenceId: refundReferenceId,
+              // One id per refund asked for: a retry of this refund is the
+              // same Stripe refund, another refund of the same amount is not.
+              requestId: refundEntry.id,
             );
             
             if (kDebugMode) {
@@ -592,6 +595,7 @@ class MoveOutService {
     required double amount,
     required String? refundMethod,
     String? referenceId,
+    String? requestId,
   }) async {
     try {
       final functions = FirebaseFunctions.instance;
@@ -603,6 +607,7 @@ class MoveOutService {
         'amount': amount,
         'refundMethod': refundMethod,
         'referenceId': referenceId,
+        if (requestId != null) 'requestId': requestId,
       });
 
       return result.data['refundId'] as String? ?? 'unknown';

@@ -3,6 +3,7 @@ import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
 import { getStripeClient } from '@sfc/functions-shared';
 import { eventAccountMatchesFacility } from './connectedAccountGuard';
+import { isAlreadyExistsError } from './firestoreErrors';
 
 /**
  * Record a refund against the tenant's ledger.
@@ -21,6 +22,12 @@ import { eventAccountMatchesFacility } from './connectedAccountGuard';
  *    of $10 record $10 and then $20 — crediting $30 against $20 actually
  *    returned. Each individual refund is recorded once instead, keyed by its
  *    own id so redelivery and partial refunds are both safe.
+ *
+ * Errors propagate: the webhook returns 500 and Stripe redelivers. Swallowing
+ * them marked the event processed with the refund never on the ledger, so the
+ * tenant kept a credit for money already handed back and autopay and the
+ * delinquency job under-collected by that much. Every write is keyed on the
+ * refund, so a retry converges.
  */
 export async function handleChargeRefunded(
   charge: Stripe.Charge,
@@ -96,8 +103,15 @@ export async function handleChargeRefunded(
       // another. A ledger that double-counts refunds understates what a tenant
       // owes, which is money the facility never collects.
       const ledgerRef = facilityRef.collection('ledgers').doc(`refund_${refund.id}`);
-      await ledgerRef.set(
-        {
+      const metadata: Record<string, unknown> = {
+        chargeId: charge.id,
+        paymentIntentId,
+        refundId: refund.id,
+        connectedAccountId: connectedAccountId || null,
+        ...(disputeId ? { disputeId } : {}),
+      };
+      try {
+        await ledgerRef.create({
           tenantId: tenantId || null,
           facilityId,
           type: 'refund',
@@ -110,16 +124,22 @@ export async function handleChargeRefunded(
           status: 'posted',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
           createdBy: 'system@stripe-webhook',
-          metadata: {
-            chargeId: charge.id,
-            paymentIntentId,
-            refundId: refund.id,
-            connectedAccountId: connectedAccountId || null,
-            ...(disputeId ? { disputeId } : {}),
-          },
-        },
-        { merge: true },
-      );
+          metadata,
+        });
+      } catch (error) {
+        if (!isAlreadyExistsError(error)) throw error;
+        // processRefund (the app's card refund) or an earlier delivery wrote
+        // it. A merge over the whole row replaced processRefund's createdBy
+        // (the staff member who refunded) with this webhook, and its date and
+        // description too; only the metadata this event adds is filled in.
+        const existing = await ledgerRef.get();
+        const existingMetadata = (existing.get('metadata') as Record<string, unknown> | undefined) ?? {};
+        const update: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(metadata)) {
+          if (value !== null && existingMetadata[key] === undefined) update[`metadata.${key}`] = value;
+        }
+        if (Object.keys(update).length > 0) await ledgerRef.update(update);
+      }
     }
 
     functions.logger.info(
@@ -128,5 +148,6 @@ export async function handleChargeRefunded(
     );
   } catch (error: any) {
     functions.logger.error('Error handling charge refunded:', error);
+    throw error;
   }
 }
