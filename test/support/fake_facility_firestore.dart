@@ -52,8 +52,12 @@ class FakeFacilityFirestore extends Fake implements FirebaseFirestore {
   }) async {
     final txn = _FakeTransaction();
     final result = await transactionHandler(txn);
-    for (final (ref, fields) in txn.writes) {
-      await ref.update(fields);
+    for (final (op, ref, fields) in txn.writes) {
+      if (op == 'set') {
+        await ref.set(fields);
+      } else {
+        await ref.update(fields);
+      }
     }
     commits++;
     return result;
@@ -91,8 +95,12 @@ class _FacilityDoc extends Fake
 }
 
 class _FakeTransaction extends Fake implements Transaction {
-  final writes =
-      <(DocumentReference<Map<String, dynamic>>, Map<String, dynamic>)>[];
+  /// ('set' or 'update', the doc, the data), in order.
+  final writes = <(
+    String,
+    DocumentReference<Map<String, dynamic>>,
+    Map<String, dynamic>
+  )>[];
 
   @override
   Future<DocumentSnapshot<T>> get<T extends Object?>(
@@ -103,9 +111,21 @@ class _FakeTransaction extends Fake implements Transaction {
   }
 
   @override
+  Transaction set<T>(DocumentReference<T> documentReference, T data,
+      [SetOptions? options]) {
+    writes.add((
+      'set',
+      documentReference as DocumentReference<Map<String, dynamic>>,
+      data as Map<String, dynamic>,
+    ));
+    return this;
+  }
+
+  @override
   Transaction update(
       DocumentReference documentReference, Map<String, dynamic> data) {
     writes.add((
+      'update',
       documentReference as DocumentReference<Map<String, dynamic>>,
       data,
     ));
