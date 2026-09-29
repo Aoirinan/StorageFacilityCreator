@@ -30,6 +30,56 @@ class StatementService {
   static final FirebaseAuth _auth = FirebaseAuth.instance;
   static final FirebaseStorage _storage = FirebaseStorage.instance;
 
+  /// The statement's transaction rows, oldest first, each carrying the
+  /// balance after it.
+  ///
+  /// The balance is the signed sum of the amounts, the same rule as
+  /// [LedgerService.getLedgerBalance] and the ledger header: charges are
+  /// stored positive, payments and credits negative, and refunds positive,
+  /// because a refund hands back a credit the tenant held, so what they owe
+  /// goes back up. This used to group refunds with payments and subtract
+  /// them, so a tenant refunded their $50 credit showed $0.00 in the app and
+  /// -$100.00 on their statement.
+  ///
+  /// Columns follow the sign, not the type, so a row can never sit under
+  /// Charges while lowering what is owed, or under Payments while raising it.
+  static List<StatementRow> statementRows(
+    List<LedgerEntry> entries, {
+    double balanceForward = 0.0,
+  }) {
+    final sorted = List<LedgerEntry>.from(entries)
+      ..sort((a, b) => a.entryDate.compareTo(b.entryDate));
+    var balance = balanceForward;
+    final rows = <StatementRow>[];
+    for (final entry in sorted) {
+      if (entry.status == LedgerEntryStatus.voided) continue;
+      balance += entry.amount;
+      rows.add(StatementRow(
+        date: entry.entryDate,
+        description: entry.description ?? entry.typeDisplayName,
+        charges: entry.amount > 0 ? entry.amount : 0.0,
+        payments: entry.amount < 0 ? entry.amount.abs() : 0.0,
+        balance: balance,
+        reference: entry.referenceId,
+      ));
+    }
+    return rows;
+  }
+
+  /// The balance a statement starting at [startDate] carries in: the signed
+  /// sum of every non-voided entry dated before it, by the same rule as
+  /// [statementRows].
+  static double balanceForward(List<LedgerEntry> entries, DateTime startDate) =>
+      _signedSum(entries.where((e) => e.entryDate.isBefore(startDate)));
+
+  static double _signedSum(Iterable<LedgerEntry> entries) {
+    var total = 0.0;
+    for (final entry in entries) {
+      if (entry.status != LedgerEntryStatus.voided) total += entry.amount;
+    }
+    return total;
+  }
+
   /// Generate statement PDF from ledger entries
   static Future<Uint8List> generateStatementPDF({
     required List<LedgerEntry> entries,
@@ -47,39 +97,9 @@ class StatementService {
       final now = DateTime.now();
       final statementDate = endDate ?? now;
       
-      // Calculate balances
-      double runningBalance = balanceForward ?? 0.0;
-      final transactions = <_TransactionRow>[];
-      
-      // Sort entries by date (oldest first for statement)
-      final sortedEntries = List<LedgerEntry>.from(entries)
-        ..sort((a, b) => a.entryDate.compareTo(b.entryDate));
-      
-      for (final entry in sortedEntries) {
-        if (entry.status != LedgerEntryStatus.voided) {
-          final reducesBalance = entry.type == LedgerEntryType.payment ||
-              entry.type == LedgerEntryType.credit ||
-              entry.type == LedgerEntryType.refund;
-          if (reducesBalance) {
-            runningBalance -= entry.amount.abs(); // Payments reduce balance
-          } else {
-            runningBalance += entry.amount; // Charges increase balance
-          }
-
-          // Columns follow the same rule as the balance, so a row can never
-          // sit under Charges while lowering what is owed.
-          transactions.add(_TransactionRow(
-            date: entry.entryDate,
-            description: entry.description ?? entry.typeDisplayName,
-            charges: !reducesBalance && entry.amount > 0 ? entry.amount : 0.0,
-            payments: reducesBalance || entry.amount < 0
-                ? entry.amount.abs()
-                : 0.0,
-            balance: runningBalance,
-            reference: entry.referenceId,
-          ));
-        }
-      }
+      final rows = statementRows(entries, balanceForward: balanceForward ?? 0.0);
+      final runningBalance =
+          rows.isEmpty ? (balanceForward ?? 0.0) : rows.last.balance;
 
       pdf.addPage(
         pw.MultiPage(
@@ -162,7 +182,7 @@ class StatementService {
                 ],
               ),
               
-              if (balanceForward != null && balanceForward > 0) ...[
+              if (balanceForward != null && balanceForward != 0) ...[
                 pw.SizedBox(height: 16),
                 pw.Container(
                   padding: const pw.EdgeInsets.all(8),
@@ -192,20 +212,20 @@ class StatementService {
                     ],
                   ),
                   // Rows
-                  ...transactions.map((transaction) => pw.TableRow(
+                  ...rows.map((row) => pw.TableRow(
                     children: [
-                      _buildTableCell(_formatDate(transaction.date)),
-                      _buildTableCell(transaction.description),
+                      _buildTableCell(_formatDate(row.date)),
+                      _buildTableCell(row.description),
                       _buildTableCell(
-                        transaction.charges > 0 ? _formatCurrency(transaction.charges) : '',
+                        row.charges > 0 ? _formatCurrency(row.charges) : '',
                         alignRight: true,
                       ),
                       _buildTableCell(
-                        transaction.payments > 0 ? _formatCurrency(transaction.payments) : '',
+                        row.payments > 0 ? _formatCurrency(row.payments) : '',
                         alignRight: true,
                       ),
                       _buildTableCell(
-                        _formatCurrency(transaction.balance),
+                        _formatCurrency(row.balance),
                         alignRight: true,
                         isBold: true,
                       ),
@@ -316,23 +336,10 @@ class StatementService {
         facilityId: facilityId,
       );
 
-      // Calculate balance forward (balance before start date)
-      double balanceForward = 0.0;
-      if (startDate != null) {
-        final earlierEntries = ledgerEntries.where((e) => e.entryDate.isBefore(startDate)).toList();
-        balanceForward = 0.0;
-        for (final entry in earlierEntries) {
-          if (entry.status != LedgerEntryStatus.voided) {
-            if (entry.type == LedgerEntryType.payment || 
-                entry.type == LedgerEntryType.credit || 
-                entry.type == LedgerEntryType.refund) {
-              balanceForward -= entry.amount.abs();
-            } else {
-              balanceForward += entry.amount;
-            }
-          }
-        }
-      }
+      // Balance carried in from before the statement period.
+      final carriedForward = startDate == null
+          ? 0.0
+          : balanceForward(ledgerEntries, startDate);
 
       // Filter entries by date range if specified
       List<LedgerEntry> filteredEntries = ledgerEntries;
@@ -350,7 +357,7 @@ class StatementService {
         facility: facility,
         startDate: startDate,
         endDate: endDate,
-        balanceForward: balanceForward,
+        balanceForward: carriedForward,
       );
 
       // Upload PDF to Storage
@@ -431,21 +438,9 @@ ${facility.phone != null ? 'Phone: ${facility.phone}' : ''}
     }
   }
 
-  static double _calculateCurrentBalance(List<LedgerEntry> entries) {
-    double balance = 0.0;
-    for (final entry in entries) {
-      if (entry.status != LedgerEntryStatus.voided) {
-        if (entry.type == LedgerEntryType.payment || 
-            entry.type == LedgerEntryType.credit || 
-            entry.type == LedgerEntryType.refund) {
-          balance -= entry.amount.abs();
-        } else {
-          balance += entry.amount;
-        }
-      }
-    }
-    return balance;
-  }
+  /// Signed sum of every non-voided entry, see [statementRows].
+  static double _calculateCurrentBalance(List<LedgerEntry> entries) =>
+      _signedSum(entries);
 
   static Future<String> _uploadStatementPDF({
     required String facilityId,
@@ -486,7 +481,10 @@ ${facility.phone != null ? 'Phone: ${facility.phone}' : ''}
   }
 }
 
-class _TransactionRow {
+/// One line of the statement's transaction table. [charges] holds a
+/// positive amount and [payments] a negative one's magnitude; exactly one of
+/// them is nonzero for a nonzero entry. [balance] is the balance after it.
+class StatementRow {
   final DateTime date;
   final String description;
   final double charges;
@@ -494,7 +492,7 @@ class _TransactionRow {
   final double balance;
   final String? reference;
 
-  _TransactionRow({
+  const StatementRow({
     required this.date,
     required this.description,
     required this.charges,

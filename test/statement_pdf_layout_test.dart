@@ -105,8 +105,8 @@ void main() {
         // Payments are stored negative, as PaymentService writes them.
         _entry('e2', LedgerEntryType.payment, -85, DateTime(2026, 9, 3),
             'Card payment'),
-        // A credit stored positive still belongs under Payments.
-        _entry('e3', LedgerEntryType.credit, 10, DateTime(2026, 9, 5),
+        // Credits are stored negative, like payments, and sit under Payments.
+        _entry('e3', LedgerEntryType.credit, -10, DateTime(2026, 9, 5),
             'Courtesy credit'),
       ],
       tenant: _tenant,

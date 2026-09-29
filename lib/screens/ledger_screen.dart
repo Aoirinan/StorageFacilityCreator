@@ -952,23 +952,11 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
           filteredEntries = filteredEntries.where((e) => e.entryDate.isBefore(_endDate!.add(const Duration(days: 1))) || e.entryDate.isAtSameMomentAs(_endDate!)).toList();
         }
 
-        // Calculate balance forward
-        double balanceForward = 0.0;
-        if (_startDate != null) {
-          final earlierEntries = entries.where((e) => e.entryDate.isBefore(_startDate!)).toList();
-          balanceForward = 0.0;
-          for (final entry in earlierEntries) {
-            if (entry.status != LedgerEntryStatus.voided) {
-              if (entry.type == LedgerEntryType.payment || 
-                  entry.type == LedgerEntryType.credit || 
-                  entry.type == LedgerEntryType.refund) {
-                balanceForward -= entry.amount.abs();
-              } else {
-                balanceForward += entry.amount;
-              }
-            }
-          }
-        }
+        // Balance carried in from before the statement period, by the same
+        // rule as the ledger header and the statement's running balance.
+        final balanceForward = _startDate == null
+            ? 0.0
+            : StatementService.balanceForward(entries, _startDate!);
 
         // Generate PDF
         final pdfData = await StatementService.generateStatementPDF(
