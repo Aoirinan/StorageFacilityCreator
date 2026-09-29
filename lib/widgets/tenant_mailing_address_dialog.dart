@@ -138,6 +138,10 @@ class _MailingAddressDialogState extends State<_MailingAddressDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: const Text('Edit Mailing Address'),
+      // At least this wide, narrowed to fit a phone. Sized to its fields
+      // alone, the dialog came out narrow on a desktop, and the State field's
+      // third of the row cut its label to "Sta...".
+      constraints: const BoxConstraints(minWidth: 448),
       content: SingleChildScrollView(
         child: Form(
           key: _formKey,
@@ -182,6 +186,7 @@ class _MailingAddressDialogState extends State<_MailingAddressDialog> {
             const SizedBox(height: 12),
             Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Expanded(
+                flex: 2,
                 child: TextFormField(
                   key: const Key('mailing-address-state'),
                   controller: _state,
@@ -195,7 +200,7 @@ class _MailingAddressDialogState extends State<_MailingAddressDialog> {
               ),
               const SizedBox(width: 12),
               Expanded(
-                flex: 2,
+                flex: 3,
                 child: TextFormField(
                   key: const Key('mailing-address-zip'),
                   controller: _zip,

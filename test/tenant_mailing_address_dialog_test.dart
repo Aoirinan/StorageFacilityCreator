@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/models/address_model.dart';
 import 'package:sfcapp/utils/mailing_address_edit.dart';
@@ -24,9 +25,10 @@ void main() {
     createdAt: DateTime(2026, 9, 26),
   );
 
-  Future<_DialogResult> open(WidgetTester tester, {Address? current}) async {
+  Future<_DialogResult> open(WidgetTester tester,
+      {Address? current, Size screen = const Size(1200, 2000)}) async {
     final holder = _DialogResult();
-    tester.view.physicalSize = const Size(1200, 2000);
+    tester.view.physicalSize = screen;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     await tester.pumpWidget(MaterialApp(
@@ -157,6 +159,36 @@ void main() {
     expect(find.text('Remove Mailing Address'), findsNothing);
     expect(find.text('Edit Mailing Address'), findsOneWidget);
     expect(fieldText(tester, 'mailing-address-street'), 'PO Box 12');
+  });
+
+  testWidgets('State has room for its label, with ZIP beside it, even at the '
+      "dialog's narrowest desktop width", (tester) async {
+    // The dialog's surface, not the AlertDialog, which fills the screen.
+    Size surface() => tester.getSize(find
+        .descendant(of: find.byType(Dialog), matching: find.byType(Material))
+        .first);
+
+    await open(tester);
+    expect(surface().width, greaterThanOrEqualTo(448));
+    Navigator.of(tester.element(find.text('Edit Mailing Address'))).pop();
+    await tester.pumpAndSettle();
+
+    // A screen just wide enough for that minimum with the dialog's side
+    // insets: the dialog at its narrowest short of a phone. The test font
+    // draws wider than the app's, so a label that fits here fits there.
+    await open(tester, screen: const Size(448 + 80, 1000));
+    expect(surface().width, 448);
+
+    final label = tester.renderObject<RenderParagraph>(find.text('State *'));
+    expect(label.didExceedMaxLines, isFalse, reason: 'not cut to "Sta..."');
+    expect(label.size.width,
+        greaterThanOrEqualTo(label.getMaxIntrinsicWidth(double.infinity)));
+
+    final state = tester.getRect(find.byKey(const Key('mailing-address-state')));
+    final zip = tester.getRect(find.byKey(const Key('mailing-address-zip')));
+    expect(zip.top, state.top, reason: 'one row');
+    expect(zip.left, greaterThan(state.right));
+    expect(find.text('ZIP *'), findsOneWidget);
   });
 
   testWidgets('Cancel returns nothing', (tester) async {
