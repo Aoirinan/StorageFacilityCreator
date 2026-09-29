@@ -15,6 +15,14 @@ import {
   rentChargeMonthFromInput,
   shouldChargeTenant,
 } from './rentChargeHelpers';
+import { writeAuditLog } from './guardrails';
+import {
+  RentChargeRun,
+  SCHEDULED_JOB_ACTOR,
+  rentChargeGeneratedAudit,
+  rentChargeNeedsReviewAudit,
+  scheduledRentChargeRunId,
+} from './rentChargeAudit';
 import { planTenantRentCharge } from './rentChargeReads';
 
 export const RENT_CHARGE_JOBS_COLLECTION = 'rentChargeJobs';
@@ -133,6 +141,13 @@ export async function generateFacilityRentCharges(
   // Dated at noon UTC on the 1st, not at the run instant (00:00 UTC), which
   // the app showed as the last day of the previous month in US time zones.
   const targetDate = rentChargeDateFor(targetYear, targetMonth);
+  const run: RentChargeRun = {
+    runId: scheduledRentChargeRunId(targetYear, targetMonth),
+    source: 'scheduled',
+    ...SCHEDULED_JOB_ACTOR,
+    year: targetYear,
+    month: targetMonth,
+  };
 
   const tenantsSnapshot = await admin
     .firestore()
@@ -198,30 +213,15 @@ export async function generateFacilityRentCharges(
           `Rent for ${targetYear}-${targetMonth} not charged to tenant ${tenantId} in facility ${facilityId}: ${plan.reason}`,
           { monthlyRate, coveredBy },
         );
-        await admin
-          .firestore()
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('auditLogs')
-          .add({
-            action: 'recurringCharge.needsReview',
-            actorUid: 'system',
-            actorEmail: 'system@scheduled-job',
-            targetId: tenantId,
-            entityType: 'tenant',
-            entityId: tenantId,
+        await writeAuditLog(
+          facilityId,
+          rentChargeNeedsReviewAudit(run, {
             tenantId,
-            details: {
-              reason: plan.reason,
-              monthlyRate,
-              coveredAtMoveIn: coveredBy,
-              chargeType: 'monthlyRent',
-              month: targetMonth,
-              year: targetYear,
-              scheduled: true,
-            },
-            at: admin.firestore.FieldValue.serverTimestamp(),
-          });
+            reason: plan.reason,
+            monthlyRate,
+            coveredAtMoveIn: coveredBy,
+          }),
+        );
         continue;
       }
 
@@ -259,31 +259,17 @@ export async function generateFacilityRentCharges(
         createdBy: 'system',
       });
 
-      await admin
-        .firestore()
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('auditLogs')
-        .add({
-          action: 'recurringCharge.generated',
-          actorUid: 'system',
-          actorEmail: 'system@scheduled-job',
-          targetId: ledgerEntryRef.id,
-          entityType: 'ledgerEntry',
-          entityId: ledgerEntryRef.id,
+      await writeAuditLog(
+        facilityId,
+        rentChargeGeneratedAudit(run, {
+          ledgerEntryId: ledgerEntryRef.id,
           tenantId,
-          details: {
-            amount,
-            chargeType: 'monthlyRent',
-            month: targetMonth,
-            year: targetYear,
-            scheduled: true,
-            ...(reduced
-              ? { monthlyRate, lessCoveredAtMoveIn: plan.lessCoveredAtMoveIn, coveredAtMoveIn: coveredBy }
-              : {}),
-          },
-          at: admin.firestore.FieldValue.serverTimestamp(),
-        });
+          amount,
+          covered: reduced
+            ? { monthlyRate, lessCoveredAtMoveIn: plan.lessCoveredAtMoveIn, coveredAtMoveIn: coveredBy }
+            : undefined,
+        }),
+      );
 
       successCount += 1;
       if (reduced) reducedCount += 1;
