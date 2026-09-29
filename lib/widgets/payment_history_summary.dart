@@ -5,11 +5,16 @@ import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/providers/ledger_provider.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/payment_month_status.dart';
+import 'package:sfcapp/utils/received_payments.dart';
 
-/// The Payment History block in the tenant page's Financial Summary: counts
-/// and the last 12 months, each worked out by [tenantPaymentMonthStatus]
-/// from the tenant and the balance of [entries].
+/// The Payment History block in the tenant page's Financial Summary: counts,
+/// the last 12 months, each worked out by [tenantPaymentMonthStatus] from the
+/// tenant and the balance of [entries], and the payments received on the
+/// ledger ([receivedPayments]) with their dates and check numbers.
 class PaymentHistorySummary extends StatelessWidget {
+  /// How many payments are listed; View Ledger has the rest.
+  static const int receivedListLimit = 12;
+
   final TenantModel tenant;
 
   /// The tenant's ledger (every status; only posted entries count towards
@@ -70,9 +75,13 @@ class PaymentHistorySummary extends StatelessWidget {
         .length;
     final balance = sumPostedLedgerEntries(entries);
     final months = paymentHistoryMonths(today);
+    // Newest first, so the last one is the first payment on the ledger.
+    final received = receivedPayments(entries);
+    final firstReceived = received.isEmpty ? null : received.last.receivedOn;
     final statuses = [
       for (final m in months)
-        tenantPaymentMonthStatus(tenant, m, balance: balance, today: today),
+        tenantPaymentMonthStatus(tenant, m,
+            balance: balance, today: today, firstPaymentReceived: firstReceived),
     ];
     int count(PaymentMonthStatus s) => statuses.where((x) => x == s).length;
     final lateMonths = count(PaymentMonthStatus.late);
@@ -137,6 +146,54 @@ class PaymentHistorySummary extends StatelessWidget {
               style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
             ),
           ],
+          const SizedBox(height: 16),
+          Text(
+            'Payments received',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: AppTheme.textSecondary,
+                  fontWeight: FontWeight.w500,
+                ),
+          ),
+          const SizedBox(height: 4),
+          if (received.isEmpty)
+            Text(
+              'No payments on the ledger yet.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
+            )
+          else ...[
+            for (final p in received.take(receivedListLimit)) _receivedRow(context, p),
+            if (received.length > receivedListLimit)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  '${received.length - receivedListLimit} earlier '
+                  '${received.length - receivedListLimit == 1 ? 'payment' : 'payments'} on the ledger (View Ledger).',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// One payment: when it came in, how (with the check number), and how much.
+  Widget _receivedRow(BuildContext context, ReceivedPayment p) {
+    final style = Theme.of(context).textTheme.bodySmall;
+    final date = DateFormat(p.monthOnly ? 'MMM yyyy' : 'MMM d, yyyy').format(p.receivedOn);
+    return Padding(
+      key: ValueKey('received-payment-${p.ledgerEntryId}'),
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          SizedBox(width: 96, child: Text(date, style: style)),
+          const SizedBox(width: 8),
+          Expanded(child: Text(p.label, style: style, overflow: TextOverflow.ellipsis)),
+          const SizedBox(width: 8),
+          Text(
+            '\$${p.amount.toStringAsFixed(2)}',
+            style: style?.copyWith(fontWeight: FontWeight.w600, color: AppTheme.success),
+          ),
         ],
       ),
     );

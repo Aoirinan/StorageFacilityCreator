@@ -10,7 +10,8 @@ enum PaymentMonthStatus {
   late('late'),
   movedOut('moved_out'),
 
-  /// The month ends before the tenant moved in: nothing was owed.
+  /// The month ends before the tenant moved in (and before the first
+  /// payment on their ledger): nothing was owed.
   beforeMoveIn(null),
 
   /// Not covered by paidThrough, and nothing shows it is late: a month still
@@ -40,8 +41,20 @@ String paymentMonthKey(DateTime month) =>
     '${month.year}-${month.month.toString().padLeft(2, '0')}';
 
 /// The day the tenant's history starts: their move-in date, or the day the
-/// tenant record was made when no move-in date was saved.
-DateTime tenancyStart(TenantModel tenant) => tenant.moveInDate ?? tenant.createdAt;
+/// tenant record was made when no move-in date was saved; or the day of
+/// [firstPaymentReceived] when that is earlier.
+///
+/// Enter past history only saves its move-in date on a tenant that has none,
+/// so a tenant typed in with the day they were entered as move-in kept that
+/// date, and every month of the checks entered before it showed as "Before
+/// move-in". Money received in a month means they were a tenant then.
+DateTime tenancyStart(TenantModel tenant, {DateTime? firstPaymentReceived}) {
+  final start = tenant.moveInDate ?? tenant.createdAt;
+  if (firstPaymentReceived != null && firstPaymentReceived.isBefore(start)) {
+    return firstPaymentReceived;
+  }
+  return start;
+}
 
 /// The status of [month] (any day in it) for the Payment History grid.
 ///
@@ -82,17 +95,19 @@ PaymentMonthStatus paymentMonthStatus({
   return PaymentMonthStatus.notRecorded;
 }
 
-/// [paymentMonthStatus] for [tenant].
+/// [paymentMonthStatus] for [tenant]. [firstPaymentReceived] is the date of
+/// the oldest payment on their ledger, if any (see [tenancyStart]).
 PaymentMonthStatus tenantPaymentMonthStatus(
   TenantModel tenant,
   DateTime month, {
   required double balance,
   required DateTime today,
+  DateTime? firstPaymentReceived,
 }) =>
     paymentMonthStatus(
       month: month,
       overrides: tenant.monthStatusOverrides,
-      tenancyStart: tenancyStart(tenant),
+      tenancyStart: tenancyStart(tenant, firstPaymentReceived: firstPaymentReceived),
       paidThrough: tenant.paidThrough,
       balance: balance,
       today: today,

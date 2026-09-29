@@ -57,6 +57,31 @@ void main() {
     expect(statuses.skip(8), everyElement(PaymentMonthStatus.paid));
   });
 
+  test('a payment received before the saved move-in date starts the grid there', () {
+    // Enter past history kept the move-in date the tenant was typed in with,
+    // so the checks entered for March to July sat in "Before move-in".
+    final t = _tenant(
+      moveInDate: DateTime(2026, 9, 20),
+      paidThrough: DateTime(2026, 7, 31),
+    );
+    expect(grid(t).take(11), everyElement(PaymentMonthStatus.beforeMoveIn));
+
+    final statuses = [
+      for (final m in paymentHistoryMonths(today))
+        tenantPaymentMonthStatus(t, m,
+            balance: 0, today: today, firstPaymentReceived: DateTime.utc(2026, 3, 4, 12)),
+    ];
+    expect(statuses.take(5), everyElement(PaymentMonthStatus.beforeMoveIn)); // Oct 25 - Feb 26
+    expect(statuses.sublist(5, 10), everyElement(PaymentMonthStatus.paid)); // Mar - Jul 26
+    expect(statuses.skip(10), everyElement(PaymentMonthStatus.notRecorded));
+  });
+
+  test('a payment after move-in does not move the start', () {
+    final t = _tenant(moveInDate: DateTime(2026, 5, 10), paidThrough: DateTime(2026, 9, 30));
+    expect(tenancyStart(t, firstPaymentReceived: DateTime(2026, 6, 1)), DateTime(2026, 5, 10));
+    expect(tenancyStart(t), DateTime(2026, 5, 10));
+  });
+
   test('imported from a paper ledger with no paidThrough and \$0 balance is not late', () {
     final statuses = grid(_tenant(
       moveInDate: DateTime(2025, 1, 1),
