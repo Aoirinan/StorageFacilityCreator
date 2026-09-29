@@ -49,8 +49,8 @@ Future<void> editTenantMailingAddress(
 
 /// "Edit Mailing Address": Street, Apt / Suite, City, State and ZIP, filled
 /// from [current]. Returns the fields to save, [MailingAddressFields.none]
-/// for Remove (offered only when there is a [current] address), or null
-/// when cancelled.
+/// for a confirmed Remove (offered only when there is a [current] address),
+/// or null when cancelled.
 Future<MailingAddressFields?> showTenantMailingAddressDialog(
   BuildContext context, {
   Address? current,
@@ -92,6 +92,33 @@ class _MailingAddressDialogState extends State<_MailingAddressDialog> {
   // address (what a workbook import often leaves) cannot be mailed to, and
   // the owner opens this to make the statement deliverable.
   String? _required(String? v) => v == null || v.trim().isEmpty ? 'Required' : null;
+
+  // Asks first, as Remove Proof Document on the tenant page does: on a phone
+  // the actions stack with Remove directly above Cancel, and the only way
+  // back from a slip is retyping the address.
+  Future<void> _remove() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove Mailing Address'),
+        content: const Text('Remove this mailing address? Printed documents for this tenant will have no address.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            key: const Key('mailing-address-remove-confirm'),
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    Navigator.pop(context, MailingAddressFields.none);
+  }
 
   void _save() {
     if (!_formKey.currentState!.validate()) return;
@@ -189,7 +216,7 @@ class _MailingAddressDialogState extends State<_MailingAddressDialog> {
         if (widget.current != null)
           TextButton(
             key: const Key('mailing-address-remove'),
-            onPressed: () => Navigator.pop(context, MailingAddressFields.none),
+            onPressed: _remove,
             style: TextButton.styleFrom(foregroundColor: AppTheme.error),
             child: const Text('Remove'),
           ),

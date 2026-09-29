@@ -126,14 +126,37 @@ void main() {
     expect(result.picked!.street2, isEmpty);
   });
 
-  testWidgets('Remove returns the blank fields, which replaceMailingAddress reads as none',
+  testWidgets('Remove asks first; confirmed, it returns the blank fields, which replaceMailingAddress reads as none',
       (tester) async {
     final result = await open(tester, current: stored);
     await tester.tap(find.byKey(const Key('mailing-address-remove')));
     await tester.pumpAndSettle();
+    expect(result.done, isFalse, reason: 'nothing removed until the owner confirms');
+    expect(find.text('Remove Mailing Address'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('mailing-address-remove-confirm')));
+    await tester.pumpAndSettle();
     expect(result.done, isTrue);
     expect(result.picked, same(MailingAddressFields.none));
     expect(replaceMailingAddress([stored], result.picked!, DateTime(2026, 9, 28)), isEmpty);
+  });
+
+  testWidgets('Remove, then Cancel on the confirmation: the address stays and the editor is still open',
+      (tester) async {
+    final result = await open(tester, current: stored);
+    await tester.tap(find.byKey(const Key('mailing-address-remove')));
+    await tester.pumpAndSettle();
+    // The confirmation's Cancel, not the editor's: the editor is behind it.
+    await tester.tap(find.descendant(
+      of: find.widgetWithText(AlertDialog, 'Remove Mailing Address'),
+      matching: find.text('Cancel'),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(result.done, isFalse);
+    expect(find.text('Remove Mailing Address'), findsNothing);
+    expect(find.text('Edit Mailing Address'), findsOneWidget);
+    expect(fieldText(tester, 'mailing-address-street'), 'PO Box 12');
   });
 
   testWidgets('Cancel returns nothing', (tester) async {
