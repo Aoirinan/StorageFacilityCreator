@@ -110,6 +110,16 @@ async function seedFacility(): Promise<void> {
     [FACILITY, 'mine'],
     ['fac-2', 'theirs'],
   ]) {
+    // Public map docs of slugs left behind: one from before slug changes left
+    // pointers, units and prices frozen, and one pointer.
+    await db
+      .collection('publicFacilityMaps')
+      .doc(`stale-${suffix}`)
+      .set({ facilityId, publicSettings: { facilityName: 'Acme Storage' }, units: [{ unitId: 'u1', monthlyRate: 99 }] });
+    await db
+      .collection('publicFacilityMaps')
+      .doc(`moved-${suffix}`)
+      .set({ facilityId, movedToSlug: `stale-${suffix}`, movedAt: new Date(NOW) });
     await db.collection('user_roles').doc(`role-${suffix}`).set({ userId: 'manager-1', facilityId, roleType: 'manager' });
     await db.collection('publicReservations').doc(`res-${suffix}`).set({ facilityId, unitId: 'u1', status: 'pending' });
     await db
@@ -134,13 +144,21 @@ const THEIR_KEYED_ROWS = [
   'publicPaymentLinks/token-theirs',
   'publicReservations/res-theirs',
   'user_roles/role-theirs',
-];
+
+  'publicFacilityMaps/moved-theirs',
+  'publicFacilityMaps/stale-theirs',
+].sort();
 const ALL_KEYED_ROWS = [
   ...THEIR_KEYED_ROWS,
   'customDomainClaims/mine.example.com',
   'publicPaymentLinks/token-mine',
   'publicReservations/res-mine',
   'user_roles/role-mine',
+
+  // The current slug's (mapEngine/meta.publicSlug 'Acme'), and old ones.
+  'publicFacilityMaps/acme',
+  'publicFacilityMaps/moved-mine',
+  'publicFacilityMaps/stale-mine',
 ].sort();
 
 async function docsUnder(path: string): Promise<string[]> {
@@ -201,8 +219,9 @@ test('the owner deletes the whole facility: tenants, nested records and all', { 
   // The CSV exports (tenant lists) too: the daily cleanup finds them through
   // exportJobs, which the subtree delete removes.
   assert.deepEqual(calls.storage, [`facilities/${FACILITY}/`, `exports/${FACILITY}/`]);
-  // Its roles, public reservations, payment links and domain claims go;
-  // another facility's stay.
+  // Its roles, public reservations, payment links, domain claims and every
+  // public map doc (old slugs too, not just the current one) go; another
+  // facility's stay.
   assert.deepEqual(await keyedRowsLeft(), THEIR_KEYED_ROWS);
 });
 

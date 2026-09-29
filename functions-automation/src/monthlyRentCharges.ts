@@ -3,17 +3,24 @@
 // collection at a different depth — so everything it wrote was invisible to the
 // twelve other writers, to the autopay balance query, and to every ledger read
 // in the app. A late fee charged there would never be collected and never shown.
+import { randomUUID } from 'crypto';
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import { writeAuditLog } from './guardrails';
 import { isPaymentSafetyFeatureEnabled } from './paymentSafetyFlags';
 import {
+  RentChargeRun,
+  rentChargeGeneratedAudit,
+  rentChargeNeedsReviewAudit,
+} from './rentChargeAudit';
+import {
+  buildReducedRentChargeDescription,
   buildRentChargeDescription,
-  isRentChargeForMonth,
   rentChargeDateFor,
   rentChargeMonthAt,
   rentChargeMonthFromInput,
 } from './rentChargeHelpers';
+import { planTenantRentCharge } from './rentChargeReads';
 
 /**
  * Callable function to generate monthly rent charges for a facility
@@ -102,6 +109,14 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
 
     const targetMonth = targetMonthRef.month; // 1-based, as stored in metadata
     const targetYear = targetMonthRef.year;
+    // Each call is its own run in the Generation History.
+    const run: RentChargeRun = {
+      runId: `manual_${randomUUID()}`,
+      source: 'manual',
+      actorUid: context.auth.uid,
+      year: targetYear,
+      month: targetMonth,
+    };
 
     for (const tenantDoc of activeTenants) {
       try {
@@ -164,27 +179,19 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
 
         // Also check ledger entries as fallback (for backward compatibility)
         //
-        // Must be scoped to this tenant. The collection holds every tenant's
-        // entries, so without the filter this duplicate-charge guard would see
-        // any tenant's rent charge and skip charging everyone after the first.
-        // It also bounds the read, which matters for a facility with thousands
-        // of tenants and years of history.
-        const ledgerSnapshot = await admin.firestore()
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('ledgers')
-          .where('tenantId', '==', tenantId)
-          .where('type', '==', 'rentCharge')
-          .where('status', '==', 'posted')
-          .get();
+        // The same read and decision as the scheduled job, scoped to this
+        // tenant: a charge either path posted (including older ones dated
+        // 00:00 UTC) is recognised here, and so is rent a move-in already
+        // charged for the month.
+        const decision = await planTenantRentCharge({
+          facilityId,
+          tenantId,
+          monthlyRate,
+          year: targetYear,
+          month: targetMonth,
+        });
 
-        // Same match as the scheduled job, so a charge either path posted
-        // (including older ones dated 00:00 UTC) is recognised here.
-        const existingCharge = ledgerSnapshot.docs.find((doc) =>
-          isRentChargeForMonth(doc.data(), targetMonth, targetYear),
-        );
-
-        if (existingCharge) {
+        if (decision.existingChargeId !== null) {
           // Store idempotency key for future checks (if enabled)
           if (idempotencyEnabled && chargeIdempotencyKey) {
             const idempotencyRef = admin.firestore()
@@ -194,7 +201,7 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
               .doc(chargeIdempotencyKey);
             
             await idempotencyRef.set({
-              ledgerEntryId: existingCharge.id,
+              ledgerEntryId: decision.existingChargeId,
               createdAt: admin.firestore.FieldValue.serverTimestamp(),
               facilityId,
               tenantId,
@@ -206,8 +213,47 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
           continue;
         }
 
+        // Rent a move-in already charged for the month: nothing, or (a unit
+        // added to others) the rate less that unit's rent; see
+        // planMonthlyRentCharge. A flagged tenant is left for the owner.
+        const { plan } = decision;
+        const coveredBy = plan.covers.map((c) => ({
+          contractId: c.contractId,
+          monthlyShare: c.monthlyShare,
+          ledgerEntryIds: c.entryIds,
+        }));
+        if (plan.action !== 'charge') {
+          if (plan.action === 'review') {
+            errors.push(`Tenant ${tenantData.name || tenantId}: not charged, check by hand. ${plan.reason}`);
+            if (!isDryRun) {
+              await writeAuditLog(
+                facilityId,
+                rentChargeNeedsReviewAudit(run, {
+                  tenantId,
+                  reason: plan.reason,
+                  monthlyRate,
+                  coveredAtMoveIn: coveredBy,
+                }),
+              );
+            }
+          }
+          skippedCount++;
+          continue;
+        }
+        const reduced = plan.lessCoveredAtMoveIn > 0;
+        const amount = plan.amount;
+        const coveredMetadata = reduced
+          ? {
+              monthlyRate,
+              lessCoveredAtMoveIn: plan.lessCoveredAtMoveIn,
+              coveredAtMoveIn: coveredBy,
+            }
+          : {};
+
         // Generate rent charge
-        const description = buildRentChargeDescription(targetYear, targetMonth);
+        const description = reduced
+          ? buildReducedRentChargeDescription(targetYear, targetMonth, plan.lessCoveredAtMoveIn)
+          : buildRentChargeDescription(targetYear, targetMonth);
 
         // In dry-run mode, skip actual creation
         if (isDryRun) {
@@ -242,7 +288,7 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
 
           const ledgerEntryData = {
             type: 'rentCharge',
-            amount: monthlyRate,
+            amount,
             description,
             entryDate: admin.firestore.Timestamp.fromDate(targetDate),
             dueDate: admin.firestore.Timestamp.fromDate(targetDate),
@@ -255,6 +301,7 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
             chargeType: 'monthlyRent',
             month: targetMonth,
             year: targetYear,
+            ...coveredMetadata,
             ...(chargeIdempotencyKey ? { idempotencyKey: chargeIdempotencyKey } : {}),
             generatedAt: admin.firestore.FieldValue.serverTimestamp(),
           },
@@ -290,7 +337,7 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
 
               await ledgerEntryRef.set({
                 type: 'rentCharge',
-                amount: monthlyRate,
+                amount,
                 description,
                 entryDate: admin.firestore.Timestamp.fromDate(targetDate),
                 dueDate: admin.firestore.Timestamp.fromDate(targetDate),
@@ -303,6 +350,7 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
                   chargeType: 'monthlyRent',
                   month: targetMonth,
                   year: targetYear,
+                  ...coveredMetadata,
                   generatedAt: admin.firestore.FieldValue.serverTimestamp(),
                 },
               });
@@ -316,23 +364,16 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
           continue;
         }
 
-        // Audit log
-        await writeAuditLog(facilityId, {
-          eventType: 'recurringCharge.generated',
-          actorUid: context.auth.uid,
-          targetType: 'ledgerEntry',
-          targetId: ledgerEntryIdResolved,
-          tenantId,
-          after: {
-            amount: monthlyRate,
-            chargeType: 'monthlyRent',
-            month: targetMonth,
-            year: targetYear,
-          },
-          metadata: {
-            ...(chargeIdempotencyKey ? { idempotencyKey: chargeIdempotencyKey } : {}),
-          },
-        });
+        await writeAuditLog(
+          facilityId,
+          rentChargeGeneratedAudit(run, {
+            ledgerEntryId: ledgerEntryIdResolved,
+            tenantId,
+            amount,
+            covered: coveredMetadata,
+            idempotencyKey: chargeIdempotencyKey,
+          }),
+        );
 
         successCount++;
       } catch (error: any) {

@@ -1162,6 +1162,79 @@ test('an operator cannot seize another operator’s public storefront slug', asy
   );
 });
 
+test("a slug change's one batch passes, and the old slug's pointer stays the owner's", async () => {
+  // FacilityMapV2Service.setPublicSlug writes the meta, the map carried to the
+  // new slug, a pointer over the old one and the earlier pointers repointed,
+  // in a single batch: if the rules refused any of them, no slug could change.
+  const RIVAL_FACILITY = 'fac-rival-1';
+  const OLDER_SLUGS = Array.from({ length: 15 }, (_, i) => `older-${i + 1}`);
+  await seedFacility();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('facilities').doc(RIVAL_FACILITY).set({
+      ownerUid: OUTSIDER_UID,
+      roles: { [OUTSIDER_UID]: 'owner' },
+    });
+    await db.collection('publicFacilityMaps').doc('old-slug').set({
+      facilityId: FACILITY_ID,
+      facilitySlug: 'old-slug',
+      publicSettings: { enabled: true },
+      units: [{ unitId: 'u1', isRentable: true }],
+    });
+    // Pointers from earlier changes, repointed in the same batch. Fifteen:
+    // each write's rule reads facilities/{id}, and a batch may make only 20
+    // such reads unless repeats of one doc are cached.
+    for (const slug of OLDER_SLUGS) {
+      await db.collection('publicFacilityMaps').doc(slug).set({
+        facilityId: FACILITY_ID,
+        movedToSlug: 'old-slug',
+        movedAt: new Date(),
+      });
+    }
+  });
+
+  const ownerDb = testEnv.authenticatedContext(OWNER_UID).firestore();
+  const batch = ownerDb.batch();
+  batch.set(
+    ownerDb.doc(`facilities/${FACILITY_ID}/mapEngine/meta`),
+    { facilityId: FACILITY_ID, publicSlug: 'new-slug', updatedAt: serverTimestamp(), updatedBy: OWNER_UID },
+    { merge: true },
+  );
+  batch.set(ownerDb.collection('publicFacilityMaps').doc('new-slug'), {
+    facilityId: FACILITY_ID,
+    facilitySlug: 'new-slug',
+    publicSettings: { enabled: true },
+    units: [{ unitId: 'u1', isRentable: true }],
+  });
+  for (const slug of ['old-slug', ...OLDER_SLUGS]) {
+    batch.set(ownerDb.collection('publicFacilityMaps').doc(slug), {
+      facilityId: FACILITY_ID,
+      movedToSlug: 'new-slug',
+      movedAt: serverTimestamp(),
+    });
+  }
+  await assertSucceeds(batch.commit());
+
+  // The pointer keeps the old slug reserved: another operator can neither
+  // take it over nor delete it, and anyone can read it (it is a public link).
+  const rivalDb = testEnv.authenticatedContext(OUTSIDER_UID).firestore();
+  const pointer = rivalDb.collection('publicFacilityMaps').doc('old-slug');
+  await assertFails(pointer.set({ facilityId: RIVAL_FACILITY, units: [] }));
+  await assertFails(pointer.update({ movedToSlug: 'rival-slug' }));
+  await assertFails(pointer.delete());
+  await assertSucceeds(testEnv.unauthenticatedContext().firestore().collection('publicFacilityMaps').doc('old-slug').get());
+
+  // Staff cannot move the storefront (owners and managers only).
+  const staffDb = testEnv.authenticatedContext(STAFF_UID).firestore();
+  await assertFails(
+    staffDb.collection('publicFacilityMaps').doc('new-slug').set({
+      facilityId: FACILITY_ID,
+      movedToSlug: 'elsewhere',
+      movedAt: serverTimestamp(),
+    }),
+  );
+});
+
 test('audit logs are immutable once written', async () => {
   // Two rule blocks used to match this path: a broad `allow write` for
   // owners/managers, and the intended immutable block. Rules OR together, so the
@@ -1194,6 +1267,68 @@ test('audit logs are immutable once written', async () => {
   await assertSucceeds(logRef.get());
   await assertFails(logRef.update({ action: 'nothing_happened' }));
   await assertFails(logRef.delete());
+});
+
+test("audit logs: the old action/at rows are refused, AuditLogEntry.toFirestore's row is not", async () => {
+  // AuditService's DNR, ledger, move-in/out, invoice, autopay, contact-log,
+  // payment-method, transfer, document and lien writers used to add these
+  // rows directly and swallow the error, so none of those events ever landed.
+  await seedFacility();
+  const logs = (uid) =>
+    testEnv.authenticatedContext(uid).firestore().collection('facilities').doc(FACILITY_ID).collection('auditLogs');
+
+  // logDNRAction
+  await assertFails(
+    logs(OWNER_UID).add({
+      action: 'dnr.create',
+      actorUid: OWNER_UID,
+      actorEmail: 'owner@example.com',
+      targetId: 'dnr-1',
+      details: { name: 'Someone' },
+      at: serverTimestamp(),
+    }),
+  );
+  // logLedgerEntryCreated and the rest: entityType/entityId/tenantId, still no
+  // facilityId, userId, userEmail, timestamp, changes or metadata.
+  await assertFails(
+    logs(OWNER_UID).add({
+      action: 'ledger.entry.created',
+      actorUid: OWNER_UID,
+      actorEmail: 'owner@example.com',
+      targetId: 'entry-1',
+      entityType: 'ledgerEntry',
+      entityId: 'entry-1',
+      tenantId: TENANT_ID,
+      details: { type: 'charge', amount: 40 },
+      at: serverTimestamp(),
+    }),
+  );
+
+  // What AuditService.logEvent writes (AuditLogEntry.toFirestore), for an owner
+  // and for an employee.
+  const entry = (uid, email, role) => ({
+    eventType: 'ledger.entry.created',
+    actorUid: uid,
+    actorEmail: email,
+    actorRole: role,
+    targetType: 'ledgerEntry',
+    targetId: 'entry-1',
+    facilityId: FACILITY_ID,
+    tenantId: TENANT_ID,
+    after: { type: 'charge', amount: 40 },
+    timestamp: new Date(),
+    metadata: { description: 'Rent', actorRole: role },
+    action: 'ledger.entry.created',
+    entityType: 'ledgerEntry',
+    entityId: 'entry-1',
+    userId: uid,
+    userEmail: email,
+    changes: { after: { type: 'charge', amount: 40 } },
+  });
+  await assertSucceeds(logs(OWNER_UID).add(entry(OWNER_UID, 'owner@example.com', 'owner')));
+  await assertSucceeds(logs(STAFF_UID).add(entry(STAFF_UID, 'staff@example.com', 'employee')));
+  // Nobody signs a row as somebody else.
+  await assertFails(logs(STAFF_UID).add(entry(OWNER_UID, 'owner@example.com', 'owner')));
 });
 
 test('email usage counters cannot be reset or deleted by the facility', async () => {

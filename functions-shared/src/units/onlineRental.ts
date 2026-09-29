@@ -48,6 +48,21 @@ export function isUnitOfferedOnline(unit: UnitData): boolean {
 }
 
 /**
+ * Whether the facility takes online rentals from the public at all: the
+ * owner's switch, settings/public `publicRentalsEnabled`. Only an exact true
+ * turns it on; the app's FacilityPublicSettings defaults it to false, and a
+ * facility that never set it up has no settings doc.
+ *
+ * createPublicReservationHold refuses every unit while this is false, so any
+ * public page that offers "Rent now" or "Reserve" reads it too. The website
+ * read only the per-unit rules, and sent renters at a facility with rentals
+ * off straight into that refusal.
+ */
+export function facilityTakesOnlineRentals(publicSettings: UnitData | null | undefined): boolean {
+  return publicSettings?.publicRentalsEnabled === true;
+}
+
+/**
  * The unit types the owner opened to online rental, from the facility's
  * settings/public `enabledPublicUnitTypes`. Empty means every type, as the
  * app's publish and the inventory sync read it.

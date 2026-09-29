@@ -642,6 +642,21 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
                 ),
               ),
             ],
+            // Kept out of the maths above: a held deposit is not a credit
+            // on the ledger, and the refund is recorded on the tenant.
+            if (_tenant?.securityDeposit?.isHeld == true) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Security deposit held: '
+                '\$${_tenant!.securityDeposit!.amount.toStringAsFixed(2)}'
+                " — not included above; settle it on the tenant's page.",
+                key: const Key('move-out-security-deposit'),
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: AppTheme.textSecondary),
+              ),
+            ],
           ],
         ),
       ),

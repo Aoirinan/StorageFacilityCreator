@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sfcapp/models/contract_model.dart';
+import 'package:sfcapp/models/invoice_line_item_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/router/app_route.dart';
@@ -14,6 +15,7 @@ import 'package:sfcapp/screens/move_in_wizard_screen.dart';
 import 'package:sfcapp/services/move_in_service.dart';
 import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:sfcapp/services/facility_subcollections.dart';
+import 'package:sfcapp/services/ledger_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 
@@ -35,6 +37,7 @@ UnitModel _unit({
   UnitStatus status = UnitStatus.available,
   String? tenantId,
   String? tenantName,
+  double monthlyRate = 100,
 }) =>
     UnitModel(
       id: 'u1',
@@ -44,7 +47,7 @@ UnitModel _unit({
       status: status,
       tenantId: tenantId,
       tenantName: tenantName,
-      monthlyRate: 100,
+      monthlyRate: monthlyRate,
       createdAt: DateTime(2026, 1, 1),
       updatedAt: DateTime(2026, 1, 1),
       createdBy: 'owner',
@@ -69,10 +72,13 @@ void main() {
     late int moveIns;
     late Completer<MoveInResult> moveIn;
     late MoveInWizardServices services;
+    // What the wizard handed the move-in, last time.
+    MoveInData? handed;
 
     setUp(() {
       leases = 0;
       moveIns = 0;
+      handed = null;
       services = MoveInWizardServices(
         getFacility: (_) async => null,
         getUnits: (_) async => [_unit()],
@@ -92,6 +98,7 @@ void main() {
           bool skipPayment = false,
         }) {
           moveIns++;
+          handed = moveInData;
           return moveIn.future;
         },
       );
@@ -204,6 +211,41 @@ void main() {
         find.text(r'Move-in completed. Monthly rent is now $200.00 for units 101 and A1.'),
         findsOneWidget,
       );
+    });
+
+    // The tenant's rate was summed from the rent line items, which mid-month
+    // are the prorated first month only; the rent job then billed that every
+    // month. The wizard now hands on its Monthly Rent.
+    testWidgets("the move-in is handed the Monthly Rent as the tenant's rate",
+        (tester) async {
+      await pumpWizard(tester);
+      await continueToReview(tester);
+      await tester.tap(continueButton());
+      await tester.pump();
+      expect(handed!.monthlyRent, 100);
+      moveIn.complete(MoveInResult(success: true, tenantId: 't1'));
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('a Monthly Rent the owner changed is the rate handed on',
+        (tester) async {
+      await pumpWizard(tester);
+      await tester.tap(continueButton());
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.widgetWithText(TextFormField, 'Monthly Rent'), '90');
+      await tester.pumpAndSettle();
+      // Financial, contract, payment.
+      for (var step = 0; step < 3; step++) {
+        await tester.tap(continueButton());
+        await tester.pumpAndSettle();
+      }
+      expect(tester.widget<Stepper>(find.byType(Stepper)).currentStep, 4);
+      await tester.tap(continueButton());
+      await tester.pump();
+      expect(handed!.monthlyRent, 90);
+      moveIn.complete(MoveInResult(success: true, tenantId: 't1'));
+      await tester.pumpAndSettle();
     });
 
     testWidgets('a first unit keeps the plain success message', (tester) async {
@@ -534,6 +576,95 @@ void main() {
       expect(db.data('units', 'u1')!['tenantId'], 't1');
       expect(db.data('units', 'u1b')!['tenantId'], isNull);
       expect(db.data('tenants', 't1')!['monthlyRate'], 250);
+    });
+  });
+
+  group("completeMoveIn, a tenant's first unit mid-month", () {
+    // The tenant's rate was the sum of the rent line items: mid-month with
+    // Prorate Rent on, the prorated first month alone, which the rent job
+    // then charged every month (a $40 unit moved into on 13 August billed
+    // $24.52 a month).
+    late FakeFacilityFirestore db;
+    final moveInDate = DateTime(2026, 8, 13);
+
+    setUp(() {
+      db = FakeFacilityFirestore('f1', {
+        'tenants': [
+          FakeDoc('t1', {'name': 'Pat Renter', 'isActive': true, 'unitNumber': '', 'monthlyRate': 0}),
+        ],
+        'units': [
+          FakeDoc('u1', {'facilityId': 'f1', 'unitNumber': 'A1', 'status': 'available', 'monthlyRate': 40}),
+        ],
+      });
+      final auth = MockFirebaseAuth(signedIn: true, mockUser: MockUser(uid: 'owner'));
+      TenantService.firestoreForTesting = db;
+      TenantService.authForTesting = auth;
+      UnitService.authForTesting = auth;
+      MoveInService.authForTesting = auth;
+      LedgerService.firestoreForTesting = db;
+      LedgerService.authForTesting = auth;
+      FacilitySubcollections.overrideForTesting((facilityId, name) => db.sub(name));
+    });
+    tearDown(() {
+      TenantService.firestoreForTesting = null;
+      TenantService.authForTesting = null;
+      UnitService.authForTesting = null;
+      MoveInService.authForTesting = null;
+      LedgerService.firestoreForTesting = null;
+      LedgerService.authForTesting = null;
+      FacilitySubcollections.overrideForTesting(null);
+    });
+
+    Future<List<InvoiceLineItem>> charges(double monthlyRent) =>
+        MoveInService.calculateMoveInCharges(
+          facilityId: 'f1',
+          unitId: 'u1',
+          monthlyRent: monthlyRent,
+          moveInDate: moveInDate,
+        );
+
+    Future<MoveInResult> moveIn(List<InvoiceLineItem> lineItems,
+            {double? monthlyRent}) =>
+        MoveInService.completeMoveIn(
+          moveInData: MoveInData(
+            existingTenant: _tenant,
+            unit: _unit(monthlyRate: 40),
+            contract: _lease,
+            lineItems: lineItems,
+            totalAmount: lineItems.fold(0.0, (sum, i) => sum + i.amount),
+            moveInDate: moveInDate,
+            monthlyRent: monthlyRent,
+          ),
+          skipPayment: true,
+        );
+
+    test("the tenant's rate is the month's rent, not the prorated first month", () async {
+      final lineItems = await charges(40);
+      // 19 of August's 31 days.
+      expect(lineItems.single.type, InvoiceLineItemType.proratedRent);
+      expect(lineItems.single.amount, closeTo(24.52, 0.005));
+
+      final result = await moveIn(lineItems, monthlyRent: 40);
+
+      expect(result.success, isTrue, reason: result.error);
+      expect(db.data('tenants', 't1')!['monthlyRate'], 40);
+      expect(db.data('tenants', 't1')!['unitNumber'], 'A1');
+      // The first month is still charged for its 19 days.
+      final posted = [for (final d in db.sub('ledgers').stored) d.data()];
+      expect(posted.single['type'], 'rentCharge');
+      expect(posted.single['amount'], lineItems.single.amount);
+    });
+
+    test('a Monthly Rent the owner changed is their rate', () async {
+      final result = await moveIn(await charges(35), monthlyRent: 35);
+      expect(result.success, isTrue, reason: result.error);
+      expect(db.data('tenants', 't1')!['monthlyRate'], 35);
+    });
+
+    test("with no Monthly Rent given, the unit's rate", () async {
+      final result = await moveIn(await charges(40));
+      expect(result.success, isTrue, reason: result.error);
+      expect(db.data('tenants', 't1')!['monthlyRate'], 40);
     });
   });
 }

@@ -414,6 +414,24 @@ void main() {
       );
     });
 
+    testWidgets('the approval callout says the shared number works meanwhile',
+        (tester) async {
+      // sendSMS sends from the shared toll-free number until a facility has
+      // its own approved number, and the Dashboard card says so. This page
+      // ended the callout with 'You cannot send texts until it is approved.',
+      // so the owner setting up texting read that she was blocked.
+      await _pumpScreen(
+          tester, _FakeRepository({'facility-1': _draftSnapshot}));
+
+      expect(find.text('How long approval takes'), findsOneWidget);
+      expect(
+        find.textContaining('Until then your texts go out on the shared '
+            'Storage Facility Creator number, which works right away.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('You cannot send texts'), findsNothing);
+    });
+
     testWidgets('business details stay editable while the bundle is a draft',
         (tester) async {
       // Regression: the form locked as soon as a trust profile SID existed.

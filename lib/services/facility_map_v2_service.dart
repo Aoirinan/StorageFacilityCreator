@@ -7,22 +7,77 @@ import 'package:sfcapp/models/facility_map_v2_models.dart';
 import 'package:sfcapp/models/facility_public_settings_model.dart';
 import 'package:sfcapp/models/map_shape_model.dart';
 import 'package:sfcapp/models/permission_model.dart';
-import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/facility_public_service.dart';
 import 'package:sfcapp/services/map_layout_service.dart';
+import 'package:sfcapp/services/facility_subcollections.dart';
 import 'package:sfcapp/services/permission_service.dart';
-import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/utils/firestore_field_read.dart';
 
+/// The website URL name asked for is another facility's storefront.
+class PublicSlugTakenException implements UserFacingException {
+  PublicSlugTakenException(this.slug);
+
+  final String slug;
+
+  @override
+  String get message => 'The website URL name "$slug" is already used by '
+      'another facility. Choose a different one.';
+
+  @override
+  String toString() => message;
+}
+
 class FacilityMapV2Service {
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
+  // Getters, not final fields, so tests can run a publish against a fake
+  // Firestore and a signed-in fake user.
+  static FirebaseFirestore get _firestore =>
+      _firestoreForTesting ?? FirebaseFirestore.instance;
+  static FirebaseFirestore? _firestoreForTesting;
+  static FirebaseAuth get _auth => _authForTesting ?? FirebaseAuth.instance;
+  static FirebaseAuth? _authForTesting;
+
+  @visibleForTesting
+  static set firestoreForTesting(FirebaseFirestore? firestore) =>
+      _firestoreForTesting = firestore;
+
+  @visibleForTesting
+  static set authForTesting(FirebaseAuth? auth) => _authForTesting = auth;
+
+  // Where the map meta, the public map docs, batches and the signed-in user
+  // come from: Firestore and Auth, unless a test points them at fakes so the
+  // slug methods' own reads and writes run.
+  static CollectionReference<Map<String, dynamic>> Function(String path)
+      _collection = _firestoreCollection;
+  static WriteBatch Function() _batch = _firestoreBatch;
+  static User? Function() _currentUser = _authCurrentUser;
+
+  static CollectionReference<Map<String, dynamic>> _firestoreCollection(
+          String path) =>
+      _firestore.collection(path);
+  static WriteBatch _firestoreBatch() => _firestore.batch();
+  static User? _authCurrentUser() => _auth.currentUser;
+
+  /// Serves [collection], [batch] and [currentUser] instead of Firestore and
+  /// Auth; null restores them.
+  @visibleForTesting
+  static void overrideForTesting({
+    CollectionReference<Map<String, dynamic>> Function(String path)?
+        collection,
+    WriteBatch Function()? batch,
+    User? Function()? currentUser,
+  }) {
+    _collection = collection ?? _firestoreCollection;
+    _batch = batch ?? _firestoreBatch;
+    _currentUser = currentUser ?? _authCurrentUser;
+  }
+
+  static const String _publicMapsCollection = 'publicFacilityMaps';
 
   static DocumentReference<Map<String, dynamic>> _metaRef(String facilityId) {
-    return _firestore
-        .collection('facilities')
+    return _collection('facilities')
         .doc(facilityId)
         .collection('mapEngine')
         .doc('meta');
@@ -102,6 +157,16 @@ class FacilityMapV2Service {
       throw Exception('Not signed in');
     }
 
+    // Throws rather than publish a snapshot built from default settings: that
+    // switched the public site off, cleared its custom domain and page text,
+    // and opened every unit type, until the next publish. Read first, so a
+    // failure writes nothing (getOrCreateMeta can create the meta doc).
+    final publicSettings =
+        await FacilityPublicService.getPublicSettingsOrThrow(facilityId);
+    // Throws too. On a failed read this saw no tenants, so a unit taken only
+    // through an active tenant's unit number was published as rentable.
+    final claimedUnits = await readTenantClaimedUnitNumbersOrThrow(facilityId);
+
     final meta = await getOrCreateMeta(facilityId);
     final facilitySnap =
         await _firestore.collection('facilities').doc(facilityId).get();
@@ -163,10 +228,6 @@ class FacilityMapV2Service {
         },
         SetOptions(merge: true));
 
-    final publicSettings =
-        await FacilityPublicService.getPublicSettings(facilityId);
-    final tenants = await TenantService.getTenantsForFacility(facilityId);
-    final claimedUnits = claimedUnitNumbersFromActiveTenants(tenants);
     final inventory = publicUnitInventory(
       facilityId: facilityId,
       units: units,
@@ -187,19 +248,38 @@ class FacilityMapV2Service {
       mapSettings: version.mapSettings,
     );
     final publicRef =
-        _firestore.collection('publicFacilityMaps').doc(meta.publicSlug);
+        _firestore.collection(_publicMapsCollection).doc(meta.publicSlug);
     batch.set(
       publicRef,
-      {
-        ...snapshot.toMap(),
-        'unitsTotal': inventory.unitsTotal,
-        'unitsOmitted': inventory.unitsOmitted,
-      },
+      publishedMapFields(
+        snapshot,
+        unitsTotal: inventory.unitsTotal,
+        unitsOmitted: inventory.unitsOmitted,
+      ),
       SetOptions(merge: true),
     );
 
     await batch.commit();
     return versionDoc.id;
+  }
+
+  /// What a publish merges into the current slug's public map doc: the
+  /// snapshot and the unit counts, with any pointer fields deleted. A slug
+  /// the facility moved away from and later returned to is a pointer
+  /// ([setPublicSlug]), and a merge alone would have left it forwarding.
+  @visibleForTesting
+  static Map<String, dynamic> publishedMapFields(
+    PublicFacilityMapSnapshot snapshot, {
+    required int unitsTotal,
+    required int unitsOmitted,
+  }) {
+    return {
+      ...snapshot.toMap(),
+      'unitsTotal': unitsTotal,
+      'unitsOmitted': unitsOmitted,
+      'movedToSlug': FieldValue.delete(),
+      'movedAt': FieldValue.delete(),
+    };
   }
 
   static Future<void> rollbackToVersion({
@@ -257,21 +337,109 @@ class FacilityMapV2Service {
     }, SetOptions(merge: true));
   }
 
+  /// Points the facility's public map at [slug] (normalized, and returned).
+  ///
+  /// This used to change only mapEngine/meta.publicSlug. The old slug's
+  /// public map doc stayed, full units and all, and nothing synced it again,
+  /// so old links served a frozen unit list for good. Now, when the slug
+  /// changes and the old doc is this facility's, the old doc becomes a
+  /// pointer ({facilityId, movedToSlug, movedAt}, no units or settings) that
+  /// readers follow ([resolvePublicMap]), and the map it held is carried to
+  /// the new slug in the same batch, so old links land on it straight away
+  /// rather than once the publish that follows succeeds. The pointer keeps
+  /// the old slug reserved to this facility (the update rule pins facilityId).
+  ///
+  /// The facility's other pointers, from earlier changes, are repointed at
+  /// the new slug in the same batch. Readers follow one hop only, so after
+  /// A to B to C a pointer left at A naming B, itself a pointer now, would
+  /// have served nothing.
+  ///
+  /// A slug another facility's doc holds is refused before anything is
+  /// written ([PublicSlugTakenException]). It used to be taken into the meta
+  /// and only the publish after it failed, on the rules.
   static Future<String> setPublicSlug({
     required String facilityId,
     required String slug,
   }) async {
-    final user = _auth.currentUser;
+    final user = _currentUser();
     if (user == null) {
       throw Exception('Not signed in');
     }
+    final normalized =
+        await ensurePublicSlugAvailable(facilityId: facilityId, slug: slug);
+    final maps = _collection(_publicMapsCollection);
+    final metaRef = _metaRef(facilityId);
+    final newRef = maps.doc(normalized);
+
+    final storedSlug = (await metaRef.get()).data()?['publicSlug'];
+    final oldSlug = storedSlug is String ? storedSlug.trim() : '';
+    DocumentReference<Map<String, dynamic>>? oldRef;
+    Map<String, dynamic>? oldMap;
+    final repoint = <DocumentReference<Map<String, dynamic>>>[];
+    if (oldSlug.isNotEmpty && oldSlug != normalized) {
+      final ref = maps.doc(oldSlug);
+      final data = (await ref.get()).data();
+      if (data != null && data['facilityId'] == facilityId) {
+        oldRef = ref;
+        oldMap = data;
+      }
+      final mine =
+          await maps.where('facilityId', isEqualTo: facilityId).get();
+      for (final doc in mine.docs) {
+        final movedTo = movedToSlugOf(doc.data());
+        if (movedTo == null || movedTo == normalized) continue;
+        if (doc.id == oldSlug || doc.id == normalized) continue;
+        repoint.add(doc.reference);
+      }
+    }
+
+    final batch = _batch();
+    batch.set(
+        metaRef,
+        {
+          'facilityId': facilityId,
+          'publicSlug': normalized,
+          'updatedAt': FieldValue.serverTimestamp(),
+          'updatedBy': user.uid,
+        },
+        SetOptions(merge: true));
+    // A pointer already (the meta named one) has no map to carry over.
+    if (oldMap != null && movedToSlugOf(oldMap) == null) {
+      batch.set(newRef, {
+        ...oldMap,
+        'facilitySlug': normalized,
+        'rentalRouteTemplate': '/f/$normalized/rent?unitId={unitId}',
+      });
+    }
+    for (final ref in [if (oldRef != null) oldRef, ...repoint]) {
+      batch.set(ref, <String, dynamic>{
+        'facilityId': facilityId,
+        'movedToSlug': normalized,
+        'movedAt': FieldValue.serverTimestamp(),
+      });
+    }
+    await batch.commit();
+    return normalized;
+  }
+
+  /// [slug], normalized as [setPublicSlug] stores it, when no public map doc
+  /// holds it or this facility's does (its live map or one of its pointers).
+  /// Throws [PublicSlugTakenException] when another facility's does.
+  ///
+  /// The settings screens call this before saving publicRentalSlug. They
+  /// saved it first, and [setPublicSlug] refused a taken slug only after:
+  /// the settings kept it, and rent links built from them opened the other
+  /// facility's storefront.
+  static Future<String> ensurePublicSlugAvailable({
+    required String facilityId,
+    required String slug,
+  }) async {
     final normalized = _slugify(slug);
-    await _metaRef(facilityId).set({
-      'facilityId': facilityId,
-      'publicSlug': normalized,
-      'updatedAt': FieldValue.serverTimestamp(),
-      'updatedBy': user.uid,
-    }, SetOptions(merge: true));
+    final snap =
+        await _collection(_publicMapsCollection).doc(normalized).get();
+    if (snap.exists && snap.data()?['facilityId'] != facilityId) {
+      throw PublicSlugTakenException(normalized);
+    }
     return normalized;
   }
 
@@ -280,26 +448,114 @@ class FacilityMapV2Service {
     return '$baseUrl/#/public/$slug/map';
   }
 
-  static Future<PublicFacilityMapSnapshot?> getPublicSnapshotBySlug(
-      String slug) async {
-    final doc =
-        await _firestore.collection('publicFacilityMaps').doc(slug).get();
-    if (!doc.exists || doc.data() == null) {
-      return null;
-    }
-    return PublicFacilityMapSnapshot.fromMap(doc.data()!);
+  /// The slug a public map doc forwards to, or null when [data] is a
+  /// published map. Same as movedToSlugOf in
+  /// functions-shared/src/hosting/publicFacilityMapSlug.ts.
+  static String? movedToSlugOf(Map<String, dynamic>? data) {
+    final raw = data?['movedToSlug'];
+    if (raw is! String) return null;
+    final slug = raw.trim();
+    return slug.isEmpty ? null : slug;
   }
 
-  static Future<String?> getPublicSlugForFacility(String facilityId) async {
-    final query = await _firestore
-        .collection('publicFacilityMaps')
-        .where('facilityId', isEqualTo: facilityId)
-        .limit(1)
-        .get();
-    if (query.docs.isEmpty) {
+  /// Whether publicFacilityMaps/{slug} has the website switched on, which is
+  /// half of what renderPublicWebsite checks before serving /w/{slug} (the
+  /// other half is the website add-on). False when nothing is published
+  /// there, or [slug] is an old slug's pointer; throws when the doc cannot be
+  /// read. Reads the one field rather than the whole snapshot, so an odd
+  /// value elsewhere cannot fail it.
+  static Future<bool> publishedWebsiteEnabled(String slug) async {
+    final doc = await _collection(_publicMapsCollection).doc(slug).get();
+    final settings = doc.data()?['publicSettings'];
+    return settings is Map && settings['enabled'] == true;
+  }
+
+  static Future<PublicFacilityMapSnapshot?> getPublicSnapshotBySlug(
+      String slug) async {
+    return (await resolvePublicMap(slug))?.snapshot;
+  }
+
+  /// The published map served at [slug], and the slug it lives at: [slug]
+  /// itself, or where the pointer left at an old slug says it moved. The
+  /// pointer is followed one hop, and only to a doc of the same facility
+  /// that is not a pointer itself, as readPublicFacilityMap does for the
+  /// server-rendered site.
+  static Future<({String slug, PublicFacilityMapSnapshot snapshot})?>
+      resolvePublicMap(String slug) async {
+    final maps = _collection(_publicMapsCollection);
+    final data = (await maps.doc(slug).get()).data();
+    if (data == null) return null;
+    final movedTo = movedToSlugOf(data);
+    if (movedTo == null) {
+      return (slug: slug, snapshot: PublicFacilityMapSnapshot.fromMap(data));
+    }
+
+    final facilityId = data['facilityId'];
+    if (facilityId is! String || facilityId.isEmpty || movedTo == slug) {
       return null;
     }
-    return query.docs.first.id;
+    final target = (await maps.doc(movedTo).get()).data();
+    if (target == null ||
+        target['facilityId'] != facilityId ||
+        movedToSlugOf(target) != null) {
+      return null;
+    }
+    return (slug: movedTo, snapshot: PublicFacilityMapSnapshot.fromMap(target));
+  }
+
+  /// The facility's current public map slug.
+  ///
+  /// This asked publicFacilityMaps for any doc of the facility, limit 1,
+  /// which is the first by id: an old slug's doc as often as the live one
+  /// (Keepsake got 'eXnWPuwuqzBVFcZWv1ZL', frozen, over
+  /// 'keepsakeonlinerentals'), and the settings screens then saved it back
+  /// as the slug. The facility's own record of it, mapEngine/meta, comes
+  /// first, unless another facility's doc holds that slug (a meta could take
+  /// one before [setPublicSlug] refused them). Only owners and managers can
+  /// read the meta; staff and the public pages, and a facility with no meta
+  /// yet, get the query, which never answers with a pointer and prefers the
+  /// doc written most recently.
+  static Future<String?> getPublicSlugForFacility(String facilityId) async {
+    final maps = _collection(_publicMapsCollection);
+    try {
+      final stored = (await _metaRef(facilityId).get()).data()?['publicSlug'];
+      if (stored is String && stored.trim().isNotEmpty) {
+        final slug = stored.trim();
+        final owner = (await maps.doc(slug).get()).data()?['facilityId'];
+        if (owner == null || owner == facilityId) return slug;
+      }
+    } on FirebaseException catch (e) {
+      if (e.code != 'permission-denied') rethrow;
+    }
+
+    final query = await maps
+        .where('facilityId', isEqualTo: facilityId)
+        .get();
+    String? best;
+    var bestWrittenAt = -1;
+    for (final doc in query.docs) {
+      final data = doc.data();
+      if (movedToSlugOf(data) != null) continue;
+      final writtenAt = _lastWrittenMillis(data);
+      if (writtenAt > bestWrittenAt) {
+        best = doc.id;
+        bestWrittenAt = writtenAt;
+      }
+    }
+    return best;
+  }
+
+  /// The later of a public map doc's publish and inventory sync, in ms since
+  /// the epoch; 0 when it has neither. An old slug's doc stopped at both.
+  static int _lastWrittenMillis(Map<String, dynamic> data) {
+    var latest = 0;
+    for (final field in const ['publishedAt', 'inventorySyncedAt']) {
+      final value = data[field];
+      if (value is Timestamp && value.millisecondsSinceEpoch > latest) {
+        latest = value.millisecondsSinceEpoch;
+      }
+    }
+    return latest;
   }
 
   static Future<void> migrateLegacyMapToInitialVersion(
@@ -389,17 +645,58 @@ class FacilityMapV2Service {
           String facilityId) =>
       _fetchActiveUnitsOrdered(facilityId);
 
-  /// Normalized unit numbers (trim + lower case) for active tenants — catches
-  /// dashboard tenants whose unit doc was never set to occupied.
-  static Set<String> claimedUnitNumbersFromActiveTenants(
-      Iterable<TenantModel> tenants) {
-    final out = <String>{};
-    for (final t in tenants) {
-      if (!t.isActive) continue;
-      final n = t.unitNumber.trim().toLowerCase();
-      if (n.isNotEmpty) out.add(n);
+  /// The unit numbers active tenants hold (trimmed, lower-cased), which
+  /// mark a unit taken even when its own doc was never set to occupied.
+  /// Throws when they cannot all be read, so a publish cannot mistake a
+  /// failed or partial read for a facility with fewer tenants.
+  ///
+  /// The claims syncPublicFacilityMapInventoryForFacility makes on the
+  /// server, so the two writers of publicFacilityMaps/{slug}.units agree:
+  /// only tenants whose `isActive` is exactly true, and a unit number read
+  /// from the raw doc. This parsed every tenant into a TenantModel, which
+  /// throws on a unit number stored as a number (the server reads 101 as
+  /// '101') and on any odd field unrelated to the claim, and read every
+  /// tenant under a cap that was reported but still published a partial
+  /// list of claims.
+  static Future<Set<String>> readTenantClaimedUnitNumbersOrThrow(
+      String facilityId) async {
+    const cap = FacilitySubcollections.readLimit;
+    final snapshot =
+        await FacilitySubcollections.activeTenants(facilityId).limit(cap).get();
+    if (snapshot.docs.length >= cap) {
+      throw StateError('Facility $facilityId has at least $cap active tenants; '
+          'the public map cannot be published from a partial list of them.');
     }
-    return out;
+    return {
+      for (final doc in snapshot.docs)
+        if (tenantClaimedUnitNumber(doc.data()) case final n?) n,
+    };
+  }
+
+  /// The unit number a tenant doc claims, as the server's
+  /// `String(td.unitNumber || '').trim().toLowerCase()` reads it, or null
+  /// when it claims none.
+  @visibleForTesting
+  static String? tenantClaimedUnitNumber(Map<String, dynamic> tenant) {
+    final raw = tenant['unitNumber'];
+    final String text;
+    if (raw is String) {
+      text = raw;
+    } else if (raw is num && raw != 0 && !raw.isNaN) {
+      // JavaScript's String() writes 101.0 as '101', as it does 101.
+      text = raw is double &&
+              raw.isFinite &&
+              raw == raw.roundToDouble() &&
+              raw.abs() < 1e21
+          ? raw.toStringAsFixed(0)
+          : raw.toString();
+    } else if (raw == true) {
+      text = 'true';
+    } else {
+      text = '';
+    }
+    final n = text.trim().toLowerCase();
+    return n.isEmpty ? null : n;
   }
 
   /// Builds the anonymous-safe `units` payload for [publicFacilityMaps] documents.
@@ -563,17 +860,26 @@ class FacilityMapV2Service {
       }
 
       final publicRef =
-          _firestore.collection('publicFacilityMaps').doc(meta.publicSlug);
+          _collection(_publicMapsCollection).doc(meta.publicSlug);
       final publicSnap = await publicRef.get();
-      if (!publicSnap.exists) {
+      // Only this facility's published map: a pointer left at an old slug
+      // carries no units, by design.
+      final publicData = publicSnap.data();
+      if (publicData == null ||
+          publicData['facilityId'] != facilityId ||
+          movedToSlugOf(publicData) != null) {
         return;
       }
 
+      // Throws, and the catch below skips the refresh, rather than list the
+      // unit types and unit numbers the owner hid (default settings show all).
       final publicSettings =
-          await FacilityPublicService.getPublicSettings(facilityId);
+          await FacilityPublicService.getPublicSettingsOrThrow(facilityId);
       final units = await _fetchActiveUnitsOrdered(facilityId);
-      final tenants = await TenantService.getTenantsForFacility(facilityId);
-      final claimedUnits = claimedUnitNumbersFromActiveTenants(tenants);
+      // Throws and skips the refresh too, rather than list a unit taken only
+      // through an active tenant's unit number as rentable.
+      final claimedUnits =
+          await readTenantClaimedUnitNumbersOrThrow(facilityId);
       final inventory = publicUnitInventory(
         facilityId: facilityId,
         units: units,

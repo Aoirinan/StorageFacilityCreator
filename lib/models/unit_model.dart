@@ -20,6 +20,9 @@ enum UnitType {
   document,
   wine,
   outdoor,
+  // A site in an RV park. An owner puts sites in as units so each gets a
+  // box on the map and a monthly guest is billed like a tenant.
+  rvSite,
 }
 
 class UnitModel {
@@ -364,6 +367,8 @@ class UnitModel {
         return 'Wine Storage';
       case 'outdoor':
         return 'Outdoor Storage';
+      case 'rvSite':
+        return 'RV Site';
       default:
         return 'Standard';
     }
@@ -457,6 +462,8 @@ extension UnitTypeExtension on UnitType {
         return 'Wine Storage';
       case UnitType.outdoor:
         return 'Outdoor Storage';
+      case UnitType.rvSite:
+        return 'RV Site';
     }
   }
 }

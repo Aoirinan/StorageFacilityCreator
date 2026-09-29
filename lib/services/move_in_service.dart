@@ -27,6 +27,11 @@ class MoveInData {
   final bool requiresSignature;
   final bool requiresPayment;
 
+  /// The rent billed every month from now on: the wizard's Monthly Rent,
+  /// which starts at the unit's rate and the owner may change. Null means
+  /// the unit's rate. See [moveInMonthlyRate].
+  final double? monthlyRent;
+
   const MoveInData({
     this.existingTenant,
     required this.unit,
@@ -36,7 +41,20 @@ class MoveInData {
     required this.moveInDate,
     this.requiresSignature = true,
     this.requiresPayment = true,
+    this.monthlyRent,
   });
+}
+
+/// The tenant's monthly rate after [data]'s move-in: its [MoveInData.monthlyRent],
+/// else the unit's rate; null (their rate left alone) when that is not above
+/// zero.
+///
+/// Not the move-in's rent line items: mid-month with Prorate Rent on, those
+/// are the prorated first month only. Written as the tenant's rate, the rent
+/// job charged that part-month every month after.
+double? moveInMonthlyRate(MoveInData data) {
+  final rent = data.monthlyRent ?? data.unit.monthlyRate;
+  return rent > 0 ? rent : null;
 }
 
 /// Statuses in which a tenant is in the unit.
@@ -342,11 +360,7 @@ class MoveInService {
       // Step 1: Create or update tenant
       if (moveInData.existingTenant != null) {
         tenant = moveInData.existingTenant!;
-        // Calculate monthly rate from line items
-        final monthlyRate = moveInData.lineItems
-            .where((item) => item.type == InvoiceLineItemType.rent || item.type == InvoiceLineItemType.proratedRent)
-            .fold(0.0, (sum, item) => sum + item.amount);
-        
+
         // Update tenant with move-in info
         // Note: Insurance status should be set via the wizard UI, not here
         // Never frees a unit the tenant already rents (a second unit).
@@ -358,7 +372,7 @@ class MoveInService {
           // The unit picked in the wizard, by id: by number alone, two
           // units with one number were a guess.
           unitId: moveInData.unit.id,
-          monthlyRate: monthlyRate > 0 ? monthlyRate : null,
+          monthlyRate: moveInMonthlyRate(moveInData),
         );
       } else {
         // Create new tenant (this would need tenant data from wizard)

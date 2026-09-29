@@ -19,7 +19,125 @@ import '../services/stripe_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/renter_account_message.dart';
 import 'package:sfcapp/utils/save_then_publish.dart';
+import 'package:sfcapp/models/facility_public_settings_model.dart';
 import '../widgets/custom_domain_panel.dart';
+
+/// What Website Setup reads and publishes besides the public settings doc,
+/// which it reads and saves through [FacilityPublicService]. A provider so
+/// widget tests can open the real screen and run its real settings save
+/// against a fake Firestore without Firebase.
+class WebsiteSetupActions {
+  const WebsiteSetupActions();
+
+  String? currentUid() => FirebaseAuth.instance.currentUser?.uid;
+
+  Future<FacilityModel?> facility(String facilityId) =>
+      FacilityService.getFacility(facilityId);
+
+  /// The slug of the facility's published public map, if it has one.
+  Future<String?> publishedSlug(String facilityId) =>
+      FacilityMapV2Service.getPublicSlugForFacility(facilityId);
+
+  /// Points the public map at [slug] and republishes it, which copies the
+  /// saved settings into publicFacilityMaps/{slug}.
+  Future<void> publish({
+    required String facilityId,
+    required String slug,
+  }) async {
+    await FacilityMapV2Service.setPublicSlug(facilityId: facilityId, slug: slug);
+    await FacilityMapV2Service.publishCurrentDraft(facilityId: facilityId);
+  }
+}
+
+final websiteSetupActionsProvider =
+    Provider<WebsiteSetupActions>((ref) => const WebsiteSetupActions());
+
+/// The values Website Setup loads from what Edit Facility can also change:
+/// the public settings Edit Facility writes (website on, online rentals, the
+/// URL name) and the facility's name, plus the starter copy that follows
+/// the name and the rentals setting. The screen keeps the last set it
+/// loaded, so on a return from Edit Facility it can tell which of them the
+/// owner has edited here.
+class _FromEditFacility {
+  const _FromEditFacility({
+    required this.websiteEnabled,
+    required this.rentalsEnabled,
+    required this.slug,
+    required this.pageTitle,
+    required this.pageDescription,
+    required this.heroHeadline,
+    required this.heroSubheadline,
+    required this.marketingContent,
+    required this.amenities,
+    required this.testimonials,
+  });
+
+  /// [settings] come from [FacilityPublicService.getPublicSettingsOrThrow]:
+  /// a facility with no settings doc yet reads as the defaults, and a failed
+  /// read throws before this, so a save never writes defaults over them.
+  factory _FromEditFacility.read({
+    required String facilityId,
+    required FacilityModel facility,
+    required FacilityPublicSettings settings,
+    required String? publishedSlug,
+  }) {
+    final websiteConfig =
+        (settings.widgets?['websiteConfig'] as Map<String, dynamic>?) ??
+            const <String, dynamic>{};
+    String? written(String key) {
+      final value = websiteConfig[key];
+      return value is String && value.trim().isNotEmpty ? value : null;
+    }
+
+    // Starter copy for an owner who has not written their own. It must not
+    // promise online rentals the facility does not take: it said 'reserve
+    // online in minutes' and listed 'Online Rentals' whatever the setting,
+    // and saving the page publishes it.
+    final rentals = settings.publicRentalsEnabled;
+    final storedSlug = settings.publicRentalSlug;
+    return _FromEditFacility(
+      websiteEnabled: settings.enabled,
+      rentalsEnabled: rentals,
+      slug: (storedSlug?.trim().isNotEmpty ?? false)
+          ? storedSlug!
+          : (publishedSlug ?? facilityId.toLowerCase()),
+      pageTitle: settings.pageTitle ?? '${facility.name} | Self Storage',
+      pageDescription: settings.pageDescription ??
+          facility.description ??
+          (rentals
+              ? 'Secure storage units with easy online rentals.'
+              : 'Secure storage units in a range of sizes.'),
+      heroHeadline: written('heroHeadline') ?? facility.name,
+      heroSubheadline: written('heroSubheadline') ??
+          (rentals
+              ? 'Secure, convenient, and reliable storage with online rentals.'
+              : 'Secure, convenient, and reliable storage.'),
+      marketingContent: settings.marketingContent ??
+          (rentals
+              ? 'Choose from a wide range of unit sizes and reserve online in minutes.'
+              : 'Choose from a wide range of unit sizes. Call or stop by to rent yours.'),
+      amenities: (websiteConfig['amenities'] as String?) ??
+          (rentals
+              ? 'Online Rentals, Online Bill Pay, Drive-up Access, Secure Gate Access, Video Surveillance'
+              : 'Online Bill Pay, Drive-up Access, Secure Gate Access, Video Surveillance'),
+      testimonials: (websiteConfig['testimonials'] as String?) ??
+          (rentals
+              ? 'Great facility and easy online rental process.\nClean units and friendly support.\nFast move-in and secure property.'
+              : 'Great facility and easy rental process.\nClean units and friendly support.\nFast move-in and secure property.'),
+    );
+  }
+
+  final bool websiteEnabled;
+  final bool rentalsEnabled;
+  final String slug;
+  final String pageTitle;
+  final String pageDescription;
+  final String heroHeadline;
+  final String heroSubheadline;
+  final String marketingContent;
+  final String amenities;
+  final String testimonials;
+}
 
 class FacilityWebsiteSetupScreen extends ConsumerStatefulWidget {
   final String facilityId;
@@ -63,6 +181,9 @@ class _FacilityWebsiteSetupScreenState
   ];
 
   bool _isLoading = true;
+  // Until [_load] succeeds the form holds defaults, not the saved website,
+  // and saving it would write them over the owner's content: Save is off.
+  bool _settingsLoaded = false;
   bool _isSaving = false;
   bool _subscriptionRequired = false;
   bool _isStartingCheckout = false;
@@ -154,6 +275,8 @@ class _FacilityWebsiteSetupScreenState
   final TextEditingController _canonicalUrlController = TextEditingController();
 
   bool _websiteEnabled = false;
+  bool _publicRentalsEnabled = false;
+  _FromEditFacility? _fromEditFacility;
   bool _showPaymentLoginButtonInHeader = true;
   bool _useStructuredOfficeHours = false;
   String? _uploadingFieldKey;
@@ -317,15 +440,17 @@ class _FacilityWebsiteSetupScreenState
   Future<void> _load() async {
     setState(() {
       _isLoading = true;
+      _settingsLoaded = false;
       _subscriptionRequired = false;
       _error = null;
     });
     try {
-      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final actions = ref.read(websiteSetupActionsProvider);
+      final uid = actions.currentUid();
       final facilities = uid == null
           ? await FacilityService.getUserFacilities()
           : await ref.read(userFacilitiesProvider(uid).future);
-      final facility = await FacilityService.getFacility(widget.facilityId);
+      final facility = await actions.facility(widget.facilityId);
       if (facility == null || !facility.hasActiveWebsiteSubscription) {
         if (!mounted) return;
         setState(() {
@@ -336,56 +461,45 @@ class _FacilityWebsiteSetupScreenState
         });
         return;
       }
-      final settings =
-          await FacilityPublicService.getPublicSettings(widget.facilityId);
-      final publicSlug = await FacilityMapV2Service.getPublicSlugForFacility(
+      // Throws when the saved settings cannot be read, rather than filling
+      // the form with defaults that a save would then write over them.
+      final settings = await FacilityPublicService.getPublicSettingsOrThrow(
           widget.facilityId);
+      final publicSlug = await actions.publishedSlug(widget.facilityId);
 
-      final widgets = settings?.widgets ?? const <String, dynamic>{};
+      final widgets = settings.widgets ?? const <String, dynamic>{};
       final websiteConfig =
           (widgets['websiteConfig'] as Map<String, dynamic>?) ??
               const <String, dynamic>{};
-      final customStyles = settings?.customStyles ?? const <String, dynamic>{};
-      final featuredImages = settings?.featuredImages ?? const <String>[];
+      final customStyles = settings.customStyles ?? const <String, dynamic>{};
+      final featuredImages = settings.featuredImages ?? const <String>[];
+      final fromEditFacility = _FromEditFacility.read(
+        facilityId: widget.facilityId,
+        facility: facility,
+        settings: settings,
+        publishedSlug: publicSlug,
+      );
 
       if (!mounted) return;
       setState(() {
         _facility = facility;
         _userFacilities = facilities;
-        _websiteEnabled = settings?.enabled ?? false;
-        _slugController.text =
-            (settings?.publicRentalSlug?.trim().isNotEmpty ?? false)
-                ? settings!.publicRentalSlug!
-                : (publicSlug ?? widget.facilityId.toLowerCase());
-        _customDomainController.text = settings?.customDomain ?? '';
-        _pageTitleController.text =
-            settings?.pageTitle ?? '${facility.name} | Self Storage';
-        _pageDescriptionController.text = settings?.pageDescription ??
-            (facility.description ??
-                'Secure storage units with easy online rentals.');
-        _heroHeadlineController.text =
-            (websiteConfig['heroHeadline'] as String?)?.trim().isNotEmpty ==
-                    true
-                ? websiteConfig['heroHeadline'] as String
-                : facility.name;
-        _heroSubheadlineController.text = (websiteConfig['heroSubheadline']
-                        as String?)
-                    ?.trim()
-                    .isNotEmpty ==
-                true
-            ? websiteConfig['heroSubheadline'] as String
-            : 'Secure, convenient, and reliable storage with online rentals.';
-        _marketingContentController.text = settings?.marketingContent ??
-            'Choose from a wide range of unit sizes and reserve online in minutes.';
+        _fromEditFacility = fromEditFacility;
+        _websiteEnabled = fromEditFacility.websiteEnabled;
+        _publicRentalsEnabled = fromEditFacility.rentalsEnabled;
+        _slugController.text = fromEditFacility.slug;
+        _customDomainController.text = settings.customDomain ?? '';
+        _pageTitleController.text = fromEditFacility.pageTitle;
+        _pageDescriptionController.text = fromEditFacility.pageDescription;
+        _heroHeadlineController.text = fromEditFacility.heroHeadline;
+        _heroSubheadlineController.text = fromEditFacility.heroSubheadline;
+        _marketingContentController.text = fromEditFacility.marketingContent;
         _addressController.text = (websiteConfig['address'] as String?) ?? '';
         _officeHoursController.text = (websiteConfig['officeHours']
                 as String?) ??
             'Mon-Fri: 8:00 AM - 6:00 PM\nSat: 9:00 AM - 5:00 PM\nSun: Closed';
-        _amenitiesController.text = (websiteConfig['amenities'] as String?) ??
-            'Online Rentals, Online Bill Pay, Drive-up Access, Secure Gate Access, Video Surveillance';
-        _testimonialsController.text = (websiteConfig['testimonials']
-                as String?) ??
-            'Great facility and easy online rental process.\nClean units and friendly support.\nFast move-in and secure property.';
+        _amenitiesController.text = fromEditFacility.amenities;
+        _testimonialsController.text = fromEditFacility.testimonials;
         _paymentUrlController.text =
             (websiteConfig['paymentUrl'] as String?) ?? '';
         _primaryCtaController.text =
@@ -503,12 +617,18 @@ class _FacilityWebsiteSetupScreenState
             (websiteConfig['ogImageUrl'] as String?) ?? '';
         _canonicalUrlController.text =
             (websiteConfig['canonicalUrl'] as String?) ?? '';
+        _settingsLoaded = true;
         _isLoading = false;
       });
     } catch (e) {
+      debugPrint('Website Setup load failed: $e');
       if (!mounted) return;
       setState(() {
-        _error = 'Failed to load website settings: $e';
+        // A value this page cannot read will not load on a retry either.
+        _error = publicSettingsReadFailed(e)
+            ? '${publicSettingsLoadErrorText(e)}\n'
+                'Saving is off until they load. Press Refresh to try again.'
+            : '${publicSettingsLoadErrorText(e)}\nSaving is off.';
         _isLoading = false;
       });
     }
@@ -593,6 +713,96 @@ class _FacilityWebsiteSetupScreenState
     final domain = normalizeCustomDomain(_customDomainController.text);
     if (domain.isEmpty) return null;
     return 'https://$domain';
+  }
+
+  /// Opens Edit Facility, where online rentals are switched, then re-reads
+  /// everything here that Edit Facility can change ([_FromEditFacility]).
+  ///
+  /// Not a full [_load], which would drop unsaved edits on this page. And
+  /// not the rentals setting alone: Edit Facility also saves the URL name
+  /// and republishes under it, so a later save here wrote the old name back,
+  /// moved the public map to it and left a second publicFacilityMaps doc.
+  Future<void> _openEditFacility() async {
+    await context
+        .push('${AppRoute.facilityEdit}?facilityId=${widget.facilityId}');
+    if (!mounted) return;
+    final actions = ref.read(websiteSetupActionsProvider);
+    try {
+      // Throws on a failed read, like [_load]: a null here would be taken
+      // for a facility with default settings.
+      final settings = await FacilityPublicService.getPublicSettingsOrThrow(
+          widget.facilityId);
+      final facility = await actions.facility(widget.facilityId);
+      final publishedSlug = await actions.publishedSlug(widget.facilityId);
+      final loaded = _fromEditFacility;
+      if (facility == null || loaded == null) {
+        throw StateError('facility not read');
+      }
+      if (!mounted) return;
+      final fresh = _FromEditFacility.read(
+        facilityId: widget.facilityId,
+        facility: facility,
+        settings: settings,
+        publishedSlug: publishedSlug,
+      );
+      String? droppedSlug;
+      setState(() {
+        _facility = facility;
+        _userFacilities = [
+          for (final f in _userFacilities) f.id == facility.id ? facility : f,
+        ];
+        _publicRentalsEnabled = fresh.rentalsEnabled;
+        // Saved in Edit Facility after anything typed here, so Edit
+        // Facility's value wins; unchanged there, an edit here stands.
+        if (fresh.websiteEnabled != loaded.websiteEnabled) {
+          _websiteEnabled = fresh.websiteEnabled;
+        }
+        if (fresh.slug != loaded.slug) {
+          final shown = _slugController.text;
+          if (shown != loaded.slug && shown != fresh.slug) droppedSlug = shown;
+          _slugController.text = fresh.slug;
+        }
+        // Starter copy follows the facility's name and the rentals setting
+        // until the owner edits it here.
+        void follow(TextEditingController field, String was, String now) {
+          if (field.text == was) field.text = now;
+        }
+
+        follow(_pageTitleController, loaded.pageTitle, fresh.pageTitle);
+        follow(_pageDescriptionController, loaded.pageDescription,
+            fresh.pageDescription);
+        follow(_heroHeadlineController, loaded.heroHeadline,
+            fresh.heroHeadline);
+        follow(_heroSubheadlineController, loaded.heroSubheadline,
+            fresh.heroSubheadline);
+        follow(_marketingContentController, loaded.marketingContent,
+            fresh.marketingContent);
+        follow(_amenitiesController, loaded.amenities, fresh.amenities);
+        follow(_testimonialsController, loaded.testimonials,
+            fresh.testimonials);
+        _fromEditFacility = fresh;
+      });
+      if (droppedSlug != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Edit Facility saved the website URL name '
+              '"${fresh.slug}", so it replaced "$droppedSlug" here.',
+            ),
+          ),
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        // Saving now would write back what this page loaded before Edit
+        // Facility, undoing its URL name and republishing under the old one.
+        _settingsLoaded = false;
+        _error = 'Could not re-read the settings Edit Facility saves, so '
+            'saving is off: it could undo changes made there. Tap Refresh '
+            'to load them again.';
+      });
+    }
   }
 
   Future<void> _copy(String label, String value) async {
@@ -793,10 +1003,6 @@ class _FacilityWebsiteSetupScreenState
         throw Exception(httpsValidationMessages.join('\n'));
       }
 
-      final currentSettings =
-          await FacilityPublicService.getPublicSettings(widget.facilityId);
-      final currentWidgets =
-          currentSettings?.widgets ?? const <String, dynamic>{};
       final sanitizedUnitCategories = _unitCategories
           .map((entry) => <String, dynamic>{
                 'slug': (entry['slug'] ?? '').toString().trim(),
@@ -852,8 +1058,10 @@ class _FacilityWebsiteSetupScreenState
         'instagram': _instagramUrlController.text.trim(),
         'google': _googleUrlController.text.trim(),
       };
+      // Only what this page edits. The save merges it into the stored
+      // widgets (set with merge), so other widget keys stay as they are;
+      // they were read here too, a second time, only to be written back.
       final mergedWidgets = <String, dynamic>{
-        ...currentWidgets,
         'websiteTemplate': 'cookie-cutter-v2',
         'websiteConfig': <String, dynamic>{
           'heroHeadline': _heroHeadlineController.text.trim(),
@@ -917,11 +1125,14 @@ class _FacilityWebsiteSetupScreenState
         },
       };
 
+      // Before the save, so a slug another facility holds is not kept in
+      // the settings that rent links are built from.
+      await FacilityMapV2Service.ensurePublicSlugAvailable(
+          facilityId: widget.facilityId, slug: slug);
       await saveThenPublish(
-        save: () => FacilityPublicService.updatePublicSettings(
+        save: () => FacilityPublicService.updateWebsiteSettings(
           facilityId: widget.facilityId,
           enabled: _websiteEnabled,
-          publicRentalsEnabled: true,
           publicRentalSlug: slug,
           customDomain: customDomain.isEmpty ? null : customDomain,
           pageTitle: _pageTitleController.text.trim().isEmpty
@@ -949,14 +1160,9 @@ class _FacilityWebsiteSetupScreenState
           },
           widgets: mergedWidgets,
         ),
-        publish: () async {
-          await FacilityMapV2Service.setPublicSlug(
-            facilityId: widget.facilityId,
-            slug: slug,
-          );
-          await FacilityMapV2Service.publishCurrentDraft(
-              facilityId: widget.facilityId);
-        },
+        publish: () => ref
+            .read(websiteSetupActionsProvider)
+            .publish(facilityId: widget.facilityId, slug: slug),
       );
 
       if (!mounted) return;
@@ -1213,6 +1419,49 @@ class _FacilityWebsiteSetupScreenState
               value: _websiteEnabled,
               onChanged: (v) => setState(() => _websiteEnabled = v),
               title: const Text('Website Enabled'),
+            ),
+            // Shown, not switched: online rentals take holds and payments,
+            // and Edit Facility switches them beside the pricing and unit
+            // choices that go with them. Saving this page leaves them as
+            // they are; it used to turn them on. The link sits under the
+            // text, not beside it: as a trailing button it left the title
+            // and subtitle a sliver of a phone-width screen.
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                _publicRentalsEnabled
+                    ? Icons.shopping_cart_checkout
+                    : Icons.remove_shopping_cart_outlined,
+                color: _publicRentalsEnabled
+                    ? AppTheme.success
+                    : AppTheme.textSecondary,
+              ),
+              title: Text(
+                _publicRentalsEnabled
+                    ? 'Online rentals are on'
+                    : 'Online rentals are off',
+              ),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _publicRentalsEnabled
+                        ? 'Renters can reserve and pay for a unit from your '
+                            'site.'
+                        : 'Renters can see your units, but cannot reserve or '
+                            'pay online.',
+                  ),
+                  TextButton(
+                    onPressed: _openEditFacility,
+                    style: TextButton.styleFrom(
+                      padding: EdgeInsets.zero,
+                      minimumSize: const Size(48, 40),
+                      alignment: Alignment.centerLeft,
+                    ),
+                    child: const Text('Change in Edit Facility'),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 8),
             TextField(
@@ -1894,11 +2143,12 @@ class _FacilityWebsiteSetupScreenState
             TextField(
               controller: _amenitiesController,
               maxLines: 3,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'Amenities (comma separated)',
-                hintText:
-                    'Online Rentals, Online Bill Pay, Drive-up Access, Climate Control',
-                border: OutlineInputBorder(),
+                hintText: _publicRentalsEnabled
+                    ? 'Online Rentals, Online Bill Pay, Drive-up Access, Climate Control'
+                    : 'Online Bill Pay, Drive-up Access, Climate Control',
+                border: const OutlineInputBorder(),
                 alignLabelWithHint: true,
               ),
             ),
@@ -2348,7 +2598,7 @@ class _FacilityWebsiteSetupScreenState
             const SizedBox(width: 12),
             Expanded(
               child: ElevatedButton.icon(
-                onPressed: _isSaving ? null : _save,
+                onPressed: _isSaving || !_settingsLoaded ? null : _save,
                 icon: _isSaving
                     ? const SizedBox(
                         width: 16,

@@ -4,13 +4,19 @@ import 'package:sfcapp/models/facility_map_v2_models.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/services/facility_map_v2_service.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class PublicFacilityMapScreen extends StatefulWidget {
   final String facilitySlug;
 
+  /// Replaces the publicFacilityMaps read, for tests.
+  @visibleForTesting
+  final Future<PublicFacilityMapSnapshot?> Function(String slug)? loadSnapshot;
+
   const PublicFacilityMapScreen({
     super.key,
     required this.facilitySlug,
+    this.loadSnapshot,
   });
 
   @override
@@ -32,7 +38,9 @@ class _PublicFacilityMapScreenState extends State<PublicFacilityMapScreen> {
 
   Future<void> _load() async {
     try {
-      final snap = await FacilityMapV2Service.getPublicSnapshotBySlug(widget.facilitySlug);
+      final load =
+          widget.loadSnapshot ?? FacilityMapV2Service.getPublicSnapshotBySlug;
+      final snap = await load(widget.facilitySlug);
       if (!mounted) return;
       setState(() {
         _snapshot = snap;
@@ -102,7 +110,16 @@ class _PublicFacilityMapScreenState extends State<PublicFacilityMapScreen> {
         ],
       ),
       body: KeyboardScrollable(
-        child: _listView ? _buildListFallback(rentableUnits) : _buildMap(unitsById),
+        child: Column(
+          children: [
+            if (!_snapshot!.takesOnlineRentals) _buildRentalsOffNotice(),
+            Expanded(
+              child: _listView
+                  ? _buildListFallback(rentableUnits)
+                  : _buildMap(unitsById),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -177,7 +194,8 @@ class _PublicFacilityMapScreenState extends State<PublicFacilityMapScreen> {
           subtitle: Text(
             'Size: ${unit['size'] ?? 'N/A'} • Status: ${unit['status'] ?? 'unavailable'}',
           ),
-          trailing: unit['status'] == 'available' || unit['status'] == 'reserved'
+          // The hold refuses every unit while online rentals are off.
+          trailing: _snapshot!.offersUnitOnline(unit)
               ? ElevatedButton(
                   onPressed: () => _goToRental(unit),
                   child: const Text('Rent Now'),
@@ -190,7 +208,9 @@ class _PublicFacilityMapScreenState extends State<PublicFacilityMapScreen> {
 
   Widget _buildUnitPanel(Map<String, dynamic> unit) {
     final status = unit['status']?.toString() ?? 'unavailable';
-    final rentable = status == 'available' || status == 'reserved';
+    // isRentable, not the status: a unit whose type the owner keeps off
+    // online rental reads 'available' here too, and the hold refuses it.
+    final rentable = _snapshot!.offersUnitOnline(unit);
     final showPricing = (_snapshot!.publicSettings['showPublicPricing'] == true);
     return Container(
       decoration: BoxDecoration(
@@ -231,10 +251,65 @@ class _PublicFacilityMapScreenState extends State<PublicFacilityMapScreen> {
                 child: const Text('Rent Now'),
               ),
             )
-          else
+          else if (!_snapshot!.takesOnlineRentals) ...[
+            const Text(
+              onlineRentalsOffMessage,
+              style: TextStyle(color: AppTheme.textSecondary),
+            ),
+            if (_facilityPhone != null) ...[
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _callFacility,
+                  icon: const Icon(Icons.call),
+                  label: Text('Call $_facilityPhone to rent'),
+                ),
+              ),
+            ],
+          ] else
             const Text(
               'This unit is unavailable and cannot be rented online.',
               style: TextStyle(color: AppTheme.textSecondary),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// The phone as published, picked as the rental portal and /w/{slug} pick
+  /// it, or null when there is none.
+  String? get _facilityPhone {
+    final settings = _snapshot?.publicSettings;
+    return settings == null ? null : publishedRentalPhone(settings);
+  }
+
+  Future<void> _callFacility() async {
+    final digits = _facilityPhone?.replaceAll(RegExp(r'[^\d+]'), '') ?? '';
+    if (digits.isEmpty) return;
+    try {
+      await launchUrl(Uri(scheme: 'tel', path: digits));
+    } catch (_) {
+      /* no dialer on this platform */
+    }
+  }
+
+  Widget _buildRentalsOffNotice() {
+    final phone = _facilityPhone;
+    return Container(
+      width: double.infinity,
+      color: AppTheme.warning.withValues(alpha: 0.12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        children: [
+          const Icon(Icons.info_outline, color: AppTheme.warning),
+          const SizedBox(width: 10),
+          const Expanded(child: Text(onlineRentalsOffMessage)),
+          if (phone != null)
+            TextButton.icon(
+              onPressed: _callFacility,
+              icon: const Icon(Icons.call),
+              label: Text('Call $phone'),
             ),
         ],
       ),
