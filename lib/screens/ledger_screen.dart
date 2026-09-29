@@ -190,6 +190,19 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                 false,
           );
 
+          // Charges on an invoice that has not been voided, for the "On
+          // invoice" mark. From the invoices, not the entries' own
+          // metadata.invoiceId: voiding an invoice leaves that in place, so
+          // it alone would mark charges whose invoice is gone.
+          final invoicedIds = ref
+                  .watch(liveInvoiceCoverageProvider(InvoiceParams(
+                    tenantId: widget.tenant.id,
+                    facilityId: widget.tenant.facilityId,
+                  )))
+                  .value
+                  ?.ledgerEntryIds ??
+              const <String>{};
+
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -469,6 +482,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                 else
                   ...filteredEntries.map((entry) => LedgerEntryCard(
                     entry: entry,
+                    onInvoice: invoicedIds.contains(entry.id),
                     onVoid: () => _voidEntry(context, entry),
                   )),
                     ],
@@ -897,7 +911,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
       final operations = ref.read(invoiceOperationsProvider.notifier);
       final ledgerEntryIds = lines.map((line) => line.id).toList();
 
-      await operations.generateInvoice(
+      final invoice = await operations.generateInvoice(
         tenantId: widget.tenant.id,
         facilityId: widget.tenant.facilityId,
         ledgerEntryIds: ledgerEntryIds,
@@ -906,11 +920,29 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
       );
 
       if (mounted) {
+        // The charges just billed now show "On invoice".
+        ref.invalidate(liveInvoiceCoverageProvider(InvoiceParams(
+          tenantId: widget.tenant.id,
+          facilityId: widget.tenant.facilityId,
+        )));
+        // Say where it went and go there. The only word used to be a
+        // four-second "Invoice generated successfully" with no number and
+        // no link, and the invoice is not shown on the ledger or the
+        // tenant's page, so an owner asked where it had gone.
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Invoice generated successfully'),
+          SnackBar(
+            content: Text(
+              'Invoice ${invoice.invoiceNumber} saved as a draft. You can find '
+              'it later under Rent & payments › Invoices.',
+            ),
             backgroundColor: AppTheme.success,
+            duration: const Duration(seconds: 8),
           ),
+        );
+        // The same extra the Invoices tab passes: the page is built from it.
+        context.push(
+          AppRoute.invoiceDetail,
+          extra: {'invoice': invoice, 'facilityId': widget.tenant.facilityId},
         );
       }
     } catch (e) {

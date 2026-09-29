@@ -7,10 +7,16 @@ class LedgerEntryCard extends StatelessWidget {
   final LedgerEntry entry;
   final VoidCallback? onVoid;
 
+  /// Whether the charge sits on an invoice that has not been voided. Nothing
+  /// on the ledger showed that an invoice had been generated, so an owner
+  /// who had just made one asked where it went.
+  final bool onInvoice;
+
   const LedgerEntryCard({
     super.key,
     required this.entry,
     this.onVoid,
+    this.onInvoice = false,
   });
 
   @override
@@ -102,6 +108,24 @@ class LedgerEntryCard extends StatelessWidget {
                         ),
                       ],
                       const Spacer(),
+                      if (onInvoice) ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: AppTheme.info.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text(
+                            'On invoice',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: AppTheme.info,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                         decoration: BoxDecoration(
