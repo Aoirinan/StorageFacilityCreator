@@ -42,8 +42,9 @@ class SecurityDepositRemove extends SecurityDepositEdit {
 }
 
 /// The "Security deposit" dialog behind the pencil on the tenant page's
-/// Security Deposit row: records the deposit the facility holds, or corrects
-/// the one on file. It only collects; [editSecurityDeposit] saves.
+/// Security Deposit row: records the deposit the facility holds, corrects
+/// the held one on file, or (as "New security deposit") starts a new one
+/// once the last was settled. It only collects; [editSecurityDeposit] saves.
 class SecurityDepositDialog extends StatefulWidget {
   const SecurityDepositDialog({
     super.key,
@@ -53,7 +54,8 @@ class SecurityDepositDialog extends StatefulWidget {
     this.today,
   });
 
-  /// The deposit on file, when correcting one.
+  /// The deposit on file: corrected while held; once settled, a new one is
+  /// started over it.
   final SecurityDeposit? current;
 
   /// The facility's usual deposit, prefilled when nothing is on file.
@@ -83,17 +85,26 @@ class _SecurityDepositDialogState extends State<SecurityDepositDialog> {
   void initState() {
     super.initState();
     final current = widget.current;
-    final amount = current?.amount ?? widget.defaultAmount;
+    // A settled deposit is done with: the dialog starts a new one, prefilled
+    // as if nothing were on file.
+    final held = current != null && current.isHeld ? current : null;
+    final amount = held?.amount ?? widget.defaultAmount;
     _amount = TextEditingController(
         text: amount == null ? '' : amount.toStringAsFixed(2));
-    _reference = TextEditingController(text: current?.reference ?? '');
-    _note = TextEditingController(text: current?.note ?? '');
-    _method = current?.method ?? PaymentMethod.cash;
-    // A deposit on file keeps its date (unknown stays unknown); a new one
-    // starts at move-in, or today when no move-in date was ever saved.
-    _receivedDate = current != null
-        ? current.receivedDate
-        : (widget.defaultReceivedDate ?? _today);
+    _reference = TextEditingController(text: held?.reference ?? '');
+    _note = TextEditingController(text: held?.note ?? '');
+    _method = held?.method ?? PaymentMethod.cash;
+    // A held deposit keeps its date (unknown stays unknown). A first deposit
+    // starts at move-in, or today when no move-in date was ever saved. One
+    // after a settled deposit starts today: the move-in date on file is from
+    // before the settled one, so it cannot be the day this one arrived.
+    if (held != null) {
+      _receivedDate = held.receivedDate;
+    } else if (current != null) {
+      _receivedDate = _today;
+    } else {
+      _receivedDate = widget.defaultReceivedDate ?? _today;
+    }
   }
 
   @override
@@ -139,8 +150,9 @@ class _SecurityDepositDialogState extends State<SecurityDepositDialog> {
   @override
   Widget build(BuildContext context) {
     final canRemove = widget.current?.isHeld == true;
+    final startsNew = widget.current?.isHeld == false;
     return AlertDialog(
-      title: const Text('Security deposit'),
+      title: Text(startsNew ? 'New security deposit' : 'Security deposit'),
       content: SizedBox(
         width: 420,
         child: Form(

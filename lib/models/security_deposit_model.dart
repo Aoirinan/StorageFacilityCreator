@@ -8,7 +8,9 @@ enum SecurityDepositStatus { held, settled }
 
 /// A security deposit the facility holds for a tenant, stored as the
 /// `securityDeposit` map on the tenant doc. No field means no deposit on
-/// file.
+/// file. A settled deposit stays there until a new one is recorded over it
+/// (a tenant who came back), when it moves to the `securityDepositHistory`
+/// list ([historyFromStored]).
 ///
 /// A held deposit is money the facility owes the tenant back, so it is never
 /// a ledger row: the ledger balance feeds autopay, delinquency, the rent job
@@ -88,6 +90,16 @@ class SecurityDeposit {
     }
     return null;
   }
+
+  /// The tenant doc's `securityDepositHistory`: deposits settled before the
+  /// one now on file, oldest first. Missing on every tenant who never had a
+  /// second deposit, so anything but a list of maps reads as empty.
+  static List<SecurityDeposit> historyFromStored(Object? raw) => [
+        if (raw is List)
+          for (final entry in raw)
+            if (entry is Map)
+              SecurityDeposit.fromMap(Map<String, dynamic>.from(entry)),
+      ];
 
   static double? _amount(Object? value) =>
       value is num ? toCents(value) : null;

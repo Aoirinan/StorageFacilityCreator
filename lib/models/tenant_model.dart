@@ -197,6 +197,11 @@ class TenantModel {
   /// null when none is on file. Never part of the ledger balance.
   final SecurityDeposit? securityDeposit;
 
+  /// Deposits settled before [securityDeposit] was recorded (a tenant who
+  /// came back, or paid a fresh deposit), oldest first. Empty for nearly
+  /// everyone.
+  final List<SecurityDeposit> securityDepositHistory;
+
   TenantModel({
     required this.id,
     required this.facilityId,
@@ -265,6 +270,7 @@ class TenantModel {
     this.overlockIsActive = false,
     this.monthStatusOverrides = const {},
     this.securityDeposit,
+    this.securityDepositHistory = const [],
   });
 
   /// Whether a tenant doc's `isActive` value makes it an active tenant: only
@@ -427,6 +433,8 @@ class TenantModel {
           ? SecurityDeposit.fromMap(
               Map<String, dynamic>.from(data!['securityDeposit'] as Map))
           : null,
+      securityDepositHistory:
+          SecurityDeposit.historyFromStored(data?['securityDepositHistory']),
     );
   }
 
@@ -555,6 +563,10 @@ class TenantModel {
       if (monthStatusOverrides.isNotEmpty)
         'monthStatusOverrides': monthStatusOverrides,
       if (securityDeposit != null) 'securityDeposit': securityDeposit!.toMap(),
+      if (securityDepositHistory.isNotEmpty)
+        'securityDepositHistory': [
+          for (final deposit in securityDepositHistory) deposit.toMap(),
+        ],
     };
   }
 
@@ -630,6 +642,7 @@ class TenantModel {
     Map<String, String>? monthStatusOverrides,
     SecurityDeposit? securityDeposit,
     bool clearSecurityDeposit = false,
+    List<SecurityDeposit>? securityDepositHistory,
   }) {
     return TenantModel(
       id: id ?? this.id,
@@ -703,6 +716,8 @@ class TenantModel {
       securityDeposit: clearSecurityDeposit
           ? null
           : (securityDeposit ?? this.securityDeposit),
+      securityDepositHistory:
+          securityDepositHistory ?? this.securityDepositHistory,
     );
   }
 

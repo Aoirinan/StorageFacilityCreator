@@ -1263,15 +1263,14 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                       ),
                       // Held for the tenant, off the ledger: not in the
                       // balance above or in Paid Through. Once settled it
-                      // is history and the pencil goes away.
+                      // reads as history until a new deposit is saved over
+                      // it (a tenant who came back), so the pencil stays.
                       _buildInfoItem(
                         context,
                         icon: Icons.savings_outlined,
                         label: 'Security Deposit',
                         value: tenant.securityDeposit?.summary ?? 'None on file',
-                        onEdit: tenant.securityDeposit?.isHeld == false
-                            ? null
-                            : () => editSecurityDeposit(context, tenant, defaultAmount: defaultSecurityDeposit),
+                        onEdit: () => editSecurityDeposit(context, tenant, defaultAmount: defaultSecurityDeposit),
                       ),
                       const SizedBox(height: 16),
                       _buildPaymentHistorySummary(tenant),

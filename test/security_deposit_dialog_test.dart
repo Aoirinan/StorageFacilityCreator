@@ -155,6 +155,47 @@ void main() {
       expect(opened.closed, isTrue);
       expect(opened.result, isNull);
     });
+
+    testWidgets('a settled deposit on file: "New security deposit" from the facility default, today; no Remove',
+        (tester) async {
+      // The tenant's $25 deposit was settled when they moved out; they are
+      // back and paying a fresh one. The settled deposit is done with, so
+      // nothing of it is prefilled, and the move-in date on file (9/1) is
+      // from before it, so the date starts today.
+      final settled = _held().copyWith(
+        status: SecurityDepositStatus.settled,
+        settledAt: DateTime(2026, 9, 20),
+        appliedAmount: 25,
+        refundedAmount: 0,
+      );
+      final opened = await _open<SecurityDepositEdit>(
+        tester,
+        SecurityDepositDialog(
+          current: settled,
+          defaultAmount: 50,
+          defaultReceivedDate: _moveIn,
+          today: _today,
+        ),
+      );
+
+      expect(find.text('New security deposit'), findsOneWidget);
+      expect(_fieldText(tester, const Key('security-deposit-amount')), '50.00');
+      expect(_fieldText(tester, const Key('security-deposit-reference')), '');
+      expect(_fieldText(tester, const Key('security-deposit-note')), '');
+      expect(find.text('Cash'), findsOneWidget);
+      expect(find.text('Check'), findsNothing);
+      expect(find.text('9/28/2026'), findsOneWidget);
+      expect(find.text('9/1/2026'), findsNothing);
+      expect(find.text('Remove'), findsNothing);
+
+      await _tap(tester, 'Save');
+      expect(opened.closed, isTrue);
+      final save = opened.result as SecurityDepositSave;
+      expect(save.amount, 50);
+      expect(save.receivedDate, _today);
+      expect(save.method, PaymentMethod.cash);
+      expect(save.reference, isNull);
+    });
   });
 
   group('Settle security deposit dialog', () {

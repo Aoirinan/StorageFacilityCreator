@@ -340,19 +340,92 @@ void main() {
       expect(logged.single.after!['amount'], 50.0);
     });
 
-    test('record is refused once settled, and for a zero amount', () async {
+    test('record over a settled deposit starts a new held one and files the old one', () async {
+      // The tenant moved out in October, came back in January and paid a
+      // fresh deposit. The settled one must not block it, and must not be
+      // lost: its applied part is on the ledger, the rest is only here.
       seed(_tenantDoc(deposit: _settled()));
-      await expectLater(
-        SecurityDepositService.record(
-          facilityId: 'f1',
-          tenantId: 't1',
-          amount: 25,
-          method: PaymentMethod.cash,
-        ),
-        throwsA(isA<SecurityDepositException>()),
-      );
-      expect(db.sub('tenants').log.writes, isEmpty);
 
+      final saved = await SecurityDepositService.record(
+        facilityId: 'f1',
+        tenantId: 't1',
+        amount: 30,
+        receivedDate: DateTime(2027, 1, 15),
+        method: PaymentMethod.cash,
+      );
+
+      expect(saved.isHeld, isTrue);
+      final stored = SecurityDeposit.fromMap(storedDeposit());
+      expect(stored.isHeld, isTrue);
+      expect(stored.amount, 30);
+      expect(stored.method, PaymentMethod.cash);
+      expect(stored.reference, isNull);
+      expect(stored.receivedDate!.toUtc(), DateTime.utc(2027, 1, 15, 12));
+      // Its own record, not the settled deposit's.
+      expect(stored.recordedBy, 'owner-1');
+      expect(stored.recordedAt!.toUtc(), isNot(DateTime.utc(2026, 9, 1, 15)));
+      expect(stored.settledAt, isNull);
+      expect(stored.appliedAmount, isNull);
+      expect(stored.appliedLedgerEntryId, isNull);
+
+      final history = SecurityDeposit.historyFromStored(
+          db.data('tenants', 't1')!['securityDepositHistory']);
+      expect(history, hasLength(1));
+      expect(history.single.isHeld, isFalse);
+      expect(history.single.amount, 25);
+      expect(history.single.appliedLedgerEntryId, 'ledger-old');
+      expect(history.single.settledAt!.toUtc(), DateTime.utc(2026, 10, 3, 12));
+
+      expect(db.commits, 1);
+      expect(db.sub('ledgers').stored, isEmpty);
+      expect(logged.map((e) => e.eventType), ['tenant.securityDeposit.recorded']);
+      expect(logged.single.before!['status'], 'settled');
+      expect(logged.single.after!['status'], 'held');
+    });
+
+    test('a second settled deposit goes after the first in history', () async {
+      seed({
+        ..._tenantDoc(
+            deposit: _settled().copyWith(
+                amount: 40, appliedAmount: 40, appliedLedgerEntryId: 'ledger-2')),
+        'securityDepositHistory': [_settled().toMap()],
+      });
+
+      await SecurityDepositService.record(
+        facilityId: 'f1',
+        tenantId: 't1',
+        amount: 30,
+        method: PaymentMethod.cash,
+      );
+
+      final history = SecurityDeposit.historyFromStored(
+          db.data('tenants', 't1')!['securityDepositHistory']);
+      expect(history.map((d) => d.amount), [25, 40]);
+      expect(history.map((d) => d.appliedLedgerEntryId), ['ledger-old', 'ledger-2']);
+      expect(history.every((d) => !d.isHeld), isTrue);
+    });
+
+    test('correcting a held deposit leaves history alone', () async {
+      seed({
+        ..._tenantDoc(deposit: _held()),
+        'securityDepositHistory': [_settled().toMap()],
+      });
+
+      await SecurityDepositService.record(
+        facilityId: 'f1',
+        tenantId: 't1',
+        amount: 50,
+        method: PaymentMethod.cash,
+      );
+
+      final write = db.sub('tenants').log.writes.single;
+      expect(write.$3.containsKey('securityDepositHistory'), isFalse);
+      expect(SecurityDeposit.historyFromStored(
+          db.data('tenants', 't1')!['securityDepositHistory']), hasLength(1));
+      expect(logged.map((e) => e.eventType), ['tenant.securityDeposit.updated']);
+    });
+
+    test('record is refused for a zero amount', () async {
       seed(_tenantDoc());
       await expectLater(
         SecurityDepositService.record(
@@ -374,12 +447,15 @@ void main() {
       expect(logged.map((e) => e.eventType), ['tenant.securityDeposit.removed']);
       expect(logged.single.before!['amount'], 25.0);
 
+      // Settled: still refused. Only a new deposit saved over it moves it
+      // to history; Remove never does.
       seed(_tenantDoc(deposit: _settled()));
       await expectLater(
         SecurityDepositService.remove(facilityId: 'f1', tenantId: 't1'),
         throwsA(isA<SecurityDepositException>()),
       );
       expect(storedDeposit()['status'], 'settled');
+      expect(db.sub('tenants').log.writes, isEmpty);
 
       seed(_tenantDoc());
       expect(await SecurityDepositService.remove(facilityId: 'f1', tenantId: 't1'), isFalse);

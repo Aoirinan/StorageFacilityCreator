@@ -159,9 +159,8 @@ class SecurityDepositService {
     return user;
   }
 
-  /// The deposit on the tenant doc read in [txn], or null when none is on
-  /// file. Throws when the tenant is gone.
-  static Future<SecurityDeposit?> _current(
+  /// The tenant doc read in [txn]. Throws when the tenant is gone.
+  static Future<Map<String, dynamic>> _tenantData(
     Transaction txn,
     DocumentReference<Map<String, dynamic>> tenantRef,
   ) async {
@@ -170,15 +169,40 @@ class SecurityDepositService {
     if (!snap.exists || data == null) {
       throw SecurityDepositException('This tenant no longer exists.');
     }
+    return data;
+  }
+
+  /// The deposit in a tenant doc's [data], or null when none is on file.
+  static SecurityDeposit? _depositIn(Map<String, dynamic> data) {
     final raw = data['securityDeposit'];
     return raw is Map
         ? SecurityDeposit.fromMap(Map<String, dynamic>.from(raw))
         : null;
   }
 
-  /// Records a deposit the facility holds, or corrects the one on file.
-  /// Refused once the deposit is settled: the settlement is the record of
-  /// where the money went.
+  /// The deposit on the tenant doc read in [txn], or null when none is on
+  /// file. Throws when the tenant is gone.
+  static Future<SecurityDeposit?> _current(
+    Transaction txn,
+    DocumentReference<Map<String, dynamic>> tenantRef,
+  ) async =>
+      _depositIn(await _tenantData(txn, tenantRef));
+
+  /// The tenant doc's `securityDepositHistory` as stored, oldest first, or
+  /// empty when missing. Kept as written rather than run through the model,
+  /// so an entry another build wrote loses nothing on the way back.
+  static List<Map<String, dynamic>> _storedHistory(Object? raw) => [
+        if (raw is List)
+          for (final entry in raw)
+            if (entry is Map) Map<String, dynamic>.from(entry),
+      ];
+
+  /// Records a deposit the facility holds, corrects the held one on file,
+  /// or starts a new one over a settled one. A settled deposit is not a
+  /// dead end: a tenant who moves out and comes back, or who pays a fresh
+  /// deposit, gets a new held deposit, and the settled one is kept on the
+  /// tenant's `securityDepositHistory` (its applied part stays on the
+  /// ledger either way).
   static Future<SecurityDeposit> record({
     required String facilityId,
     required String tenantId,
@@ -198,11 +222,11 @@ class SecurityDepositService {
     SecurityDeposit? before;
     late SecurityDeposit after;
     await _firestore.runTransaction<void>((txn) async {
-      before = await _current(txn, tenantRef);
-      if (before != null && !before!.isHeld) {
-        throw SecurityDepositException(
-            'This security deposit has already been settled.');
-      }
+      final data = await _tenantData(txn, tenantRef);
+      before = _depositIn(data);
+      // Only a held deposit is being corrected; a settled one is done with,
+      // so the new deposit gets its own recorded-at and recorded-by.
+      final held = before?.isHeld == true ? before : null;
       after = SecurityDeposit(
         amount: SecurityDeposit.toCents(amount),
         receivedDate:
@@ -210,19 +234,29 @@ class SecurityDepositService {
         method: method,
         reference: reference,
         note: note,
-        recordedAt: before?.recordedAt ?? now,
-        recordedBy: before?.recordedBy ?? user.uid,
+        recordedAt: held?.recordedAt ?? now,
+        recordedBy: held?.recordedBy ?? user.uid,
         updatedAt: now,
       );
       txn.update(tenantRef, {
         'securityDeposit': after.toMap(),
+        // The settled deposit goes to the end of the history list. The
+        // list is read and written back in this transaction, so two saves
+        // at once cannot lose an entry.
+        if (before != null && held == null)
+          'securityDepositHistory': [
+            ..._storedHistory(data['securityDepositHistory']),
+            before!.toMap(),
+          ],
         'updatedAt': FieldValue.serverTimestamp(),
       });
     });
 
     await AuditService.logEvent(
       facilityId: facilityId,
-      eventType: before == null
+      // A new deposit, whether nothing or a settled one was on file; the
+      // settled one is still the event's before map.
+      eventType: before?.isHeld != true
           ? 'tenant.securityDeposit.recorded'
           : 'tenant.securityDeposit.updated',
       targetType: 'tenant',
