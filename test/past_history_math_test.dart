@@ -524,40 +524,40 @@ void main() {
   });
 
   group('amounts typed off the rate', () {
-    // A person renting two units, entered at their combined $110 on a record
-    // whose rate is one unit's $55. Nothing said the months were double.
+    // A person renting two units, entered at their combined $144 on a record
+    // whose rate is one unit's $72. Nothing said the months were double.
     List<ProposedHistoryCharge> months(List<double> amounts, {int day = 1}) => [
           for (final (i, a) in amounts.indexed)
-            ProposedHistoryCharge(year: 2026, month: 3 + i, day: i == 0 ? day : 1, amount: a),
+            ProposedHistoryCharge(year: 2026, month: 4 + i, day: i == 0 ? day : 1, amount: a),
         ];
 
     test('every month at the rate: nothing to say', () {
-      expect(historyAmountsOffRate(charges: months([55, 55, 55]), monthlyRate: 55), isEmpty);
+      expect(historyAmountsOffRate(charges: months([72, 72, 72]), monthlyRate: 72), isEmpty);
     });
 
     test('the combined rent on every month is reported once', () {
-      expect(historyAmountsOffRate(charges: months([110, 110, 110], day: 25), monthlyRate: 55), [110]);
-      expect(historyAmountsOffRate(charges: months([110, 110, 165]), monthlyRate: 55), [110, 165]);
+      expect(historyAmountsOffRate(charges: months([144, 144, 144], day: 18), monthlyRate: 72), [144]);
+      expect(historyAmountsOffRate(charges: months([144, 144, 216]), monthlyRate: 72), [144, 216]);
     });
 
     test('a prorated first month is expected; a lower month dated the 1st is not', () {
-      expect(historyAmountsOffRate(charges: months([12.43, 55, 55], day: 25), monthlyRate: 55), isEmpty);
-      expect(historyAmountsOffRate(charges: months([12.43, 55, 55]), monthlyRate: 55), [12.43]);
-      expect(historyAmountsOffRate(charges: months([55, 40, 55]), monthlyRate: 55), [40]);
+      expect(historyAmountsOffRate(charges: months([31.2, 72, 72], day: 18), monthlyRate: 72), isEmpty);
+      expect(historyAmountsOffRate(charges: months([31.2, 72, 72]), monthlyRate: 72), [31.2]);
+      expect(historyAmountsOffRate(charges: months([72, 60, 72]), monthlyRate: 72), [60]);
     });
 
     test('unticked months, blank amounts and a record with no rate are not compared', () {
-      final c = months([110, 110]);
+      final c = months([144, 144]);
       c[0].included = false;
-      expect(historyAmountsOffRate(charges: c, monthlyRate: 55), [110]);
+      expect(historyAmountsOffRate(charges: c, monthlyRate: 72), [144]);
       c[1].amount = 0;
-      expect(historyAmountsOffRate(charges: c, monthlyRate: 55), isEmpty);
-      expect(historyAmountsOffRate(charges: months([110]), monthlyRate: 0), isEmpty);
+      expect(historyAmountsOffRate(charges: c, monthlyRate: 72), isEmpty);
+      expect(historyAmountsOffRate(charges: months([144]), monthlyRate: 0), isEmpty);
     });
 
     test('compared to the cent', () {
-      expect(historyAmountsOffRate(charges: months([55.004, 55]), monthlyRate: 55), isEmpty);
-      expect(historyAmountsOffRate(charges: months([55.01, 55]), monthlyRate: 55), [55.01]);
+      expect(historyAmountsOffRate(charges: months([72.004, 72]), monthlyRate: 72), isEmpty);
+      expect(historyAmountsOffRate(charges: months([72.01, 72]), monthlyRate: 72), [72.01]);
     });
   });
 

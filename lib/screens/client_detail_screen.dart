@@ -2572,7 +2572,7 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
 
   /// The Contact card's Unit row: every unit the tenant holds, each a link
   /// to its unit page when its unit doc is loaded, so a tenant renting two
-  /// units reads "C2-6, C2-7" rather than the first alone.
+  /// units reads "B-14, B-15" rather than the first alone.
   Widget _buildUnitsItem(BuildContext context, List<HeldUnitLabel> units) {
     final style = Theme.of(context).textTheme.bodyMedium?.copyWith(color: AppTheme.textTertiary);
     return _buildInfoItem(

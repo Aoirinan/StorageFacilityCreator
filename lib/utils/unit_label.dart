@@ -139,7 +139,7 @@ String fillTenantQuickMessage(
 /// assigned through a unit).
 typedef HeldUnitLabel = ({String label, UnitModel? unit});
 
-/// The units [tenant] holds, labelled ("C2-6, C2-7"): the unit their record
+/// The units [tenant] holds, labelled ("B-14, B-15"): the unit their record
 /// names first, as [tenantUnitLabel] (so a tenant with one unit reads as
 /// before), then [TenantUnitAreaIndex.otherUnitsFor]. A record's
 /// `unitNumber` names one unit however many it holds; the others are only
@@ -176,7 +176,7 @@ List<HeldUnitLabel> tenantHeldUnitLabels(
 }
 
 /// The Assign Tenant picker's line for a tenant's current units: "Unit 12
-/// (Complex 2)", "Units C2-6, C2-7", or "No unit". Always with the area, as
+/// (Building B)", "Units B-14, B-15", or "No unit". Always with the area, as
 /// the picker names the unit being assigned ([unitPickerLabel]), so two
 /// records with one name and one phone can be told apart by what they hold.
 String tenantPickerUnitsText(TenantModel tenant, TenantUnitAreaIndex units) {
@@ -190,8 +190,8 @@ String tenantPickerUnitsText(TenantModel tenant, TenantUnitAreaIndex units) {
 /// the tenant holds ([TenantUnitAreaIndex.areasFor]); [labelUnit] is the
 /// unit their label names ([TenantUnitAreaIndex.namedUnit]), when the list
 /// has it, for its area; [otherUnits] are the rest of the units they hold
-/// ([TenantUnitAreaIndex.otherUnitsFor]), listed after it: "Unit: C2-6,
-/// C2-7". A record with no unitId holding two units numbered alike names
+/// ([TenantUnitAreaIndex.otherUnitsFor]), listed after it: "Unit: B-14,
+/// B-15". A record with no unitId holding two units numbered alike names
 /// neither ([labelUnit] null), and its bare number is left out rather than
 /// read as a third unit, as [tenantHeldUnitLabels] leaves it out.
 ///
