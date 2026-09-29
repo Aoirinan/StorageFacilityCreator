@@ -1,18 +1,29 @@
 #!/usr/bin/env node
 /**
- * Verifies the public "30-day trial, then first month free" offer in Stripe TEST mode
- * on test clocks, without touching live data. The open question it answers: does a
- * `duration: 'once'` coupon get spent on the $0 trial invoice, or kept for the first
- * paid invoice?
+ * Verifies the public "30-day trial + first month free" offer in Stripe TEST mode on
+ * test clocks, without touching live data.
  *
- * Scenarios (one test clock each, shaped like the subscription Checkout creates):
- *   A. Card at signup: trial_period_days=30 + coupon.
- *   B. App trial still running: trial_end = the app trial's end (10 days out here) + coupon.
- *   C. App trial already over: no trial + coupon.
- * For each: the trial invoice (if any) is $0, the coupon survives it, the first
- * post-trial invoice is $0 with a $75 discount, and the month after charges $75.
+ * The free month is delivered as trial time, not a coupon: checkout sets the Stripe
+ * `trial_end` 30 days past the end of the owner's trial, and attaches no discount. (A
+ * `once` coupon is spent on the $0 invoice a trialing subscription finalizes at creation;
+ * see https://docs.stripe.com/billing/subscriptions/coupons.md, "Coupon duration".)
+ *
+ * Each scenario runs the real checkout decision (`decidePlatformCheckoutOffer` from
+ * functions-shared, as vendored into functions-integrations) for a fake account at the
+ * clock's start time, then creates the subscription Checkout would create from it:
+ *   A. Card at signup (no trial record): trial_end = start + 30 + 30 days.
+ *   B. App trial running, 10 days left: trial_end = app trial end + 30 days.
+ *   C. App trial over, free month unused: trial_end = start + 30 days.
+ *   D. Resubscribe, free month already used: no trial, charged at once.
+ * For A-C: the subscription is trialing with exactly that trial_end, no discount and
+ * `firstMonthFree: 'true'` metadata; nothing is charged up to a day before trial_end;
+ * the first invoice after trial_end is the full $75 with no discount. For D: the first
+ * invoice is the full $75 with no discount.
  *
  * Usage (the Stripe project must be named explicitly; the CLI may hold several accounts):
+ *   npm ci --prefix functions-shared
+ *   node scripts/vendor-functions-shared.cjs
+ *   npm ci --prefix functions-integrations
  *   stripe login --project-name "storage facility creator"
  *   node scripts/stripe-verify-first-month-free.mjs --project-name "storage facility creator"
  *   # or: STRIPE_PROJECT_NAME="storage facility creator" node scripts/stripe-verify-first-month-free.mjs
@@ -20,7 +31,8 @@
  * The TEST key is read from `stripe config --list --project-name <name>`. Before creating
  * anything the script prints the Stripe account's display name and id and waits for you
  * to type "yes". Exits non-zero if any expectation fails. Each test clock is deleted at
- * the end, which deletes the customer and subscription made on it.
+ * the end, which deletes the customer and subscription made on it. It creates the $75
+ * test price if missing, and no coupon.
  */
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -28,10 +40,11 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const COUPON_ID = 'sfc_first_month_free';
 const LOOKUP_KEY = 'sfc_base_monthly_75';
 const PRICE_CENTS = 7500;
 const DAY = 24 * 60 * 60;
+/** Test clocks advance at most two billing intervals at a time; stay well inside that. */
+const MAX_ADVANCE_SECONDS = 25 * DAY;
 
 /** `--project-name <name>`, `--project-name=<name>`, or STRIPE_PROJECT_NAME. */
 export function resolveProjectName(argv, env) {
@@ -103,13 +116,97 @@ function readTestKey(projectName) {
   return key;
 }
 
+/** functions-integrations' require: the Stripe SDK and the vendored functions-shared live there. */
+function integrationsRequire() {
+  return createRequire(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'functions-integrations', 'package.json'),
+  );
+}
+
+/** The checkout decision code exactly as functions-integrations deploys it. */
+export function loadOfferModule() {
+  try {
+    return integrationsRequire()('@sfc/functions-shared/stripe/platformCheckoutTrial');
+  } catch (e) {
+    throw new Error(
+      'Could not load @sfc/functions-shared from functions-integrations. Run: npm ci --prefix functions-shared && ' +
+        `node scripts/vendor-functions-shared.cjs && npm ci --prefix functions-integrations (${e.message ?? e})`,
+    );
+  }
+}
+
+/**
+ * The scenarios for a clock frozen at `startSec`: each runs the real decision for a fake
+ * account and says what Stripe must end up with. Pure, so it can be checked offline.
+ */
+export function buildScenarios(offerModule, startSec) {
+  const nowMs = startSec * 1000;
+  const APP_TRIAL_DAYS_LEFT = 10;
+  const defs = [
+    {
+      label: 'A. card at signup: 30-day trial, then the free month',
+      account: { subscriptionStatus: 'pendingApproval' },
+      expectedTrialEnd: startSec + 60 * DAY,
+      expectFreeMonth: true,
+    },
+    {
+      label: `B. app trial running (${APP_TRIAL_DAYS_LEFT} days left): app trial end + 30 days`,
+      account: {
+        subscriptionStatus: 'trialing',
+        subscriptionTrialEnd: nowMs + APP_TRIAL_DAYS_LEFT * DAY * 1000,
+        platformTrialUsedAt: nowMs - 20 * DAY * 1000,
+      },
+      expectedTrialEnd: startSec + (APP_TRIAL_DAYS_LEFT + 30) * DAY,
+      expectFreeMonth: true,
+    },
+    {
+      label: 'C. app trial over, free month unused: now + 30 days',
+      account: {
+        subscriptionStatus: 'cancelled',
+        subscriptionTrialEnd: nowMs - 3 * DAY * 1000,
+        platformTrialUsedAt: nowMs - 33 * DAY * 1000,
+      },
+      expectedTrialEnd: startSec + 30 * DAY,
+      expectFreeMonth: true,
+    },
+    {
+      label: 'D. resubscribe, free month already used: no trial',
+      account: {
+        subscriptionStatus: 'cancelled',
+        subscriptionTrialEnd: nowMs - 60 * DAY * 1000,
+        platformTrialUsedAt: nowMs - 90 * DAY * 1000,
+        platformFirstMonthFreeUsedAt: nowMs - 60 * DAY * 1000,
+        stripeSubscriptionIdClearedFrom: 'sub_fake_old',
+      },
+      expectedTrialEnd: null,
+      expectFreeMonth: false,
+    },
+  ];
+  return defs.map((d) => {
+    const offer = offerModule.decidePlatformCheckoutOffer({
+      account: d.account,
+      facilities: [],
+      defaultTrialDays: offerModule.DEFAULT_PLATFORM_TRIAL_DAYS,
+      nowMs,
+    });
+    return {
+      ...d,
+      offer,
+      subscriptionParams: {
+        ...offerModule.platformCheckoutTrialSubscriptionData(offer.trial),
+        metadata: offerModule.platformCheckoutOfferMetadata(offer.trial),
+      },
+    };
+  });
+}
+
 async function confirmAccount(stripe, projectName) {
   const account = await stripe.accounts.retrieveCurrent();
   const displayName =
     account.settings?.dashboard?.display_name || account.business_profile?.name || '(no display name)';
   console.log(`Stripe CLI project: ${projectName}`);
   console.log(`Stripe account:     ${displayName} (${account.id}), TEST mode`);
-  console.log('This creates a coupon/price if missing, plus test clocks, customers and subscriptions.');
+  console.log('This creates a price if missing, plus test clocks, customers and subscriptions.');
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {
     const answer = (await rl.question('Type "yes" to continue: ')).trim().toLowerCase();
@@ -144,24 +241,46 @@ async function waitForClock(stripe, clockId) {
   throw new Error('Test clock did not become ready in time');
 }
 
-async function advance(stripe, clockId, frozenTime) {
-  await stripe.testHelpers.testClocks.advance(clockId, { frozen_time: frozenTime });
-  await waitForClock(stripe, clockId);
+/** Advances the clock to `target` in steps small enough for Stripe to accept. */
+async function advanceTo(stripe, clockId, target) {
+  let clock = await stripe.testHelpers.testClocks.retrieve(clockId);
+  while (clock.frozen_time < target) {
+    const next = Math.min(target, clock.frozen_time + MAX_ADVANCE_SECONDS);
+    await stripe.testHelpers.testClocks.advance(clockId, { frozen_time: next });
+    clock = await waitForClock(stripe, clockId);
+  }
 }
 
 function discountTotal(invoice) {
   return (invoice.total_discount_amounts ?? []).reduce((sum, d) => sum + (d.amount ?? 0), 0);
 }
 
-/**
- * One scenario on its own test clock. `trialDays` is 0 for "no trial"; `trialParams`
- * builds the subscription's trial fields from the clock's start time.
- */
-async function runScenario(stripe, price, { label, trialDays, trialParams }) {
+function hasNoDiscount(sub) {
+  return (sub.discounts ?? []).length === 0 && !sub.discount;
+}
+
+async function listInvoices(stripe, subscriptionId) {
+  const list = await stripe.invoices.list({ subscription: subscriptionId, limit: 20 });
+  return list.data.sort((a, b) => a.created - b.created);
+}
+
+/** One scenario on its own test clock. */
+async function runScenario(stripe, price, startSec, scenario) {
+  // Every scenario's clock starts at the same `startSec` its decision was made for.
+  const { label, offer, subscriptionParams, expectedTrialEnd, expectFreeMonth } = scenario;
   console.log(`\n${label}`);
   const c = new Checks(label);
-  const start = Math.floor(Date.now() / 1000);
-  const clock = await stripe.testHelpers.testClocks.create({ frozen_time: start, name: `verify first month free: ${label}`.slice(0, 100) });
+  c.check(
+    (offer.trial.trialEndSeconds ?? null) === expectedTrialEnd,
+    `decision: ${offer.trial.kind}, trial_end ${offer.trial.trialEndSeconds ?? 'none'} (expected ${expectedTrialEnd ?? 'none'})`,
+  );
+  c.check(offer.firstMonthFree === expectFreeMonth, `decision: firstMonthFree ${offer.firstMonthFree}`);
+  c.check(!('trial_period_days' in subscriptionParams), 'decision sends no trial_period_days');
+
+  const clock = await stripe.testHelpers.testClocks.create({
+    frozen_time: startSec,
+    name: `verify first month free: ${label}`.slice(0, 100),
+  });
   try {
     const customer = await stripe.customers.create({
       email: 'verify-first-month-free@example.com',
@@ -169,48 +288,54 @@ async function runScenario(stripe, price, { label, trialDays, trialParams }) {
       payment_method: 'pm_card_visa',
       invoice_settings: { default_payment_method: 'pm_card_visa' },
     });
+    // What Checkout creates from the session's subscription_data: no discounts.
     const sub = await stripe.subscriptions.create({
       customer: customer.id,
       items: [{ price: price.id }],
-      discounts: [{ coupon: COUPON_ID }],
-      ...trialParams(start),
+      ...subscriptionParams,
     });
+    c.check(hasNoDiscount(sub), 'subscription carries no coupon or discount');
+    c.check(
+      sub.metadata?.firstMonthFree === String(expectFreeMonth),
+      `subscription metadata firstMonthFree = ${sub.metadata?.firstMonthFree}`,
+    );
 
-    let invoices = await stripe.invoices.list({ subscription: sub.id, limit: 10 });
-    if (trialDays > 0) {
+    if (expectedTrialEnd !== null) {
       c.check(sub.status === 'trialing', `subscription starts trialing (was ${sub.status})`);
-      c.check(invoices.data.every((i) => i.amount_due === 0), 'trial-start invoice(s) are $0');
-      const afterTrialStart = await stripe.subscriptions.retrieve(sub.id);
-      c.check(
-        (afterTrialStart.discounts ?? []).length === 1,
-        'coupon is still attached after the $0 trial invoice (not spent on the trial)',
-      );
+      c.check(sub.trial_end === expectedTrialEnd, `subscription trial_end ${sub.trial_end} = expected ${expectedTrialEnd}`);
+      let invoices = await listInvoices(stripe, sub.id);
+      c.check(invoices.every((i) => i.amount_due === 0), 'trial-start invoice(s) are $0');
 
-      await advance(stripe, clock.id, start + (trialDays + 1) * DAY);
-      invoices = await stripe.invoices.list({ subscription: sub.id, limit: 10 });
+      // A day before the trial (app trial + free month) ends: still nothing charged.
+      await advanceTo(stripe, clock.id, expectedTrialEnd - DAY);
+      const before = await stripe.subscriptions.retrieve(sub.id);
+      c.check(before.status === 'trialing', `a day before trial_end the subscription is still trialing (was ${before.status})`);
+      invoices = await listInvoices(stripe, sub.id);
+      c.check(invoices.every((i) => i.amount_due === 0), 'nothing charged through the trial and the free month');
+
+      // A day after: the first invoice is the full price, with no discount.
+      await advanceTo(stripe, clock.id, expectedTrialEnd + DAY);
+      invoices = await listInvoices(stripe, sub.id);
+      const firstPaid = invoices.find((i) => i.billing_reason === 'subscription_cycle');
+      if (c.check(!!firstPaid, 'an invoice exists for the first month after trial_end')) {
+        c.check(firstPaid.amount_due === PRICE_CENTS, `first invoice after trial_end is $75 (was ${firstPaid.amount_due})`);
+        c.check(discountTotal(firstPaid) === 0, `first invoice after trial_end has no discount (was ${discountTotal(firstPaid)})`);
+        // The invoice's own period_start is the period just ended; its line holds the billed month.
+        const billedFrom = (firstPaid.lines?.data ?? []).find((l) => l.amount > 0)?.period?.start;
+        c.check(billedFrom === expectedTrialEnd, `it bills the month starting at trial_end (line period start ${billedFrom})`);
+      }
+      const charged = invoices.filter((i) => i.amount_due > 0);
+      c.check(charged.length === 1, `exactly one charge so far (charged: ${charged.map((i) => i.amount_due).join(', ') || 'none'})`);
     } else {
       c.check(sub.status === 'active', `subscription starts active, no trial (was ${sub.status})`);
+      c.check(!sub.trial_end, 'subscription has no trial_end');
+      const invoices = await listInvoices(stripe, sub.id);
+      const first = invoices.find((i) => i.billing_reason === 'subscription_create');
+      if (c.check(!!first, 'an invoice exists at creation')) {
+        c.check(first.amount_due === PRICE_CENTS, `it charges the full $75 at once (was ${first.amount_due})`);
+        c.check(discountTotal(first) === 0, `it has no discount (was ${discountTotal(first)})`);
+      }
     }
-
-    const firstPaidPeriod = invoices.data
-      .filter((i) => i.billing_reason === (trialDays > 0 ? 'subscription_cycle' : 'subscription_create'))
-      .sort((a, b) => a.created - b.created)[0];
-    if (c.check(!!firstPaidPeriod, 'an invoice exists for the first paid month')) {
-      c.check(firstPaidPeriod.amount_due === 0, `first paid-month invoice is $0 (was ${firstPaidPeriod.amount_due})`);
-      c.check(
-        discountTotal(firstPaidPeriod) === PRICE_CENTS,
-        `first paid-month invoice shows the $75 discount (was ${discountTotal(firstPaidPeriod)})`,
-      );
-    }
-    c.check(invoices.data.every((i) => i.amount_due === 0), 'nothing charged through the free month');
-
-    await advance(stripe, clock.id, start + (trialDays + 33) * DAY);
-    invoices = await stripe.invoices.list({ subscription: sub.id, limit: 10 });
-    const charged = invoices.data.filter((i) => i.amount_due > 0);
-    c.check(
-      charged.length === 1 && charged[0].amount_due === PRICE_CENTS,
-      `the month after the free month charges the full $75 (charged: ${charged.map((i) => i.amount_due).join(', ') || 'none'})`,
-    );
   } catch (e) {
     c.check(false, `scenario errored: ${e.message ?? e}`);
   } finally {
@@ -227,29 +352,14 @@ async function main() {
         '(or STRIPE_PROJECT_NAME). The first key in the CLI config may belong to another account.',
     );
   }
+  const offerModule = loadOfferModule();
   const key = readTestKey(projectName);
 
   // The Stripe SDK is not a root dependency; borrow the copy functions-integrations already has.
-  const require = createRequire(
-    path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'functions-integrations', 'package.json'),
-  );
-  const Stripe = require('stripe');
+  const Stripe = integrationsRequire()('stripe');
   const stripe = new Stripe(key);
 
   await confirmAccount(stripe, projectName);
-
-  // Coupon
-  let coupon;
-  try {
-    coupon = await stripe.coupons.retrieve(COUPON_ID);
-  } catch (e) {
-    if (e?.code !== 'resource_missing') throw e;
-    coupon = await stripe.coupons.create({ id: COUPON_ID, name: 'First month free', percent_off: 100, duration: 'once' });
-  }
-  if (!(coupon.percent_off === 100 && coupon.duration === 'once')) {
-    throw new Error(`Coupon ${COUPON_ID} is not 100% off, duration once.`);
-  }
-  console.log(`ok   coupon ${COUPON_ID} is 100% off, duration once`);
 
   // Price
   const prices = await stripe.prices.list({ lookup_keys: [LOOKUP_KEY], limit: 1 });
@@ -268,34 +378,15 @@ async function main() {
     throw new Error(`Price ${LOOKUP_KEY} is ${price.unit_amount} cents, expected ${PRICE_CENTS}.`);
   }
 
-  const APP_TRIAL_DAYS_LEFT = 10;
-  const scenarios = [
-    {
-      label: 'A. card at signup: trial_period_days=30 + coupon',
-      trialDays: 30,
-      trialParams: () => ({ trial_period_days: 30 }),
-    },
-    {
-      label: `B. app trial running: trial_end = app trial end (${APP_TRIAL_DAYS_LEFT} days out) + coupon`,
-      trialDays: APP_TRIAL_DAYS_LEFT,
-      trialParams: (start) => ({ trial_end: start + APP_TRIAL_DAYS_LEFT * DAY }),
-    },
-    {
-      label: 'C. app trial over: no trial + coupon',
-      trialDays: 0,
-      trialParams: () => ({}),
-    },
-  ];
-
+  const startSec = Math.floor(Date.now() / 1000);
   let failed = 0;
-  for (const s of scenarios) failed += await runScenario(stripe, price, s);
+  for (const s of buildScenarios(offerModule, startSec)) failed += await runScenario(stripe, price, startSec, s);
 
   if (failed > 0) {
-    console.error(`\n${failed} check(s) failed. If the coupon was spent on the $0 trial invoice (A/B), ` +
-      'see the PR "fallback" note: apply the coupon at trial end from the webhook instead.');
+    console.error(`\n${failed} check(s) failed.`);
     process.exitCode = 1;
   } else {
-    console.log('\nAll checks passed: each path gives one trial, then one free month, then $75/month.');
+    console.log('\nAll checks passed: the trial and the free month are one Stripe trial, then $75/month with no discount.');
   }
 }
 
