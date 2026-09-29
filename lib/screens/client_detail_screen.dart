@@ -44,7 +44,9 @@ import 'package:intl/intl.dart';
 import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
 import 'package:sfcapp/widgets/move_out_action.dart';
 import 'package:sfcapp/widgets/payment_history_summary.dart';
+import 'package:sfcapp/utils/print_documents.dart' show tenantPrintAddress;
 import 'package:sfcapp/widgets/tenant_contact_edit_dialog.dart';
+import 'package:sfcapp/widgets/tenant_mailing_address_dialog.dart';
 import 'package:sfcapp/widgets/tenant_prev_next.dart';
 import 'package:sfcapp/screens/tenant_past_history_dialog.dart';
 
@@ -1094,6 +1096,15 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                       _buildInfoItem(context, icon: Icons.person_outlined, label: 'Name', value: _valueOrPlaceholder(tenant.name)),
                       _buildInfoItem(context, icon: Icons.email_outlined, label: 'Email', value: _valueOrPlaceholder(tenant.email)),
                       _buildInfoItem(context, icon: Icons.phone_outlined, label: 'Phone', value: _valueOrPlaceholder(tenant.phone)),
+                      // The address the invoice and statement print. Its own
+                      // pencil: Edit Contact Information does not carry it.
+                      _buildInfoItem(
+                        context,
+                        icon: Icons.markunread_mailbox_outlined,
+                        label: 'Mailing Address',
+                        value: tenantPrintAddress(tenant.addresses) ?? 'Not provided',
+                        onEdit: () => editTenantMailingAddress(context, ref, tenant),
+                      ),
                       _buildInfoItem(context, icon: Icons.home_work_outlined, label: 'Unit', value: _valueOrPlaceholder(unitLabel, fallback: 'No unit assigned')),
                       _buildInfoItem(context, icon: Icons.attach_money, label: 'Monthly Rate', value: _formatCurrency(tenant.monthlyRate)),
                       // Always shown, so the owner can see who cannot be
