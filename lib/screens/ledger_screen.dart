@@ -194,6 +194,19 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                 false,
           );
 
+          // Charges on an invoice that has not been voided, for the "On
+          // invoice" mark. From the invoices, not the entries' own
+          // metadata.invoiceId: voiding an invoice leaves that in place, so
+          // it alone would mark charges whose invoice is gone.
+          final invoicedIds = ref
+                  .watch(liveInvoiceCoverageProvider(InvoiceParams(
+                    tenantId: widget.tenant.id,
+                    facilityId: widget.tenant.facilityId,
+                  )))
+                  .value
+                  ?.ledgerEntryIds ??
+              const <String>{};
+
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -473,6 +486,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                 else
                   ...filteredEntries.map((entry) => LedgerEntryCard(
                     entry: entry,
+                    onInvoice: invoicedIds.contains(entry.id),
                     onVoid: () => _voidEntry(context, entry),
                   )),
                     ],
@@ -779,45 +793,65 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
 
     final ledgerAsync = ref.read(ledgerStreamProvider(ledgerParams));
 
-    // The same exclusions generation applies, so the dialog cannot promise to
-    // bill a charge that is already on a live invoice or already settled.
-    // These used to be different rules, and the preview was the optimistic one.
-    final idsOnLiveInvoices = await InvoiceService.ledgerEntryIdsOnLiveInvoices(
-      facilityId: widget.tenant.facilityId,
-      tenantId: widget.tenant.id,
-    );
+    // The same rule generation applies, on the same figures, so the dialog
+    // cannot promise an invoice other than the one that gets saved. These
+    // used to be different rules, and the preview was the optimistic one.
+    // Read fresh, not from the cache: an invoice made a moment ago counts.
+    final LiveInvoiceCoverage coverage;
+    try {
+      coverage = await ref.refresh(
+        liveInvoiceCoverageProvider(InvoiceParams(
+          tenantId: widget.tenant.id,
+          facilityId: widget.tenant.facilityId,
+        )).future,
+      );
+    } catch (e) {
+      // Without knowing what is already invoiced, an invoice could bill a
+      // charge twice, so there is no invoice.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Could not check the tenant\'s existing invoices: '
+              '${ErrorMessageHelper.getUserFriendlyMessage(e)}',
+            ),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+      return;
+    }
     if (!mounted) return;
 
     ledgerAsync.whenData((entries) {
-      final invoiceableIds = selectableChargeIds(
-        charges: entries.map((e) => SelectableCharge(
-              id: e.id,
-              isCharge: e.status == LedgerEntryStatus.posted &&
-                  e.type != LedgerEntryType.payment &&
-                  e.type != LedgerEntryType.credit &&
-                  e.type != LedgerEntryType.refund &&
-                  e.amount > 0,
-              isActive: e.isActive,
-              amount: e.amount,
-              allocatedAmount: (e.metadata?['allocatedAmount'] as num?)?.toDouble(),
-            )),
-        idsOnLiveInvoices: idsOnLiveInvoices,
-      ).toSet();
+      // The balance the header shows, less what live invoices already ask
+      // for, is all an invoice may bill. Charges are taken newest first
+      // until it is covered; the oldest taken may be for part of itself.
+      final ledgerBalance = sumPostedLedgerEntries(entries);
+      final lines = openChargesForInvoice(
+        charges: entries.map(SelectableCharge.fromLedgerEntry),
+        idsOnLiveInvoices: coverage.ledgerEntryIds,
+        ledgerBalance: ledgerBalance,
+        liveInvoiceBalance: coverage.balance,
+      );
 
-      final unpaidCharges =
-          entries.where((e) => invoiceableIds.contains(e.id)).toList();
-
-      if (unpaidCharges.isEmpty) {
+      if (lines.isEmpty) {
+        // "No balance due" only when none is: a tenant who owes money that
+        // an existing invoice already asks for is sent to that invoice.
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No unpaid charges to invoice'),
+          SnackBar(
+            content: Text(nothingToInvoiceMessage(
+              ledgerBalance: ledgerBalance,
+              liveInvoiceBalance: coverage.balance,
+            )),
             backgroundColor: AppTheme.warning,
+            duration: const Duration(seconds: 8),
           ),
         );
         return;
       }
 
-      final totalAmount = unpaidCharges.fold(0.0, (sum, e) => sum + e.amount);
+      final totalAmount = lines.fold(0.0, (sum, line) => sum + line.amount);
       final dueDate = DateTime.now().add(const Duration(days: 30));
 
       showDialog(
@@ -830,11 +864,11 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'This will create an invoice for ${unpaidCharges.length} unpaid charge(s):',
+                  'This will create an invoice for ${lines.length} charge(s) to invoice:',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 const SizedBox(height: 16),
-                ...unpaidCharges.take(5).map((entry) {
+                ...lines.take(5).map((line) {
                   return Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4.0),
                     child: Row(
@@ -842,12 +876,12 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                       children: [
                         Expanded(
                           child: Text(
-                            entry.description ?? entry.typeDisplayName,
+                            line.description,
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ),
                         Text(
-                          entry.formattedAmount,
+                          '\$${line.amount.toStringAsFixed(2)}',
                           style: Theme.of(context).textTheme.bodySmall?.copyWith(
                             fontWeight: FontWeight.bold,
                           ),
@@ -856,9 +890,9 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                     ),
                   );
                 }),
-                if (unpaidCharges.length > 5)
+                if (lines.length > 5)
                   Text(
-                    '... and ${unpaidCharges.length - 5} more',
+                    '... and ${lines.length - 5} more',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: AppTheme.textSecondary,
                     ),
@@ -900,7 +934,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                 if (_generatingInvoice) return;
                 setState(() => _generatingInvoice = true);
                 Navigator.pop(context);
-                await _generateInvoice(unpaidCharges, dueDate);
+                await _generateInvoice(lines, dueDate);
               },
               child: const Text('Generate Invoice'),
             ),
@@ -910,12 +944,12 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
     });
   }
 
-  Future<void> _generateInvoice(List<LedgerEntry> entries, DateTime dueDate) async {
+  Future<void> _generateInvoice(List<OpenCharge> lines, DateTime dueDate) async {
     try {
       final operations = ref.read(invoiceOperationsProvider.notifier);
-      final ledgerEntryIds = entries.map((e) => e.id).toList();
+      final ledgerEntryIds = lines.map((line) => line.id).toList();
 
-      await operations.generateInvoice(
+      final invoice = await operations.generateInvoice(
         tenantId: widget.tenant.id,
         facilityId: widget.tenant.facilityId,
         ledgerEntryIds: ledgerEntryIds,
@@ -924,11 +958,29 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
       );
 
       if (mounted) {
+        // The charges just billed now show "On invoice".
+        ref.invalidate(liveInvoiceCoverageProvider(InvoiceParams(
+          tenantId: widget.tenant.id,
+          facilityId: widget.tenant.facilityId,
+        )));
+        // Say where it went and go there. The only word used to be a
+        // four-second "Invoice generated successfully" with no number and
+        // no link, and the invoice is not shown on the ledger or the
+        // tenant's page, so an owner asked where it had gone.
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Invoice generated successfully'),
+          SnackBar(
+            content: Text(
+              'Invoice ${invoice.invoiceNumber} saved as a draft. You can find '
+              'it later under Rent & payments › Invoices.',
+            ),
             backgroundColor: AppTheme.success,
+            duration: const Duration(seconds: 8),
           ),
+        );
+        // The same extra the Invoices tab passes: the page is built from it.
+        context.push(
+          AppRoute.invoiceDetail,
+          extra: {'invoice': invoice, 'facilityId': widget.tenant.facilityId},
         );
       }
     } catch (e) {
