@@ -22,6 +22,7 @@ import '../widgets/ledger_entry_card.dart';
 import 'package:sfcapp/widgets/tenant_prev_next.dart';
 import '../utils/error_message_helper.dart';
 import 'package:sfcapp/utils/past_history_math.dart';
+import 'package:sfcapp/utils/statement_lines.dart';
 import 'package:sfcapp/services/past_history_service.dart';
 import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/screens/tenant_past_history_dialog.dart';
@@ -174,11 +175,14 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
           if (_statusFilter != null) {
             filteredEntries = filteredEntries.where((e) => e.status == _statusFilter).toList();
           }
-          if (_startDate != null) {
-            filteredEntries = filteredEntries.where((e) => e.entryDate.isAfter(_startDate!) || e.entryDate.isAtSameMomentAs(_startDate!)).toList();
-          }
-          if (_endDate != null) {
-            filteredEntries = filteredEntries.where((e) => e.entryDate.isBefore(_endDate!) || e.entryDate.isAtSameMomentAs(_endDate!)).toList();
+          // The same period rule as the printed statement: the end day
+          // counts. This compared against the end date's midnight, so an
+          // entry on that day was hidden here but printed on the statement.
+          if (_startDate != null || _endDate != null) {
+            filteredEntries = filteredEntries
+                .where((e) => inStatementPeriod(e.entryDate,
+                    startDate: _startDate, endDate: _endDate))
+                .toList();
           }
 
           final unitLabel = tenantUnitLabel(
@@ -589,17 +593,25 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
   }
 
   void _showFiltersDialog(BuildContext context) {
+    // The dialog works on copies and the screen takes them on Apply. It
+    // wrote the screen's fields as each control changed, so a date picked
+    // and then Cancelled still applied at the next rebuild, and nothing in
+    // it could put a date back to None once one was set.
+    var type = _typeFilter;
+    var status = _statusFilter;
+    var start = _startDate;
+    var end = _endDate;
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Filter Ledger'),
         content: StatefulBuilder(
-          builder: (context, setState) {
+          builder: (context, setDialogState) {
             return Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 DropdownButtonFormField<LedgerEntryType?>(
-                  value: _typeFilter,
+                  value: type,
                   decoration: const InputDecoration(labelText: 'Type'),
                   items: [
                     const DropdownMenuItem(value: null, child: Text('All Types')),
@@ -608,11 +620,11 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                       child: Text(type.displayName),
                     )),
                   ],
-                  onChanged: (value) => setState(() => _typeFilter = value),
+                  onChanged: (value) => setDialogState(() => type = value),
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<LedgerEntryStatus?>(
-                  value: _statusFilter,
+                  value: status,
                   decoration: const InputDecoration(labelText: 'Status'),
                   items: [
                     const DropdownMenuItem(value: null, child: Text('All Statuses')),
@@ -621,41 +633,43 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                       child: Text(status.displayName),
                     )),
                   ],
-                  onChanged: (value) => setState(() => _statusFilter = value),
+                  onChanged: (value) => setDialogState(() => status = value),
                 ),
                 const SizedBox(height: 16),
                 ListTile(
                   title: const Text('Start Date'),
-                  subtitle: Text(_startDate != null ? DateFormat('MM/dd/yyyy').format(_startDate!) : 'None'),
+                  subtitle: Text(start != null ? DateFormat('MM/dd/yyyy').format(start!) : 'None'),
                   trailing: IconButton(
                     icon: const Icon(Icons.calendar_today),
+                    tooltip: 'Pick start date',
                     onPressed: () async {
                       final date = await showDatePicker(
                         context: context,
-                        initialDate: _startDate ?? DateTime.now(),
+                        initialDate: start ?? DateTime.now(),
                         firstDate: DateTime(2000),
                         lastDate: DateTime.now(),
                       );
                       if (date != null) {
-                        setState(() => _startDate = date);
+                        setDialogState(() => start = date);
                       }
                     },
                   ),
                 ),
                 ListTile(
                   title: const Text('End Date'),
-                  subtitle: Text(_endDate != null ? DateFormat('MM/dd/yyyy').format(_endDate!) : 'None'),
+                  subtitle: Text(end != null ? DateFormat('MM/dd/yyyy').format(end!) : 'None'),
                   trailing: IconButton(
                     icon: const Icon(Icons.calendar_today),
+                    tooltip: 'Pick end date',
                     onPressed: () async {
                       final date = await showDatePicker(
                         context: context,
-                        initialDate: _endDate ?? DateTime.now(),
+                        initialDate: end ?? DateTime.now(),
                         firstDate: DateTime(2000),
                         lastDate: DateTime.now(),
                       );
                       if (date != null) {
-                        setState(() => _endDate = date);
+                        setDialogState(() => end = date);
                       }
                     },
                   ),
@@ -672,7 +686,24 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
           TextButton(
             onPressed: () {
               Navigator.pop(context);
-              setState(() {});
+              setState(() {
+                _typeFilter = null;
+                _statusFilter = null;
+                _startDate = null;
+                _endDate = null;
+              });
+            },
+            child: const Text('Clear'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              setState(() {
+                _typeFilter = type;
+                _statusFilter = status;
+                _startDate = start;
+                _endDate = end;
+              });
             },
             child: const Text('Apply'),
           ),
