@@ -762,14 +762,16 @@ class InvoiceService {
   }
 
   /// Emails the invoice to its tenant, attaching its PDF first if it has
-  /// none, and only then marks it sent.
+  /// none, and only then marks it sent. Returns the invoice as it now stands,
+  /// so the page showing it can show that without another read (one that
+  /// failed after the email went would report a sent invoice as not sent).
   ///
   /// It used to mark the invoice sent first and email only when it had a PDF
   /// and the tenant an email address, and return normally otherwise. An
   /// invoice from the ledger's Generate Invoice has no PDF until "Attach PDF
   /// copy", so Send on one said "Invoice sent successfully" and marked it
   /// Sent with nothing emailed.
-  static Future<void> sendInvoice({
+  static Future<InvoiceModel> sendInvoice({
     required String facilityId,
     required String invoiceId,
   }) async {
@@ -800,6 +802,7 @@ class InvoiceService {
         throw Exception('Facility not found');
       }
 
+      var pdfUrl = invoice.pdfUrl;
       await deliverInvoice(
         invoice: invoice,
         tenant: tenant,
@@ -810,13 +813,14 @@ class InvoiceService {
             tenant: tenant,
             facility: facility,
           );
-          final pdfUrl = await uploadInvoicePDF(
+          final url = await uploadInvoicePDF(
             facilityId: facilityId,
             invoiceId: invoiceId,
             pdfData: pdfData,
           );
-          await invoiceRef.update({'pdfUrl': pdfUrl});
-          return pdfUrl;
+          await invoiceRef.update({'pdfUrl': url});
+          pdfUrl = url;
+          return url;
         },
         sendEmail: (email) => EmailService.sendEmail(
           to: email.to,
@@ -834,6 +838,12 @@ class InvoiceService {
       if (kDebugMode) {
         print('✅ [Invoice] Invoice sent: $invoiceId to ${tenant.email}');
       }
+
+      return invoice.copyWith(
+        status: InvoiceStatus.sent,
+        sentAt: DateTime.now(),
+        pdfUrl: pdfUrl,
+      );
     } catch (e) {
       if (kDebugMode) {
         print('❌ [Invoice] Error sending invoice: $e');

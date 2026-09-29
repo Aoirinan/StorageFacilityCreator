@@ -76,36 +76,38 @@ class InvoiceOperationsNotifier extends StateNotifier<AsyncValue<void>> {
     }
   }
 
-  Future<void> generateAndUploadPDF({
+  Future<InvoiceModel> generateAndUploadPDF({
     required InvoiceModel invoice,
     required String facilityId,
     required String invoiceId,
   }) async {
     state = const AsyncValue.loading();
     try {
-      await InvoiceService.generateAndUploadInvoicePDF(
+      final pdfUrl = await InvoiceService.generateAndUploadInvoicePDF(
         invoice: invoice,
         facilityId: facilityId,
         invoiceId: invoiceId,
       );
       state = const AsyncValue.data(null);
+      return invoice.copyWith(pdfUrl: pdfUrl);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
       rethrow;
     }
   }
 
-  Future<void> sendInvoice({
+  Future<InvoiceModel> sendInvoice({
     required String facilityId,
     required String invoiceId,
   }) async {
     state = const AsyncValue.loading();
     try {
-      await InvoiceService.sendInvoice(
+      final sent = await InvoiceService.sendInvoice(
         facilityId: facilityId,
         invoiceId: invoiceId,
       );
       state = const AsyncValue.data(null);
+      return sent;
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
       rethrow;

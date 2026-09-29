@@ -548,20 +548,23 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
 
     try {
       final operations = ref.read(invoiceOperationsProvider.notifier);
-      await operations.generateAndUploadPDF(
+      final withPdf = await operations.generateAndUploadPDF(
         invoice: _invoice,
         facilityId: widget.facilityId,
         invoiceId: _invoice.id,
       );
 
       if (mounted) {
+        // The page shows its own copy of the invoice, and only the list
+        // was refreshed: the Invoice PDF section never appeared and the
+        // button stayed, offering to attach a copy it already had.
+        setState(() => _invoice = withPdf);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('PDF generated successfully'),
             backgroundColor: AppTheme.success,
           ),
         );
-        // Refresh the invoice
         ref.invalidate(invoicesForFacilityProvider(widget.facilityId));
       }
     } catch (e) {
@@ -589,19 +592,23 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
 
     try {
       final operations = ref.read(invoiceOperationsProvider.notifier);
-      await operations.sendInvoice(
+      final sent = await operations.sendInvoice(
         facilityId: widget.facilityId,
         invoiceId: _invoice.id,
       );
 
       if (mounted) {
+        // Same as after attaching a PDF: the page went on saying Draft and
+        // offering "Send to tenant", so a second press, meant to be the
+        // first, emailed the tenant again. Now it says Sent, shows the PDF
+        // that went, and the button reads "Resend to tenant".
+        setState(() => _invoice = sent);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Invoice sent successfully'),
             backgroundColor: AppTheme.success,
           ),
         );
-        // Refresh the invoice
         ref.invalidate(invoicesForFacilityProvider(widget.facilityId));
       }
     } catch (e) {
