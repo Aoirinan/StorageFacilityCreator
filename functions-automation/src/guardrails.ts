@@ -82,13 +82,15 @@ export async function writeAuditLog(
     const targetId = entry.targetId || entry.entityId || 'unknown';
     const metadata = entry.metadata || entry.details || {};
 
-    let actorEmail: string | undefined;
-    let actorRole: string | undefined;
+    // A caller may name its actor (the scheduled rent job names itself as
+    // 'system'); for a real user the lookup below replaces it.
+    let actorEmail: string | undefined = entry.actorEmail;
+    let actorRole: string | undefined = entry.actorRole;
 
     if (actorUid !== 'system') {
       try {
         const userRecord = await admin.auth().getUser(actorUid);
-        actorEmail = userRecord.email;
+        actorEmail = userRecord.email ?? actorEmail;
 
         const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
 

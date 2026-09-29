@@ -47,7 +47,10 @@ import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
 import 'package:sfcapp/widgets/move_out_action.dart';
 import 'package:sfcapp/widgets/payment_history_summary.dart';
 import 'package:sfcapp/widgets/security_deposit_dialogs.dart';
+import 'package:sfcapp/utils/mailing_address_edit.dart' show currentMailingAddress, mailingAddressGap;
+import 'package:sfcapp/utils/print_documents.dart' show tenantPrintAddress;
 import 'package:sfcapp/widgets/tenant_contact_edit_dialog.dart';
+import 'package:sfcapp/widgets/tenant_mailing_address_dialog.dart';
 import 'package:sfcapp/widgets/tenant_prev_next.dart';
 import 'package:sfcapp/screens/tenant_past_history_dialog.dart';
 
@@ -767,6 +770,8 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
         facilityId: widget.tenant.facilityId,
         action: 'dnr.override',
         targetId: widget.tenant.id,
+        targetType: 'tenant',
+        tenantId: widget.tenant.id,
         details: {
           'tenantName': widget.tenant.name,
           'tenantEmail': widget.tenant.email,
@@ -845,6 +850,10 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
     // pressed; null until then, or when the facility has none.
     final defaultSecurityDeposit = SecurityDeposit.facilityDefault(
         ref.watch(facilityProvider(tenant.facilityId)).value?.billingSettings);
+    // The address the invoice and statement print, and what it is still
+    // missing (a workbook import usually leaves only the street).
+    final mailingAddress = currentMailingAddress(tenant.addresses);
+    final mailingGap = mailingAddress == null ? null : mailingAddressGap(mailingAddress);
 
     return SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
@@ -1102,6 +1111,22 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                       _buildInfoItem(context, icon: Icons.person_outlined, label: 'Name', value: _valueOrPlaceholder(tenant.name)),
                       _buildInfoItem(context, icon: Icons.email_outlined, label: 'Email', value: _valueOrPlaceholder(tenant.email)),
                       _buildInfoItem(context, icon: Icons.phone_outlined, label: 'Phone', value: _valueOrPlaceholder(tenant.phone)),
+                      // The address the invoice and statement print. Its own
+                      // pencil: Edit Contact Information does not carry it.
+                      // A street-only address says what it is missing under
+                      // the street, in the colour the SMS row uses for opted
+                      // out, so the owner can see which tenants to complete
+                      // before statements go out without opening each one.
+                      _buildInfoItem(
+                        context,
+                        icon: Icons.markunread_mailbox_outlined,
+                        label: 'Mailing Address',
+                        value: mailingAddress == null
+                            ? 'Not provided'
+                            : [tenantPrintAddress(tenant.addresses)!, if (mailingGap != null) mailingGap].join('\n'),
+                        valueColor: mailingGap != null ? AppTheme.error : null,
+                        onEdit: () => editTenantMailingAddress(context, ref, tenant),
+                      ),
                       _buildInfoItem(context, icon: Icons.home_work_outlined, label: 'Unit', value: _valueOrPlaceholder(unitLabel, fallback: 'No unit assigned')),
                       _buildInfoItem(context, icon: Icons.attach_money, label: 'Monthly Rate', value: _formatCurrency(tenant.monthlyRate)),
                       // Always shown, so the owner can see who cannot be

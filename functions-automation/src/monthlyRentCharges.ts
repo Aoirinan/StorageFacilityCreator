@@ -3,10 +3,16 @@
 // collection at a different depth — so everything it wrote was invisible to the
 // twelve other writers, to the autopay balance query, and to every ledger read
 // in the app. A late fee charged there would never be collected and never shown.
+import { randomUUID } from 'crypto';
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import { writeAuditLog } from './guardrails';
 import { isPaymentSafetyFeatureEnabled } from './paymentSafetyFlags';
+import {
+  RentChargeRun,
+  rentChargeGeneratedAudit,
+  rentChargeNeedsReviewAudit,
+} from './rentChargeAudit';
 import {
   buildReducedRentChargeDescription,
   buildRentChargeDescription,
@@ -103,6 +109,14 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
 
     const targetMonth = targetMonthRef.month; // 1-based, as stored in metadata
     const targetYear = targetMonthRef.year;
+    // Each call is its own run in the Generation History.
+    const run: RentChargeRun = {
+      runId: `manual_${randomUUID()}`,
+      source: 'manual',
+      actorUid: context.auth.uid,
+      year: targetYear,
+      month: targetMonth,
+    };
 
     for (const tenantDoc of activeTenants) {
       try {
@@ -203,9 +217,25 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
         // added to others) the rate less that unit's rent; see
         // planMonthlyRentCharge. A flagged tenant is left for the owner.
         const { plan } = decision;
+        const coveredBy = plan.covers.map((c) => ({
+          contractId: c.contractId,
+          monthlyShare: c.monthlyShare,
+          ledgerEntryIds: c.entryIds,
+        }));
         if (plan.action !== 'charge') {
           if (plan.action === 'review') {
             errors.push(`Tenant ${tenantData.name || tenantId}: not charged, check by hand. ${plan.reason}`);
+            if (!isDryRun) {
+              await writeAuditLog(
+                facilityId,
+                rentChargeNeedsReviewAudit(run, {
+                  tenantId,
+                  reason: plan.reason,
+                  monthlyRate,
+                  coveredAtMoveIn: coveredBy,
+                }),
+              );
+            }
           }
           skippedCount++;
           continue;
@@ -216,11 +246,7 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
           ? {
               monthlyRate,
               lessCoveredAtMoveIn: plan.lessCoveredAtMoveIn,
-              coveredAtMoveIn: plan.covers.map((c) => ({
-                contractId: c.contractId,
-                monthlyShare: c.monthlyShare,
-                ledgerEntryIds: c.entryIds,
-              })),
+              coveredAtMoveIn: coveredBy,
             }
           : {};
 
@@ -338,24 +364,16 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
           continue;
         }
 
-        // Audit log
-        await writeAuditLog(facilityId, {
-          eventType: 'recurringCharge.generated',
-          actorUid: context.auth.uid,
-          targetType: 'ledgerEntry',
-          targetId: ledgerEntryIdResolved,
-          tenantId,
-          after: {
+        await writeAuditLog(
+          facilityId,
+          rentChargeGeneratedAudit(run, {
+            ledgerEntryId: ledgerEntryIdResolved,
+            tenantId,
             amount,
-            chargeType: 'monthlyRent',
-            month: targetMonth,
-            year: targetYear,
-            ...coveredMetadata,
-          },
-          metadata: {
-            ...(chargeIdempotencyKey ? { idempotencyKey: chargeIdempotencyKey } : {}),
-          },
-        });
+            covered: coveredMetadata,
+            idempotencyKey: chargeIdempotencyKey,
+          }),
+        );
 
         successCount++;
       } catch (error: any) {

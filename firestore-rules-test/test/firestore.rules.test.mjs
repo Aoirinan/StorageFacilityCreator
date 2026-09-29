@@ -1247,6 +1247,68 @@ test('audit logs are immutable once written', async () => {
   await assertFails(logRef.delete());
 });
 
+test("audit logs: the old action/at rows are refused, AuditLogEntry.toFirestore's row is not", async () => {
+  // AuditService's DNR, ledger, move-in/out, invoice, autopay, contact-log,
+  // payment-method, transfer, document and lien writers used to add these
+  // rows directly and swallow the error, so none of those events ever landed.
+  await seedFacility();
+  const logs = (uid) =>
+    testEnv.authenticatedContext(uid).firestore().collection('facilities').doc(FACILITY_ID).collection('auditLogs');
+
+  // logDNRAction
+  await assertFails(
+    logs(OWNER_UID).add({
+      action: 'dnr.create',
+      actorUid: OWNER_UID,
+      actorEmail: 'owner@example.com',
+      targetId: 'dnr-1',
+      details: { name: 'Someone' },
+      at: serverTimestamp(),
+    }),
+  );
+  // logLedgerEntryCreated and the rest: entityType/entityId/tenantId, still no
+  // facilityId, userId, userEmail, timestamp, changes or metadata.
+  await assertFails(
+    logs(OWNER_UID).add({
+      action: 'ledger.entry.created',
+      actorUid: OWNER_UID,
+      actorEmail: 'owner@example.com',
+      targetId: 'entry-1',
+      entityType: 'ledgerEntry',
+      entityId: 'entry-1',
+      tenantId: TENANT_ID,
+      details: { type: 'charge', amount: 40 },
+      at: serverTimestamp(),
+    }),
+  );
+
+  // What AuditService.logEvent writes (AuditLogEntry.toFirestore), for an owner
+  // and for an employee.
+  const entry = (uid, email, role) => ({
+    eventType: 'ledger.entry.created',
+    actorUid: uid,
+    actorEmail: email,
+    actorRole: role,
+    targetType: 'ledgerEntry',
+    targetId: 'entry-1',
+    facilityId: FACILITY_ID,
+    tenantId: TENANT_ID,
+    after: { type: 'charge', amount: 40 },
+    timestamp: new Date(),
+    metadata: { description: 'Rent', actorRole: role },
+    action: 'ledger.entry.created',
+    entityType: 'ledgerEntry',
+    entityId: 'entry-1',
+    userId: uid,
+    userEmail: email,
+    changes: { after: { type: 'charge', amount: 40 } },
+  });
+  await assertSucceeds(logs(OWNER_UID).add(entry(OWNER_UID, 'owner@example.com', 'owner')));
+  await assertSucceeds(logs(STAFF_UID).add(entry(STAFF_UID, 'staff@example.com', 'employee')));
+  // Nobody signs a row as somebody else.
+  await assertFails(logs(STAFF_UID).add(entry(OWNER_UID, 'owner@example.com', 'owner')));
+});
+
 test('email usage counters cannot be reset or deleted by the facility', async () => {
   // The outbound path increments emailMonthlyCount in a transaction and refuses
   // to send past the limit. A client able to rewrite or delete the month
