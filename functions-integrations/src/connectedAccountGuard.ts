@@ -122,7 +122,11 @@ export async function eventAccountMatchesFacility(params: {
     eventId: params.eventId,
     tenantId: params.tenantId,
     amount: params.amount,
-    record: params.record,
+    // No facility (deleted, or an id that never existed): there is no ledger
+    // to post a genuine one to, and a row here named a deleted facility's
+    // tenant after the delete had removed every other record of them.
+    // Logged and sent to Sentry all the same.
+    record: facilitySnap.exists ? params.record : false,
   });
   return false;
 }

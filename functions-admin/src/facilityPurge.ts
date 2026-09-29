@@ -128,6 +128,9 @@ export const FACILITY_KEYED_COLLECTIONS = [
   // carry the facility's tenant ids and amounts, like the links.
   PUBLIC_PAYMENT_LINK_EXCEPTIONS_COLLECTION,
   STRIPE_WEBHOOK_REFUSALS_COLLECTION,
+  // The webhook's processed-event marks name the facility and tenant too.
+  // Platform purge already wipes them; a facility or account delete left them.
+  'stripeWebhookEvents',
 ] as const;
 
 /** Deletes every row of [FACILITY_KEYED_COLLECTIONS] whose facilityId is [facilityId]. */

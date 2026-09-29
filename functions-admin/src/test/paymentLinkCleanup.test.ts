@@ -43,11 +43,12 @@ test('platform purge deletes payment links, their exception records and Stripe r
   assert.ok(purged.includes(STRIPE_WEBHOOK_REFUSALS_COLLECTION));
 });
 
-test('deleting one facility deletes its link exceptions and Stripe refusals too', () => {
+test('deleting one facility deletes its link exceptions, Stripe refusals and processed-event marks too', () => {
   const keyed: readonly string[] = FACILITY_KEYED_COLLECTIONS;
-  // Both carry facilityId, tenant ids and amounts, outside the facility's subtree.
+  // Each carries facilityId and tenant ids, outside the facility's subtree.
   assert.ok(keyed.includes(PUBLIC_PAYMENT_LINK_EXCEPTIONS_COLLECTION));
   assert.ok(keyed.includes(STRIPE_WEBHOOK_REFUSALS_COLLECTION));
+  assert.ok(keyed.includes('stripeWebhookEvents'));
 });
 
 test('a rotated payment link keeps the link but not the old token\'s checkout session', () => {

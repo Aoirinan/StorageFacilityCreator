@@ -136,6 +136,10 @@ async function seedFacility(): Promise<void> {
       .collection('stripeWebhookRefusals')
       .doc(`acct_x__pi-${suffix}`)
       .set({ facilityId, tenantId: 't1', amount: 50, reason: 'unknown_account' });
+    await db
+      .collection('stripeWebhookEvents')
+      .doc(`evt_${suffix}`)
+      .set({ eventType: 'payment_intent.succeeded', account: 'acct_x', facilityId, tenantId: 't1' });
   }
 }
 
@@ -152,6 +156,7 @@ const SEEDED_KEYED_COLLECTIONS = [
   'customDomainClaims',
   'publicPaymentLinkExceptions',
   'stripeWebhookRefusals',
+  'stripeWebhookEvents',
 ];
 
 /** The keyed rows left, as 'collection/id'. */
@@ -168,6 +173,7 @@ const THEIR_KEYED_ROWS = [
   'publicPaymentLinkExceptions/cs-theirs',
   'publicPaymentLinks/token-theirs',
   'publicReservations/res-theirs',
+  'stripeWebhookEvents/evt_theirs',
   'stripeWebhookRefusals/acct_x__pi-theirs',
   'user_roles/role-theirs',
 
@@ -180,6 +186,7 @@ const ALL_KEYED_ROWS = [
   'publicPaymentLinkExceptions/cs-mine',
   'publicPaymentLinks/token-mine',
   'publicReservations/res-mine',
+  'stripeWebhookEvents/evt_mine',
   'stripeWebhookRefusals/acct_x__pi-mine',
   'user_roles/role-mine',
 

@@ -333,3 +333,23 @@ test('a tenant checkout completing on the facility\'s account is not logged as a
     ),
   );
 });
+
+test('an event for a facility that no longer exists is refused without leaving a record of its tenant', async () => {
+  const { fake, stripe } = setup();
+  stripe.put(ACCOUNT, 'pi_gone', {
+    ...portalPaymentIntent('pi_gone'),
+    metadata: { facilityId: 'f_deleted', tenantId: 't9', type: 'tenant_portal_payment' },
+  });
+
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge('ch_gone', 'pi_gone'), ACCOUNT));
+  await dispatchStripeWebhookEvent(event('payment_intent.succeeded', {
+    ...portalPaymentIntent('pi_gone'),
+    metadata: { facilityId: 'f_deleted', tenantId: 't9', type: 'tenant_portal_payment' },
+  } as Stripe.PaymentIntent, ACCOUNT));
+
+  // Before: a stripeWebhookRefusals row naming the deleted facility's
+  // tenant, which no delete would ever remove. There is no ledger to post a
+  // genuine one to; the log and Sentry still carry it.
+  assert.deepEqual(fake.list(STRIPE_WEBHOOK_REFUSALS_COLLECTION), []);
+  assert.deepEqual(writesOutsideRefusals(fake), []);
+});
