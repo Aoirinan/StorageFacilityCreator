@@ -273,4 +273,19 @@ void main() {
       expect(defaultDepositSplit(_held(), 12.345), (applied: 12.35, refunded: 12.65));
     });
   });
+
+  test('Unassign Tenant sends the owner to settle only when it was their last unit', () {
+    // No figures sit above this line in the Unassign Tenant dialog, and a
+    // tenant who keeps other units keeps the deposit held.
+    expect(unassignDepositNote(_held(), holdsOtherUnits: false),
+        "Security deposit held: \$25.00. Unassigning leaves it held; settle it on the tenant's page.");
+    expect(unassignDepositNote(_held(), holdsOtherUnits: true),
+        'Security deposit held: \$25.00. It stays held while they rent their other units.');
+    // Their other units could not be read.
+    expect(unassignDepositNote(_held(), holdsOtherUnits: null),
+        "Security deposit held: \$25.00. Settle it on the tenant's page when they move out.");
+    for (final other in [true, false, null]) {
+      expect(unassignDepositNote(_held(), holdsOtherUnits: other), isNot(contains('above')));
+    }
+  });
 }

@@ -22,8 +22,9 @@ void main() {
 
   test('the default security deposit is its own field path, and blank clears it', () {
     // Edit Facility's "Default security deposit ($)": a number saves under
-    // the key the online move-in quote already falls back to; a blank field
-    // deletes it, so the other billing keys are untouched either way.
+    // billingSettings.securityDeposit (a prefill; see
+    // SecurityDeposit.facilityDefault); a blank field deletes it, so the
+    // other billing keys are untouched either way.
     expect(
       FacilityService.billingSettingsFieldUpdates({'securityDeposit': 25.0}),
       {'billingSettings.securityDeposit': 25.0},

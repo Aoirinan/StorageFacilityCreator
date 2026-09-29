@@ -27,6 +27,10 @@ class FakeFacilityFirestore extends Fake implements FirebaseFirestore {
   /// Transactions that committed.
   var commits = 0;
 
+  /// Behave like Flutter web: an error thrown inside a transaction handler
+  /// comes back as an opaque error, its type and message lost.
+  var boxHandlerErrors = false;
+
   FakeCollection sub(String name) => subcollections.putIfAbsent(
       name, () => FakeCollection(<FakeDoc>[], log: FakeQueryLog(), firestore: this));
 
@@ -51,7 +55,15 @@ class FakeFacilityFirestore extends Fake implements FirebaseFirestore {
     int maxAttempts = 5,
   }) async {
     final txn = _FakeTransaction();
-    final result = await transactionHandler(txn);
+    final T result;
+    try {
+      result = await transactionHandler(txn);
+    } catch (e) {
+      if (!boxHandlerErrors) rethrow;
+      throw Exception('Dart exception thrown from converted Future. Use the '
+          "properties 'error' to fetch the boxed error and 'stack' to "
+          'recover the stack trace.');
+    }
     for (final (op, ref, fields) in txn.writes) {
       if (op == 'set') {
         await ref.set(fields);

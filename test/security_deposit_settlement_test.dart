@@ -237,7 +237,6 @@ void main() {
         throwsA(isA<SecurityDepositException>()),
       );
 
-      expect(db.commits, 0);
       expect(db.sub('ledgers').stored, isEmpty);
       expect(db.sub('tenants').log.writes, isEmpty);
       expect(logged, isEmpty);
@@ -256,8 +255,8 @@ void main() {
         throwsA(isA<SecurityDepositException>()),
       );
 
-      expect(db.commits, 0);
       expect(db.sub('ledgers').stored, isEmpty);
+      expect(db.sub('tenants').log.writes, isEmpty);
       expect(storedDeposit()['status'], 'held');
       expect(logged, isEmpty);
     });
@@ -282,6 +281,7 @@ void main() {
       final saved = await SecurityDepositService.record(
         facilityId: 'f1',
         tenantId: 't1',
+        expected: null,
         amount: 25,
         receivedDate: DateTime(2026, 9, 1, 16, 45),
         method: PaymentMethod.check,
@@ -310,6 +310,7 @@ void main() {
       await SecurityDepositService.record(
         facilityId: 'f1',
         tenantId: 't1',
+        expected: null,
         amount: 25,
         method: PaymentMethod.cash,
       );
@@ -324,6 +325,8 @@ void main() {
       await SecurityDepositService.record(
         facilityId: 'f1',
         tenantId: 't1',
+        // What the tenant page read from the doc, as the dialog gets it.
+        expected: SecurityDeposit.fromMap(storedDeposit()),
         amount: 50,
         receivedDate: DateTime(2026, 9, 2),
         method: PaymentMethod.cash,
@@ -349,6 +352,8 @@ void main() {
       final saved = await SecurityDepositService.record(
         facilityId: 'f1',
         tenantId: 't1',
+        // The dialog opened on the settled deposit ("New security deposit").
+        expected: _settled(),
         amount: 30,
         receivedDate: DateTime(2027, 1, 15),
         method: PaymentMethod.cash,
@@ -384,16 +389,17 @@ void main() {
     });
 
     test('a second settled deposit goes after the first in history', () async {
+      final second = _settled().copyWith(
+          amount: 40, appliedAmount: 40, appliedLedgerEntryId: 'ledger-2');
       seed({
-        ..._tenantDoc(
-            deposit: _settled().copyWith(
-                amount: 40, appliedAmount: 40, appliedLedgerEntryId: 'ledger-2')),
+        ..._tenantDoc(deposit: second),
         'securityDepositHistory': [_settled().toMap()],
       });
 
       await SecurityDepositService.record(
         facilityId: 'f1',
         tenantId: 't1',
+        expected: second,
         amount: 30,
         method: PaymentMethod.cash,
       );
@@ -414,6 +420,7 @@ void main() {
       await SecurityDepositService.record(
         facilityId: 'f1',
         tenantId: 't1',
+        expected: _held(),
         amount: 50,
         method: PaymentMethod.cash,
       );
@@ -431,6 +438,7 @@ void main() {
         SecurityDepositService.record(
           facilityId: 'f1',
           tenantId: 't1',
+          expected: null,
           amount: 0,
           method: PaymentMethod.cash,
         ),
@@ -442,7 +450,10 @@ void main() {
 
     test('remove takes a held deposit off the tenant; a settled one stays', () async {
       seed(_tenantDoc(deposit: _held()));
-      expect(await SecurityDepositService.remove(facilityId: 'f1', tenantId: 't1'), isTrue);
+      expect(
+          await SecurityDepositService.remove(
+              facilityId: 'f1', tenantId: 't1', expected: SecurityDeposit.fromMap(storedDeposit())),
+          isTrue);
       expect(db.data('tenants', 't1')!['securityDeposit'], FieldValue.delete());
       expect(logged.map((e) => e.eventType), ['tenant.securityDeposit.removed']);
       expect(logged.single.before!['amount'], 25.0);
@@ -451,15 +462,171 @@ void main() {
       // to history; Remove never does.
       seed(_tenantDoc(deposit: _settled()));
       await expectLater(
-        SecurityDepositService.remove(facilityId: 'f1', tenantId: 't1'),
-        throwsA(isA<SecurityDepositException>()),
+        SecurityDepositService.remove(facilityId: 'f1', tenantId: 't1', expected: _settled()),
+        throwsA(isA<SecurityDepositException>()
+            .having((e) => e.message, 'message', contains('cannot be removed'))),
       );
       expect(storedDeposit()['status'], 'settled');
       expect(db.sub('tenants').log.writes, isEmpty);
 
       seed(_tenantDoc());
-      expect(await SecurityDepositService.remove(facilityId: 'f1', tenantId: 't1'), isFalse);
+      expect(await SecurityDepositService.remove(facilityId: 'f1', tenantId: 't1', expected: null), isFalse);
       expect(db.sub('tenants').log.writes, isEmpty);
+    });
+
+    group('a dialog left open while the deposit changed', () {
+      final stale = throwsA(isA<SecurityDepositException>().having(
+          (e) => e.message, 'message', SecurityDepositService.changedSinceOpened));
+
+      test('Save is refused when the held deposit it opened on was settled since', () async {
+        // The pencil was opened on the held deposit; it was settled on
+        // another screen before Save. Saving must not file the settled one
+        // and start a new held deposit, which could be settled again for a
+        // second credit.
+        seed(_tenantDoc(deposit: _settled()));
+
+        await expectLater(
+          SecurityDepositService.record(
+            facilityId: 'f1',
+            tenantId: 't1',
+            expected: _held(),
+            amount: 30,
+            method: PaymentMethod.cash,
+          ),
+          stale,
+        );
+
+        expect(db.sub('tenants').log.writes, isEmpty);
+        expect(storedDeposit()['status'], 'settled');
+        expect(db.data('tenants', 't1')!.containsKey('securityDepositHistory'), isFalse);
+        expect(logged, isEmpty);
+      });
+
+      test('Save is refused when a deposit was recorded since it opened on none', () async {
+        seed(_tenantDoc(deposit: _held()));
+        await expectLater(
+          SecurityDepositService.record(
+            facilityId: 'f1',
+            tenantId: 't1',
+            expected: null,
+            amount: 30,
+            method: PaymentMethod.cash,
+          ),
+          stale,
+        );
+        expect(db.sub('tenants').log.writes, isEmpty);
+        expect(storedDeposit()['amount'], 25.0);
+      });
+
+      test('Save is refused when the held deposit was corrected since', () async {
+        seed(_tenantDoc(
+            deposit: _held().copyWith(amount: 50, updatedAt: DateTime.utc(2026, 9, 2, 15))));
+        await expectLater(
+          SecurityDepositService.record(
+            facilityId: 'f1',
+            tenantId: 't1',
+            expected: _held(),
+            amount: 30,
+            method: PaymentMethod.cash,
+          ),
+          stale,
+        );
+        expect(db.sub('tenants').log.writes, isEmpty);
+        expect(storedDeposit()['amount'], 50.0);
+      });
+
+      test('Save is refused when a new deposit replaced the settled one it opened on', () async {
+        // Two people pressed "New security deposit" on the same settled
+        // deposit; the first one saved.
+        final newer = _held().copyWith(
+            amount: 30,
+            recordedAt: DateTime.utc(2027, 1, 15, 15),
+            updatedAt: DateTime.utc(2027, 1, 15, 15));
+        seed({
+          ..._tenantDoc(deposit: newer),
+          'securityDepositHistory': [_settled().toMap()],
+        });
+        await expectLater(
+          SecurityDepositService.record(
+            facilityId: 'f1',
+            tenantId: 't1',
+            expected: _settled(),
+            amount: 35,
+            method: PaymentMethod.cash,
+          ),
+          stale,
+        );
+        expect(db.sub('tenants').log.writes, isEmpty);
+        expect(SecurityDeposit.historyFromStored(
+            db.data('tenants', 't1')!['securityDepositHistory']), hasLength(1));
+      });
+
+      test('Remove is refused when the held deposit was settled or removed since', () async {
+        seed(_tenantDoc(deposit: _settled()));
+        await expectLater(
+          SecurityDepositService.remove(facilityId: 'f1', tenantId: 't1', expected: _held()),
+          stale,
+        );
+        expect(db.sub('tenants').log.writes, isEmpty);
+        expect(storedDeposit()['status'], 'settled');
+
+        seed(_tenantDoc());
+        await expectLater(
+          SecurityDepositService.remove(facilityId: 'f1', tenantId: 't1', expected: _held()),
+          stale,
+        );
+        expect(db.sub('tenants').log.writes, isEmpty);
+        expect(logged, isEmpty);
+      });
+    });
+
+    test('refusals keep their message when the transaction boxes errors, as on web', () async {
+      // On Flutter web an error thrown inside a transaction handler comes
+      // back opaque; the owner must still read why nothing was saved.
+      seed(_tenantDoc(deposit: _settled()));
+      db.boxHandlerErrors = true;
+
+      await expectLater(
+        SecurityDepositService.record(
+          facilityId: 'f1',
+          tenantId: 't1',
+          expected: _held(),
+          amount: 30,
+          method: PaymentMethod.cash,
+        ),
+        throwsA(isA<SecurityDepositException>().having(
+            (e) => e.message, 'message', SecurityDepositService.changedSinceOpened)),
+      );
+      await expectLater(
+        SecurityDepositService.remove(facilityId: 'f1', tenantId: 't1', expected: _settled()),
+        throwsA(isA<SecurityDepositException>()
+            .having((e) => e.message, 'message', 'A settled security deposit cannot be removed.')),
+      );
+      await expectLater(
+        SecurityDepositService.settle(
+          facilityId: 'f1',
+          tenantId: 't1',
+          appliedAmount: 25,
+          refundedAmount: 0,
+        ),
+        throwsA(isA<SecurityDepositException>()
+            .having((e) => e.message, 'message', 'This security deposit has already been settled.')),
+      );
+
+      seed(_tenantDoc(deposit: _held()));
+      db.boxHandlerErrors = true;
+      await expectLater(
+        SecurityDepositService.settle(
+          facilityId: 'f1',
+          tenantId: 't1',
+          appliedAmount: 10,
+          refundedAmount: 10,
+        ),
+        throwsA(isA<SecurityDepositException>()
+            .having((e) => e.message, 'message', contains('must add up to the deposit'))),
+      );
+      expect(db.sub('tenants').log.writes, isEmpty);
+      expect(db.sub('ledgers').stored, isEmpty);
     });
   });
 }

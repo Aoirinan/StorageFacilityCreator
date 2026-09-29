@@ -1099,8 +1099,11 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                   ),
                   const SizedBox(height: 16),
 
-                  // Default security deposit. Only a prefill: nothing is
-                  // charged from it, online or at move-in.
+                  // Default security deposit: prefills the deposit on Create
+                  // Tenant and in the tenant page's Security deposit dialog.
+                  // The online quote would charge it only with
+                  // settings/public.chargeSecurityDepositAtMoveIn on, which
+                  // no screen sets (see SecurityDeposit.facilityDefault).
                   TextFormField(
                     key: const Key('facility-default-security-deposit'),
                     controller: _securityDepositController,
@@ -1109,9 +1112,8 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                       hintText: '25.00',
                       border: OutlineInputBorder(),
                       prefixIcon: Icon(Icons.savings_outlined),
-                      helperText: 'Prefilled when you record a deposit on a '
-                          'tenant. Held for the tenant, off the ledger; '
-                          'leave blank if you take none.',
+                      helperText: 'Prefills the deposit when you record one '
+                          'on a tenant. It is not charged to online renters.',
                     ),
                     keyboardType:
                         const TextInputType.numberWithOptions(decimal: true),

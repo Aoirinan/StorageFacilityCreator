@@ -159,17 +159,14 @@ class SecurityDepositService {
     return user;
   }
 
-  /// The tenant doc read in [txn]. Throws when the tenant is gone.
-  static Future<Map<String, dynamic>> _tenantData(
+  /// The tenant doc read in [txn], or null when the tenant is gone.
+  static Future<Map<String, dynamic>?> _tenantData(
     Transaction txn,
     DocumentReference<Map<String, dynamic>> tenantRef,
   ) async {
     final snap = await txn.get(tenantRef);
     final data = snap.data();
-    if (!snap.exists || data == null) {
-      throw SecurityDepositException('This tenant no longer exists.');
-    }
-    return data;
+    return snap.exists ? data : null;
   }
 
   /// The deposit in a tenant doc's [data], or null when none is on file.
@@ -180,13 +177,14 @@ class SecurityDepositService {
         : null;
   }
 
-  /// The deposit on the tenant doc read in [txn], or null when none is on
-  /// file. Throws when the tenant is gone.
-  static Future<SecurityDeposit?> _current(
-    Transaction txn,
-    DocumentReference<Map<String, dynamic>> tenantRef,
-  ) async =>
-      _depositIn(await _tenantData(txn, tenantRef));
+  /// Whether [stored] is still the deposit the dialog opened with
+  /// ([expected]): both none, or the same deposit in the same state. Any
+  /// save, correction, settlement or removal since changes the status or a
+  /// timestamp, so the whole map is compared.
+  static bool _unchanged(SecurityDeposit? stored, SecurityDeposit? expected) {
+    if (stored == null || expected == null) return stored == expected;
+    return mapEquals(stored.toMap(), expected.toMap());
+  }
 
   /// The tenant doc's `securityDepositHistory` as stored, oldest first, or
   /// empty when missing. Kept as written rather than run through the model,
@@ -197,15 +195,36 @@ class SecurityDepositService {
             if (entry is Map) Map<String, dynamic>.from(entry),
       ];
 
+  static const _tenantGone = 'This tenant no longer exists.';
+
+  /// Why a save or Remove from a dialog that went stale is refused.
+  @visibleForTesting
+  static const changedSinceOpened =
+      'This deposit changed since you opened it. Close and reopen the '
+      'tenant page.';
+
+  // Each transaction below returns why it wrote nothing (null when it
+  // wrote) instead of throwing, and the refusal is thrown once the
+  // transaction is back. On web a Dart error thrown inside a transaction
+  // handler comes back as an opaque JS error, so the owner would read a
+  // generic failure instead of why (see PaymentService.markPaymentAsPaid).
+
   /// Records a deposit the facility holds, corrects the held one on file,
   /// or starts a new one over a settled one. A settled deposit is not a
   /// dead end: a tenant who moves out and comes back, or who pays a fresh
   /// deposit, gets a new held deposit, and the settled one is kept on the
   /// tenant's `securityDepositHistory` (its applied part stays on the
   /// ledger either way).
+  ///
+  /// [expected] is the deposit the dialog opened with (null when none was
+  /// on file). The save is refused when the stored one is no longer it: a
+  /// dialog left open on a held deposit that was then settled elsewhere
+  /// would otherwise file the settled one and write a new held deposit,
+  /// which could be settled again for a second credit.
   static Future<SecurityDeposit> record({
     required String facilityId,
     required String tenantId,
+    required SecurityDeposit? expected,
     required double amount,
     DateTime? receivedDate,
     required PaymentMethod method,
@@ -221,9 +240,11 @@ class SecurityDepositService {
 
     SecurityDeposit? before;
     late SecurityDeposit after;
-    await _firestore.runTransaction<void>((txn) async {
+    final refusal = await _firestore.runTransaction<String?>((txn) async {
       final data = await _tenantData(txn, tenantRef);
+      if (data == null) return _tenantGone;
       before = _depositIn(data);
+      if (!_unchanged(before, expected)) return changedSinceOpened;
       // Only a held deposit is being corrected; a settled one is done with,
       // so the new deposit gets its own recorded-at and recorded-by.
       final held = before?.isHeld == true ? before : null;
@@ -250,7 +271,9 @@ class SecurityDepositService {
           ],
         'updatedAt': FieldValue.serverTimestamp(),
       });
+      return null;
     });
+    if (refusal != null) throw SecurityDepositException(refusal);
 
     await AuditService.logEvent(
       facilityId: facilityId,
@@ -275,26 +298,35 @@ class SecurityDepositService {
   /// Takes a mistaken deposit off the tenant. Only while held: a settled
   /// deposit is history (its applied part is on the ledger) and stays.
   /// Returns false when there was nothing on file.
+  ///
+  /// [expected] is the deposit the dialog opened with; the removal is
+  /// refused when the stored one is no longer it (settled, corrected or
+  /// replaced since), as in [record].
   static Future<bool> remove({
     required String facilityId,
     required String tenantId,
+    required SecurityDeposit? expected,
   }) async {
     _signedInUser();
     final tenantRef = _tenantRef(facilityId, tenantId);
 
     SecurityDeposit? before;
-    await _firestore.runTransaction<void>((txn) async {
-      before = await _current(txn, tenantRef);
-      if (before == null) return;
+    final refusal = await _firestore.runTransaction<String?>((txn) async {
+      final data = await _tenantData(txn, tenantRef);
+      if (data == null) return _tenantGone;
+      before = _depositIn(data);
+      if (!_unchanged(before, expected)) return changedSinceOpened;
+      if (before == null) return null;
       if (!before!.isHeld) {
-        throw SecurityDepositException(
-            'A settled security deposit cannot be removed.');
+        return 'A settled security deposit cannot be removed.';
       }
       txn.update(tenantRef, {
         'securityDeposit': FieldValue.delete(),
         'updatedAt': FieldValue.serverTimestamp(),
       });
+      return null;
     });
+    if (refusal != null) throw SecurityDepositException(refusal);
     if (before == null) return false;
 
     await AuditService.logEvent(
@@ -329,31 +361,37 @@ class SecurityDepositService {
 
     late SecurityDeposit before;
     late DepositSettlementPlan plan;
-    await _firestore.runTransaction<void>((txn) async {
-      final current = await _current(txn, tenantRef);
-      if (current == null) {
-        throw SecurityDepositException('No security deposit is on file.');
-      }
+    final refusal = await _firestore.runTransaction<String?>((txn) async {
+      final data = await _tenantData(txn, tenantRef);
+      if (data == null) return _tenantGone;
+      final current = _depositIn(data);
+      if (current == null) return 'No security deposit is on file.';
       before = current;
-      plan = planDepositSettlement(
-        deposit: current,
-        appliedAmount: appliedAmount,
-        refundedAmount: refundedAmount,
-        refundMethod: refundMethod,
-        refundReference: refundReference,
-        tenantId: tenantId,
-        facilityId: facilityId,
-        uid: user.uid,
-        now: now,
-        ledgerEntryId: ledgerRef.id,
-      );
+      try {
+        plan = planDepositSettlement(
+          deposit: current,
+          appliedAmount: appliedAmount,
+          refundedAmount: refundedAmount,
+          refundMethod: refundMethod,
+          refundReference: refundReference,
+          tenantId: tenantId,
+          facilityId: facilityId,
+          uid: user.uid,
+          now: now,
+          ledgerEntryId: ledgerRef.id,
+        );
+      } on SecurityDepositException catch (e) {
+        return e.message;
+      }
       final ledgerEntry = plan.ledgerEntry;
       if (ledgerEntry != null) txn.set(ledgerRef, ledgerEntry);
       txn.update(tenantRef, {
         'securityDeposit': plan.deposit,
         'updatedAt': FieldValue.serverTimestamp(),
       });
+      return null;
     });
+    if (refusal != null) throw SecurityDepositException(refusal);
 
     final after = SecurityDeposit.fromMap(plan.deposit);
     await AuditService.logEvent(

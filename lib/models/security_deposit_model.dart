@@ -78,9 +78,16 @@ class SecurityDeposit {
   static DateTime noonUtc(DateTime day) =>
       DateTime.utc(day.year, day.month, day.day, 12);
 
-  /// The facility's usual deposit, `billingSettings.securityDeposit` (the
-  /// key the online move-in quote already falls back to), for prefilling
-  /// the dialogs. Null when unset, blank or not above $0.
+  /// The facility's usual deposit, `billingSettings.securityDeposit`, for
+  /// prefilling Create Tenant and the Security deposit dialog. Null when
+  /// unset, blank or not above $0.
+  ///
+  /// The online move-in quote (functions-public-website moveInCharges.ts)
+  /// reads this same key as its last fallback, but only when
+  /// settings/public.chargeSecurityDepositAtMoveIn is true. No screen can
+  /// switch that on (its Website Setup toggle was removed), so today online
+  /// renters are never charged it. Turning that flag back on would start
+  /// charging this amount online.
   static double? facilityDefault(Map<String, dynamic>? billingSettings) {
     final value = billingSettings?['securityDeposit'];
     if (value is num && value > 0) return toCents(value);

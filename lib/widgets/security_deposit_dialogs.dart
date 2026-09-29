@@ -249,7 +249,7 @@ class _SecurityDepositDialogState extends State<SecurityDepositDialog> {
                   maxLines: 2,
                   decoration: const InputDecoration(
                     labelText: 'Note',
-                    hintText: 'e.g. Covers Units 6 and 7',
+                    hintText: "e.g. Paid with the first month's rent",
                     counterText: '',
                     border: OutlineInputBorder(),
                   ),
@@ -504,6 +504,22 @@ class _SettleSecurityDepositDialogState
   }
 }
 
+/// The Unassign Tenant dialog's line about a held [deposit]. Unassign
+/// neither charges nor refunds, so the deposit stays held either way: the
+/// owner is sent to settle it only when this was the tenant's last unit
+/// ([holdsOtherUnits] false). Null means their other units could not be
+/// read, so it says when rather than now.
+String unassignDepositNote(SecurityDeposit deposit,
+    {required bool? holdsOtherUnits}) {
+  final held = 'Security deposit held: ${_money(deposit.amount)}.';
+  return switch (holdsOtherUnits) {
+    false => "$held Unassigning leaves it held; settle it on the tenant's "
+        'page.',
+    true => '$held It stays held while they rent their other units.',
+    null => "$held Settle it on the tenant's page when they move out.",
+  };
+}
+
 void _snack(BuildContext context, String message, {bool error = false}) {
   ScaffoldMessenger.of(context).showSnackBar(SnackBar(
     content: Text(message),
@@ -524,10 +540,14 @@ Future<void> editSecurityDeposit(
   TenantModel tenant, {
   double? defaultAmount,
 }) async {
+  // What the dialog opens on. The save and Remove are refused if the stored
+  // deposit is no longer this by then (settled or changed elsewhere while
+  // the dialog was open).
+  final opened = tenant.securityDeposit;
   final edit = await showDialog<SecurityDepositEdit>(
     context: context,
     builder: (_) => SecurityDepositDialog(
-      current: tenant.securityDeposit,
+      current: opened,
       defaultAmount: defaultAmount,
       defaultReceivedDate: tenant.moveInDate,
     ),
@@ -539,6 +559,7 @@ Future<void> editSecurityDeposit(
         final saved = await SecurityDepositService.record(
           facilityId: tenant.facilityId,
           tenantId: tenant.id,
+          expected: opened,
           amount: edit.amount,
           receivedDate: edit.receivedDate,
           method: edit.method,
@@ -551,6 +572,7 @@ Future<void> editSecurityDeposit(
         await SecurityDepositService.remove(
           facilityId: tenant.facilityId,
           tenantId: tenant.id,
+          expected: opened,
         );
         if (!context.mounted) return;
         _snack(context, 'Security deposit removed.');
