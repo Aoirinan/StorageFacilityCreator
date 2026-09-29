@@ -17,6 +17,13 @@ const _shortMonths = [
 
 String _count(int n, String one, String many) => n == 1 ? '1 $one' : '$n $many';
 
+/// The first ten of [names], then "and N more".
+String _firstTen(List<String> names) =>
+    names.take(10).join(', ') +
+    (names.length > 10 ? ', and ${names.length - 10} more' : '');
+
+String _nameOf(TenantModel t) => t.name.trim().isEmpty ? t.id : t.name.trim();
+
 /// `<Facility> statements <Mon YYYY>.pdf`: the period's month, or the month
 /// printed in for all history. Characters a file name cannot carry become
 /// spaces.
@@ -359,19 +366,29 @@ class _BulkStatementsDialogState extends State<_BulkStatementsDialog> {
     ];
   }
 
+  /// The units [group]'s records hold between them, each counted once: a
+  /// record can hold more than one.
+  int _unitCount(List<TenantModel> group) =>
+      {for (final t in group) ..._unitLabels(t)}.length;
+
   Widget _optionsBody() {
     final plan = _plan();
     final groups = sameCustomerGroups(widget.tenants);
     final people = groups.combinable.length;
-    final unitsInGroups = groups.combinable.fold(0, (n, g) => n + g.length);
+    final unitsInGroups =
+        groups.combinable.fold(0, (n, g) => n + _unitCount(g));
+    // Who Combine would put on one statement, so the owner can check them
+    // before building: a shared name and address is a guess, not proof.
+    final combinedNames = [
+      for (final g in groups.combinable)
+        '${_nameOf(g.first)} (${_count(_unitCount(g), 'unit', 'units')})',
+    ];
     final nothingOwed = _plan(skipZero: true).skippedNothingOwed.length;
     final noActivity = _plan(skipEmpty: true).skippedNoActivity.length;
     final thisYear = widget.today.year;
     final years = [for (var y = thisYear - 2; y <= thisYear + 1; y++) y];
     final noAddress = plan.noMailingAddress;
-    final shownNoAddress = noAddress
-        .take(10)
-        .map((t) => t.name.trim().isEmpty ? t.id : t.name.trim());
+    final incomplete = plan.incompleteMailingAddress;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -455,6 +472,12 @@ class _BulkStatementsDialogState extends State<_BulkStatementsDialog> {
           title: Text('Combine units for the same person '
               '(${_count(people, 'person', 'people')}, '
               '${_count(unitsInGroups, 'unit', 'units')})'),
+          subtitle: combinedNames.isEmpty
+              ? null
+              : Text(
+                  _firstTen(combinedNames),
+                  key: const Key('bulk-statements-combine-who'),
+                ),
         ),
         CheckboxListTile(
           key: const Key('bulk-statements-skip-nothing-owed'),
@@ -490,14 +513,22 @@ class _BulkStatementsDialogState extends State<_BulkStatementsDialog> {
             key: const Key('bulk-statements-no-address'),
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
-          Text(shownNoAddress.join(', ') +
-              (noAddress.length > 10 ? ', and ${noAddress.length - 10} more' : '')),
+          Text(_firstTen([for (final t in noAddress) _nameOf(t)])),
         ],
-        if (plan.notCombinedAddressesDiffer.isNotEmpty) ...[
+        if (incomplete.isNotEmpty) ...[
           const SizedBox(height: 8),
-          for (final g in plan.notCombinedAddressesDiffer)
-            Text('Printed separately: ${g.first.name.trim()} '
-                '(different addresses)'),
+          Text(
+            'Address missing city, state or ZIP: ${incomplete.length}',
+            key: const Key('bulk-statements-incomplete-address'),
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          Text(_firstTen([for (final t in incomplete) _nameOf(t)])),
+        ],
+        if (plan.notCombined.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          for (final g in plan.notCombined)
+            Text('Printed separately: ${_nameOf(g.tenants.first)} '
+                '(${g.reason})'),
         ],
         if (plan.statementCount == 0) ...[
           const SizedBox(height: 12),

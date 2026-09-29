@@ -1,5 +1,7 @@
 import 'package:sfcapp/models/ledger_entry_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/utils/mailing_address_edit.dart'
+    show currentMailingAddress, mailingAddressGap;
 import 'package:sfcapp/utils/print_documents.dart' show tenantPrintAddress;
 import 'package:sfcapp/utils/statement_lines.dart';
 
@@ -50,12 +52,42 @@ String? _addressKey(TenantModel tenant) => tenantPrintAddress(tenant.addresses)
     .replaceAll(RegExp(r'\s+'), ' ')
     .trim();
 
+/// A same-name group that prints as separate statements, and why.
+class NotCombinedGroup {
+  /// The records, in list order.
+  final List<TenantModel> tenants;
+
+  /// At least one record has no mailing address.
+  final bool addressMissing;
+
+  /// At least two records have mailing addresses that are not the same.
+  final bool addressesDiffer;
+
+  const NotCombinedGroup({
+    required this.tenants,
+    required this.addressMissing,
+    required this.addressesDiffer,
+  });
+
+  /// The reason, as the dialog's "Printed separately" note gives it.
+  String get reason => addressMissing && addressesDiffer
+      ? 'different and missing addresses'
+      : addressMissing
+          ? 'missing address'
+          : 'different addresses';
+}
+
 /// The same-name groups in [orderedTenants], each in list order.
-/// [combinable] groups agree on the mailing address wherever both records
-/// have one, so one statement can go to that address; [addressesDiffer]
-/// groups do not, and print apart, because nothing says which address is
-/// right. Records with a name of their own are in neither.
-({List<List<TenantModel>> combinable, List<List<TenantModel>> addressesDiffer})
+///
+/// A group is combinable only when every record in it has a mailing
+/// address ([tenantPrintAddress]) and they are all the same address, spacing
+/// and case aside: one statement to that address then reaches the person
+/// who holds every unit on it. Two different people can share a name, and
+/// a record with no address says nothing about who it belongs to, so a
+/// group with a missing address prints apart just as one with two
+/// different addresses does; both are in notCombined, with the reason.
+/// Records with a name of their own are in neither.
+({List<List<TenantModel>> combinable, List<NotCombinedGroup> notCombined})
     sameCustomerGroups(List<TenantModel> orderedTenants) {
   final byKey = <String, List<TenantModel>>{};
   for (final t in orderedTenants) {
@@ -64,16 +96,48 @@ String? _addressKey(TenantModel tenant) => tenantPrintAddress(tenant.addresses)
     (byKey[key] ??= []).add(t);
   }
   final combinable = <List<TenantModel>>[];
-  final addressesDiffer = <List<TenantModel>>[];
+  final notCombined = <NotCombinedGroup>[];
   for (final group in byKey.values) {
     if (group.length < 2) continue;
-    final addresses = {
-      for (final t in group)
-        if (_addressKey(t) case final a?) a,
-    };
-    (addresses.length <= 1 ? combinable : addressesDiffer).add(group);
+    final addresses = [for (final t in group) _addressKey(t)];
+    final missing = addresses.contains(null);
+    final differ = addresses.nonNulls.toSet().length > 1;
+    if (!missing && !differ) {
+      combinable.add(group);
+    } else {
+      notCombined.add(NotCombinedGroup(
+        tenants: group,
+        addressMissing: missing,
+        addressesDiffer: differ,
+      ));
+    }
   }
-  return (combinable: combinable, addressesDiffer: addressesDiffer);
+  return (combinable: combinable, notCombined: notCombined);
+}
+
+/// The unit a ledger entry names for itself, `metadata.unitNumber`, or null
+/// when it names none, as most entries do.
+String? _entryUnit(LedgerEntry entry) {
+  final unit = entry.metadata?['unitNumber'];
+  if (unit is! String) return null;
+  final trimmed = unit.trim();
+  return trimmed.isEmpty ? null : trimmed;
+}
+
+final RegExp _areaSuffix = RegExp(r' \([^()]*\)$');
+
+/// [labels] as one row prefix: "B-14", "B-14/B-15", or with an area every
+/// label shares named once, "B-14/B-15 (Building B)".
+String _joinUnitLabels(List<String> labels) {
+  if (labels.length < 2) return labels.firstOrNull ?? '';
+  final suffix = _areaSuffix.firstMatch(labels.first)?.group(0);
+  if (suffix == null || !labels.every((l) => l.endsWith(suffix))) {
+    return labels.join('/');
+  }
+  final numbers = [
+    for (final l in labels) l.substring(0, l.length - suffix.length),
+  ];
+  return '${numbers.join('/')}$suffix';
 }
 
 /// One statement to print: one tenant record, or a same-person group.
@@ -117,15 +181,23 @@ class BulkStatementPlan {
   /// owner knows which envelopes she will have to address by hand.
   final List<TenantModel> noMailingAddress;
 
-  /// Same-name groups printed apart because their addresses differ.
-  final List<List<TenantModel>> notCombinedAddressesDiffer;
+  /// One record per statement whose mailing address has a street but no
+  /// city, state or ZIP ([mailingAddressGap]), as a workbook import often
+  /// leaves it: the statement prints, but the envelope would not arrive.
+  /// None of these is in [noMailingAddress].
+  final List<TenantModel> incompleteMailingAddress;
+
+  /// Same-name groups printed apart, with the reason: their addresses
+  /// differ, or at least one has none ([sameCustomerGroups]).
+  final List<NotCombinedGroup> notCombined;
 
   const BulkStatementPlan({
     required this.jobs,
     required this.skippedNothingOwed,
     required this.skippedNoActivity,
     required this.noMailingAddress,
-    required this.notCombinedAddressesDiffer,
+    required this.incompleteMailingAddress,
+    required this.notCombined,
   });
 
   int get statementCount => jobs.length;
@@ -135,10 +207,10 @@ class BulkStatementPlan {
 /// the list shows them) from [entriesByTenant], each tenant's whole ledger
 /// by tenant id.
 ///
-/// With [combineSamePerson], records that share a name and agree on the
-/// mailing address ([sameCustomerGroups]) print as one statement: every
-/// unit on the unit line, the ledgers merged in date order with each row's
-/// description prefixed by its unit, and the balances summed. With
+/// With [combineSamePerson], records that share a name and all have the
+/// same mailing address ([sameCustomerGroups]) print as one statement:
+/// every unit on the unit line, the ledgers merged in date order with each
+/// row's description prefixed by its unit, and the balances summed. With
 /// [skipNoActivity], tenants with no posted ledger entry are left out; with
 /// [skipNothingOwed], those whose balance for [period] is zero or a credit.
 /// A group is skipped as a whole, by the same tests on its combined ledger.
@@ -169,6 +241,7 @@ BulkStatementPlan planBulkStatements(
   final skippedNothingOwed = <TenantModel>[];
   final skippedNoActivity = <TenantModel>[];
   final noMailingAddress = <TenantModel>[];
+  final incompleteMailingAddress = <TenantModel>[];
   final placed = <String>{};
 
   for (final tenant in orderedTenants) {
@@ -186,9 +259,13 @@ BulkStatementPlan planBulkStatements(
         continue;
       }
       // On a combined statement each row says which unit it belongs to,
-      // since the two ledgers are read as one.
-      final unit = labelsOf(m).firstOrNull ?? '';
+      // since the ledgers are read as one: the unit the entry names, else
+      // every unit its record holds. A record holding two units keeps one
+      // ledger for both, so naming only the first would pin the other
+      // unit's rows on it.
+      final recordUnits = _joinUnitLabels(labelsOf(m));
       for (final e in own) {
+        final unit = _entryUnit(e) ?? recordUnits;
         entries.add(unit.isEmpty
             ? e
             : e.copyWith(
@@ -218,8 +295,12 @@ BulkStatementPlan planBulkStatements(
         if (!labels.contains(l)) labels.add(l);
       }
     }
-    if (tenantPrintAddress(holder.addresses) == null) {
+    // The entry tenantPrintAddress prints.
+    final printed = currentMailingAddress(holder.addresses);
+    if (printed == null) {
       noMailingAddress.add(holder);
+    } else if (mailingAddressGap(printed) != null) {
+      incompleteMailingAddress.add(holder);
     }
     jobs.add(BulkStatementJob(
       tenants: members,
@@ -234,7 +315,8 @@ BulkStatementPlan planBulkStatements(
     skippedNothingOwed: skippedNothingOwed,
     skippedNoActivity: skippedNoActivity,
     noMailingAddress: noMailingAddress,
-    notCombinedAddressesDiffer: groups.addressesDiffer,
+    incompleteMailingAddress: incompleteMailingAddress,
+    notCombined: groups.notCombined,
   );
 }
 

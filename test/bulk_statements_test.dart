@@ -16,22 +16,27 @@ final _facility = FacilityModel(
   name: 'Oak Storage',
   ownerUid: 'owner',
   createdAt: DateTime(2026, 1, 1),
-  address: '1 Example Rd\nAnytown, ND 79401',
+  address: '1 Example Rd\nAnytown, ND 58999',
   phone: '(555) 123-4567',
 );
 
-Address _address(String street, {String city = 'Anytown'}) => Address(
+Address _address(String street,
+        {String city = 'Anytown', String state = 'ND', String zip = '58999'}) =>
+    Address(
       id: 'a-$street',
       type: AddressType.mailing,
       street1: street,
       city: city,
-      state: 'ND',
-      zipCode: '79401',
+      state: state,
+      zipCode: zip,
       isPrimary: true,
       createdAt: DateTime(2026, 1, 1),
     );
 
-TenantModel _tenant(String id, String name, String unit, {String? street}) =>
+/// [streetOnly]: the street and nothing else, as a workbook import leaves
+/// an address.
+TenantModel _tenant(String id, String name, String unit,
+        {String? street, bool streetOnly = false}) =>
     TenantModel(
       id: id,
       facilityId: 'f1',
@@ -41,7 +46,12 @@ TenantModel _tenant(String id, String name, String unit, {String? street}) =>
       unitNumber: unit,
       monthlyRate: 50,
       createdAt: DateTime(2026, 1, 1),
-      addresses: [if (street != null) _address(street)],
+      addresses: [
+        if (street != null)
+          streetOnly
+              ? _address(street, city: '', state: '', zip: '')
+              : _address(street),
+      ],
     );
 
 /// Rent and past-history payments are stored at 12:00 UTC on their day.
@@ -70,11 +80,12 @@ LedgerEntry _rent(String tenantId, String id, double amount, DateTime at,
 LedgerEntry _payment(String tenantId, String id, double amount, DateTime at) =>
     _entry(tenantId, id, LedgerEntryType.payment, -amount, at, 'Check');
 
-// Two two-unit customers: Pat's records agree on the address (one has it,
-// the other none); Sam's two records carry different addresses. Lee has no
-// ledger, Kim is paid up, Jo is in credit.
+// Two two-unit customers: Pat's records carry the same address (typed with
+// other spacing and case on the second); Sam's two records carry different
+// addresses. Lee has no ledger, Kim is paid up, Jo is in credit.
 final _patA1 = _tenant('pat1', 'Pat Example', 'A-1', street: '12 Example Ave');
-final _patA2 = _tenant('pat2', 'Pat Example', 'A-2');
+final _patA2 =
+    _tenant('pat2', 'Pat  EXAMPLE', 'A-2', street: '12 example  Ave');
 final _samB1 = _tenant('sam1', 'Sam Sample', 'B-1', street: '3 Sample St');
 final _samB2 = _tenant('sam2', 'Sam Sample', 'B-2', street: '9 Other Rd');
 final _lee = _tenant('lee', 'Lee Empty', 'C-1');
@@ -170,7 +181,7 @@ void main() {
   });
 
   group('planBulkStatements', () {
-    test('combines same-name records whose addresses agree, one statement '
+    test('combines same-name records with the same address, one statement '
         'at the first member with every unit, merged rows and the summed '
         'balance', () {
       final plan = planBulkStatements(_tenants, _ledgers,
@@ -180,7 +191,7 @@ void main() {
           ['pat1+pat2', 'sam1', 'sam2', 'lee', 'kim', 'jo']);
       final pat = plan.jobs.first;
       expect(pat.isCombined, isTrue);
-      expect(pat.holder.id, 'pat1', reason: 'the record with the address');
+      expect(pat.holder.id, 'pat1', reason: 'the first record');
       expect(pat.unitLabels, ['A-1', 'A-2']);
       expect(pat.lines.closingBalance, 140);
       // Merged in date order, each row saying which unit it is for.
@@ -192,32 +203,96 @@ void main() {
       expect(pat.lines.rows.map((r) => r.runningBalance), [50, 100, 140]);
 
       // Sam's addresses differ: two statements, and a note.
-      expect(plan.notCombinedAddressesDiffer.map((g) => g.map((t) => t.id)),
+      expect(plan.notCombined.map((g) => g.tenants.map((t) => t.id)),
           [['sam1', 'sam2']]);
+      expect(plan.notCombined.single.reason, 'different addresses');
       expect(plan.jobs[1].isCombined, isFalse);
       expect(plan.jobs[1].lines.rows.single.description, 'September rent',
           reason: 'a single-record statement needs no unit prefix');
     });
 
-    test('a group with no address anywhere still combines; a group whose '
-        'first record has none takes the address from the other', () {
-      final first = _tenant('b1', 'Bo Both', 'F-1');
-      final second = _tenant('b2', 'Bo Both', 'F-2', street: '5 Found Ln');
-      final third = _tenant('n1', 'No Address', 'G-1');
-      final fourth = _tenant('n2', 'No Address', 'G-2');
-      final ledgers = {
-        for (final t in [first, second, third, fourth])
-          t.id: [_rent(t.id, 'r-${t.id}', 20, _noon(2026, 9, 1), 'September')],
-      };
-      final plan = planBulkStatements([first, second, third, fourth], ledgers,
-          period: _all, combineSamePerson: true);
+    // Two different people can share a name. A record with no mailing
+    // address says nothing about who it is, so it never counts as a match:
+    // combining used to put both ledgers on one statement, mailed to the
+    // one address on file.
+    BulkStatementPlan combined(List<TenantModel> tenants) => planBulkStatements(
+          tenants,
+          {
+            for (final t in tenants)
+              t.id: [
+                _rent(t.id, 'r-${t.id}', 20, _noon(2026, 9, 1), 'September'),
+              ],
+          },
+          period: _all,
+          combineSamePerson: true,
+        );
 
-      expect(plan.jobs.length, 2);
-      expect(plan.jobs[0].tenants.map((t) => t.id), ['b1', 'b2']);
-      expect(plan.jobs[0].holder.id, 'b2');
-      expect(plan.jobs[1].tenants.map((t) => t.id), ['n1', 'n2']);
-      expect(plan.noMailingAddress.map((t) => t.id), ['n1']);
-      expect(plan.notCombinedAddressesDiffer, isEmpty);
+    test('one record without an address: not combined', () {
+      final plan = combined([
+        _tenant('m1', 'Chris Sample', 'F-1', street: '5 Found Ln'),
+        _tenant('m2', 'Chris Sample', 'F-2'),
+      ]);
+      expect(plan.jobs.map((j) => j.tenants.map((t) => t.id).join('+')),
+          ['m1', 'm2']);
+      expect(plan.jobs.every((j) => j.lines.closingBalance == 20), isTrue);
+      expect(plan.notCombined.single.tenants.map((t) => t.id), ['m1', 'm2']);
+      expect(plan.notCombined.single.reason, 'missing address');
+      expect(plan.noMailingAddress.map((t) => t.id), ['m2']);
+    });
+
+    test('both records without an address: not combined', () {
+      final plan = combined([
+        _tenant('n1', 'Dana Sample', 'G-1'),
+        _tenant('n2', 'Dana Sample', 'G-2'),
+      ]);
+      expect(plan.jobs.map((j) => j.tenants.map((t) => t.id).join('+')),
+          ['n1', 'n2']);
+      expect(plan.notCombined.single.reason, 'missing address');
+      expect(plan.noMailingAddress.map((t) => t.id), ['n1', 'n2']);
+    });
+
+    test('both records at the same address: combined', () {
+      final plan = combined([
+        _tenant('s1', 'Robin Sample', 'H-1', street: '8 Same Rd'),
+        // The same address with other spacing and case.
+        _tenant('s2', 'robin sample', 'H-2', street: '8  same RD'),
+      ]);
+      expect(plan.jobs.single.tenants.map((t) => t.id), ['s1', 's2']);
+      expect(plan.jobs.single.lines.closingBalance, 40);
+      expect(plan.notCombined, isEmpty);
+      expect(plan.noMailingAddress, isEmpty);
+    });
+
+    test('different and missing addresses together: not combined, both '
+        'named', () {
+      final plan = combined([
+        _tenant('d1', 'Alex Sample', 'J-1', street: '1 First St'),
+        _tenant('d2', 'Alex Sample', 'J-2', street: '2 Second St'),
+        _tenant('d3', 'Alex Sample', 'J-3'),
+      ]);
+      expect(plan.jobs.length, 3);
+      expect(plan.notCombined.single.reason,
+          'different and missing addresses');
+    });
+
+    test('a street with no city, state or ZIP is counted apart from no '
+        'address', () {
+      final streetOnly = _tenant('so', 'Sam Street', 'B-14',
+          street: '3 Sample St', streetOnly: true);
+      final noZip = _tenant('nz', 'Noa Zipless', 'B-15')
+          .copyWith(addresses: [_address('6 Zipless Way', zip: '')]);
+      final plan = planBulkStatements(
+        [_patA1, streetOnly, noZip, _kim],
+        {
+          ..._ledgers,
+          for (final t in [streetOnly, noZip])
+            t.id: [_rent(t.id, 'r-${t.id}', 72, _noon(2026, 9, 1), 'September')],
+        },
+        period: _all,
+      );
+      expect(plan.jobs.length, 4);
+      expect(plan.noMailingAddress.map((t) => t.id), ['kim']);
+      expect(plan.incompleteMailingAddress.map((t) => t.id), ['so', 'nz']);
     });
 
     test('a group sits where its first member is, in list order', () {
@@ -235,8 +310,8 @@ void main() {
       expect(plan.jobs.every((j) => !j.isCombined), isTrue);
       // The differing addresses are still reported, so the owner knows why
       // ticking Combine would not merge them.
-      expect(plan.notCombinedAddressesDiffer.length, 1);
-      expect(plan.noMailingAddress.map((t) => t.id), ['pat2', 'lee', 'kim', 'jo']);
+      expect(plan.notCombined.length, 1);
+      expect(plan.noMailingAddress.map((t) => t.id), ['lee', 'kim', 'jo']);
     });
 
     test('skips: no ledger entries, then nothing owed, each record counted '
@@ -247,7 +322,8 @@ void main() {
       expect(plan.skippedNothingOwed.map((t) => t.id), ['kim', 'jo'],
           reason: 'a credit is nothing owed; Lee is already out');
       expect(plan.jobs.map((j) => j.holder.id), ['pat1', 'pat2', 'sam1', 'sam2']);
-      expect(plan.noMailingAddress.map((t) => t.id), ['pat2']);
+      expect(plan.noMailingAddress, isEmpty,
+          reason: 'Lee, Kim and Jo have none, but print no statement');
 
       // With the no-activity skip off, an empty ledger owes nothing too.
       final owedOnly = planBulkStatements(_tenants, _ledgers,
@@ -266,8 +342,8 @@ void main() {
     });
 
     test('a group is skipped as a whole by its combined balance', () {
-      final owes = _tenant('o1', 'Owes One', 'H-1');
-      final credit = _tenant('o2', 'Owes One', 'H-2');
+      final owes = _tenant('o1', 'Owes One', 'H-1', street: '7 Same Rd');
+      final credit = _tenant('o2', 'Owes One', 'H-2', street: '7 Same Rd');
       final ledgers = {
         'o1': [_rent('o1', 'r1', 30, _noon(2026, 9, 1), 'September')],
         'o2': [
@@ -308,10 +384,51 @@ void main() {
       final plan = planBulkStatements([_patA1, _patA2], _ledgers,
           period: _all,
           combineSamePerson: true,
-          unitLabels: (t) => ['${t.unitNumber} (Complex 2)']);
-      expect(plan.jobs.single.unitLabels, ['A-1 (Complex 2)', 'A-2 (Complex 2)']);
+          unitLabels: (t) => ['${t.unitNumber} (Building B)']);
+      expect(plan.jobs.single.unitLabels, ['A-1 (Building B)', 'A-2 (Building B)']);
       expect(plan.jobs.single.lines.rows.first.description,
-          'A-1 (Complex 2): August rent');
+          'A-1 (Building B): August rent');
+    });
+
+    test('a combined record holding two units prefixes its rows with both, '
+        'unless the entry names its own unit', () {
+      // One record, one ledger, two units: prefixing every row with the
+      // first unit pinned the second unit's charges on it.
+      final twoUnits = _tenant('t2', 'Lee Sample', 'B-14', street: '4 Two Ln');
+      final oneUnit = _tenant('t1', 'Lee Sample', 'B-16', street: '4 Two Ln');
+      final ledgers = {
+        't2': [
+          _rent('t2', 'r1', 144, _noon(2026, 9, 1), 'September'),
+          _entry('t2', 'lf', LedgerEntryType.lateFee, 10, _noon(2026, 9, 6),
+                  'Late fee')
+              .copyWith(metadata: {'unitNumber': 'B-15'}),
+        ],
+        't1': [_rent('t1', 'r2', 72, _noon(2026, 9, 1), 'September')],
+      };
+      BulkStatementPlan plan(List<String> Function(TenantModel) labels) =>
+          planBulkStatements([twoUnits, oneUnit], ledgers,
+              period: _all, combineSamePerson: true, unitLabels: labels);
+
+      final sameArea = plan((t) => t.id == 't2'
+          ? ['B-14 (Building B)', 'B-15 (Building B)']
+          : ['B-16 (Building B)']);
+      expect(sameArea.jobs.single.unitLabels,
+          ['B-14 (Building B)', 'B-15 (Building B)', 'B-16 (Building B)']);
+      expect(sameArea.jobs.single.lines.rows.map((r) => r.description), [
+        'B-14/B-15 (Building B): September rent',
+        'B-16 (Building B): September rent',
+        'B-15: Late fee',
+      ]);
+
+      // Areas that differ stay on each label; numbers alone just join.
+      final mixed = plan((t) => t.id == 't2'
+          ? ['B-14 (Building B)', 'D-3 (Building D)']
+          : ['B-16 (Building B)']);
+      expect(mixed.jobs.single.lines.rows.first.description,
+          'B-14 (Building B)/D-3 (Building D): September rent');
+      final plain = plan((t) => t.id == 't2' ? ['B-14', 'B-15'] : ['B-16']);
+      expect(plain.jobs.single.lines.rows.first.description,
+          'B-14/B-15: September rent');
     });
   });
 
@@ -497,13 +614,16 @@ void main() {
       expect(find.text('2026'), findsOneWidget);
       expect(find.text('Combine units for the same person (1 person, 2 units)'),
           findsOneWidget);
+      expect(find.text('Pat Example (2 units)'), findsOneWidget);
       expect(find.text('Skip tenants who owe nothing (2)'), findsOneWidget,
           reason: 'Kim and Jo; Lee is already out for having no entries');
       expect(find.text('Skip tenants with no ledger entries (1)'), findsOneWidget);
       expect(find.text('Printed separately: Sam Sample (different addresses)'),
           findsOneWidget);
-      expect(find.text('No mailing address on file: 3'), findsOneWidget);
-      expect(find.text('Pat Example, Kim Paid, Jo Credit'), findsOneWidget);
+      expect(find.text('No mailing address on file: 2'), findsOneWidget);
+      expect(find.text('Kim Paid, Jo Credit'), findsOneWidget);
+      expect(find.byKey(const Key('bulk-statements-incomplete-address')),
+          findsNothing);
       expect(find.text('Build 6 statements'), findsOneWidget);
       expect(build(tester).onPressed, isNotNull);
 
@@ -522,7 +642,8 @@ void main() {
       await tick(tester, 'bulk-statements-combine');
       expect(find.text('Build 5 statements'), findsOneWidget);
       expect(find.text('No mailing address on file: 2'), findsOneWidget,
-          reason: "Pat's statement now carries the A-1 address");
+          reason: 'a record without an address is never combined, so '
+              'combining hides no missing address');
 
       await tick(tester, 'bulk-statements-skip-nothing-owed');
       expect(find.text('Build 3 statements'), findsOneWidget);
@@ -536,6 +657,43 @@ void main() {
       expect(find.text('Build 6 statements'), findsOneWidget);
       expect(find.text('No mailing address on file: 3'), findsOneWidget);
       expect(find.text('Lee Empty, Kim Paid, Jo Credit'), findsOneWidget);
+    });
+
+    testWidgets('Combine names who it would put together: ten, then how '
+        'many more', (tester) async {
+      final pairs = [
+        for (var i = 1; i <= 12; i++) ...[
+          _tenant('p$i-a', 'Sample $i', 'K-${2 * i - 1}', street: '$i Pair Rd'),
+          _tenant('p$i-b', 'Sample $i', 'K-${2 * i}', street: '$i Pair Rd'),
+        ],
+        // Same name, one without an address: not listed, noted instead.
+        _tenant('x1', 'Chris Sample', 'L-1', street: '5 Found Ln'),
+        _tenant('x2', 'Chris Sample', 'L-2'),
+      ];
+      await open(tester, tenants: pairs);
+
+      expect(
+          find.text('Combine units for the same person (12 people, 24 units)'),
+          findsOneWidget);
+      final firstTen = [for (var i = 1; i <= 10; i++) 'Sample $i (2 units)'];
+      expect(find.text('${firstTen.join(', ')}, and 2 more'), findsOneWidget);
+      expect(find.text('Printed separately: Chris Sample (missing address)'),
+          findsOneWidget);
+    });
+
+    testWidgets('a street with no city, state or ZIP gets a note of its own',
+        (tester) async {
+      await open(tester, tenants: [
+        _patA1,
+        _tenant('sam1', 'Sam Street', 'B-1',
+            street: '3 Sample St', streetOnly: true),
+        _kim,
+      ]);
+      expect(find.text('No mailing address on file: 1'), findsOneWidget);
+      expect(find.text('Kim Paid'), findsOneWidget);
+      expect(find.text('Address missing city, state or ZIP: 1'), findsOneWidget);
+      expect(find.text('Sam Street'), findsOneWidget);
+      expect(find.text('Build 3 statements'), findsOneWidget);
     });
 
     testWidgets('all history hides the month; a month recounts by its '
