@@ -36,6 +36,8 @@ import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
 import 'package:sfcapp/widgets/sms_consent_bulk_dialog.dart';
 import 'package:sfcapp/widgets/paid_through_bulk_dialog.dart';
 import 'package:sfcapp/services/paid_through_bulk_service.dart';
+import 'package:sfcapp/providers/statement_ledger_reader_provider.dart';
+import 'package:sfcapp/widgets/bulk_statements_dialog.dart';
 import 'package:sfcapp/widgets/sms_consent_chip.dart';
 
 /// Grace period for delinquency badge (uses facility Billing Settings when available).
@@ -535,6 +537,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                                 );
                               },
                             ),
+                            _printStatementsButton(),
                             OutlinedButton.icon(
                               onPressed: _selectedTenantIds.isEmpty ? null : () => _inviteSelectedTenants(),
                               icon: const Icon(Icons.forward_to_inbox_outlined),
@@ -1258,6 +1261,60 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
     return Tooltip(
       message: 'Pick one facility to mark tenants paid through a month',
       child: button,
+    );
+  }
+
+  /// Selection bar > Print statements (N). Every staff role, like the
+  /// ledger's single Print statement and the ledgers rule. One facility at
+  /// a time: under All Facilities it is disabled and says why.
+  Widget _printStatementsButton() {
+    final facilityId = _selectedFacilityId;
+    final oneFacility = bulkSmsConsentAvailable(facilityId);
+    final shown = oneFacility
+        ? (ref.watch(filteredTenantsProvider(facilityId)).value ?? const <TenantModel>[])
+        : const <TenantModel>[];
+    final count = visibleSelectedTenants(shown, _selectedTenantIds).length;
+    final button = OutlinedButton.icon(
+      key: const Key('bulk-print-statements'),
+      onPressed: !oneFacility || count == 0 ? null : _printStatementsForSelected,
+      icon: const Icon(Icons.print_outlined),
+      label: Text('Print statements ($count)'),
+    );
+    if (oneFacility) return button;
+    return Tooltip(
+      message: 'Pick one facility to print statements',
+      child: button,
+    );
+  }
+
+  /// Tenants List > Select Multiple > Print statements: one PDF with a
+  /// statement for each selected tenant, in the list's order, for the owner
+  /// who mails monthly statements to tenants without email. Nothing is
+  /// written, so the selection stays for a reprint.
+  Future<void> _printStatementsForSelected() async {
+    final facilityId = _selectedFacilityId;
+    if (!bulkSmsConsentAvailable(facilityId)) return;
+    final selected = _visibleSelectedTenants();
+    if (selected.isEmpty) return;
+
+    final facility = await ref.read(facilityProvider(facilityId).future);
+    if (!mounted) return;
+    if (facility == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('This facility could not be loaded. Try again.'),
+        backgroundColor: AppTheme.error,
+      ));
+      return;
+    }
+    // The facility's units, already loaded for the list, so a record
+    // holding two units names both without a read per tenant.
+    final units = ref.read(facilityUnitsProvider(facilityId)).value ?? const <UnitModel>[];
+    await showBulkStatementsDialog(
+      context,
+      tenants: selected,
+      facility: facility,
+      units: units,
+      reader: ref.read(statementLedgerReaderProvider),
     );
   }
 
