@@ -497,8 +497,21 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
           Text('Choose the move-in date to list the months.', style: theme.textTheme.bodySmall)
         else if (_charges.isEmpty)
           Text('No months to add: rent is already on the ledger from the move-in month.', style: theme.textTheme.bodySmall)
-        else
+        else ...[
           for (var i = 0; i < _charges.length; i++) _buildChargeRow(i),
+          // A warning only: a person renting two units was entered at their
+          // combined rent on a record whose rate was one unit's, and nothing
+          // said so. Saving still goes ahead; the rate is theirs to fix.
+          for (final amount in historyAmountsOffRate(charges: _charges, monthlyRate: widget.tenant.monthlyRate))
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                '${_money(amount)} is not this tenant\'s rate of ${_money(widget.tenant.monthlyRate)}. '
+                'If they rent more than one unit, add the other unit first (Units › the unit › Assign Tenant) so the rate is the total.',
+                style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.warning),
+              ),
+            ),
+        ],
         const SizedBox(height: 20),
         Text('2. Payments received', style: theme.textTheme.titleMedium),
         const SizedBox(height: 4),

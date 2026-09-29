@@ -522,6 +522,79 @@ void main() {
     expect(p.charges.every((c) => c.amount == 80), isTrue);
   });
 
+  group('amounts typed off the rate', () {
+    // A person renting two units, entered at their combined $110 on a record
+    // whose rate is one unit's $55. Nothing said the months were double.
+    List<ProposedHistoryCharge> months(List<double> amounts, {int day = 1}) => [
+          for (final (i, a) in amounts.indexed)
+            ProposedHistoryCharge(year: 2026, month: 3 + i, day: i == 0 ? day : 1, amount: a),
+        ];
+
+    test('every month at the rate: nothing to say', () {
+      expect(historyAmountsOffRate(charges: months([55, 55, 55]), monthlyRate: 55), isEmpty);
+    });
+
+    test('the combined rent on every month is reported once', () {
+      expect(historyAmountsOffRate(charges: months([110, 110, 110], day: 25), monthlyRate: 55), [110]);
+      expect(historyAmountsOffRate(charges: months([110, 110, 165]), monthlyRate: 55), [110, 165]);
+    });
+
+    test('a prorated first month is expected; a lower month dated the 1st is not', () {
+      expect(historyAmountsOffRate(charges: months([12.43, 55, 55], day: 25), monthlyRate: 55), isEmpty);
+      expect(historyAmountsOffRate(charges: months([12.43, 55, 55]), monthlyRate: 55), [12.43]);
+      expect(historyAmountsOffRate(charges: months([55, 40, 55]), monthlyRate: 55), [40]);
+    });
+
+    test('unticked months, blank amounts and a record with no rate are not compared', () {
+      final c = months([110, 110]);
+      c[0].included = false;
+      expect(historyAmountsOffRate(charges: c, monthlyRate: 55), [110]);
+      c[1].amount = 0;
+      expect(historyAmountsOffRate(charges: c, monthlyRate: 55), isEmpty);
+      expect(historyAmountsOffRate(charges: months([110]), monthlyRate: 0), isEmpty);
+    });
+
+    test('compared to the cent', () {
+      expect(historyAmountsOffRate(charges: months([55.004, 55]), monthlyRate: 55), isEmpty);
+      expect(historyAmountsOffRate(charges: months([55.01, 55]), monthlyRate: 55), [55.01]);
+    });
+  });
+
+  testWidgets('a month typed above the rate warns that the rate may be one unit\'s, without blocking the save',
+      (tester) async {
+    await _pumpDialog(tester, const []);
+    await tester.tap(find.text('Choose move-in date *'));
+    await tester.pumpAndSettle();
+    // The picker opens on today, 9/28/2026.
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle();
+    expect(find.text('September 2026 (from 9/28)'), findsOneWidget);
+    expect(find.textContaining('is not this tenant\'s rate'), findsNothing);
+
+    final amount = find.descendant(
+      of: find.byKey(const ValueKey('history-charge-2026-9')),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(amount, '160');
+    await tester.pumpAndSettle();
+    expect(
+      find.text('\$160.00 is not this tenant\'s rate of \$80.00. '
+          'If they rent more than one unit, add the other unit first (Units › the unit › Assign Tenant) so the rate is the total.'),
+      findsOneWidget,
+    );
+    // A warning only: ticking the confirm box still lets the owner save.
+    await tester.tap(find.text('I checked these months, amounts and dates against my records'));
+    await tester.pumpAndSettle();
+    final save = tester.widget<FilledButton>(
+        find.byWidgetPredicate((w) => w is FilledButton && find.descendant(of: find.byWidget(w), matching: find.text('Save history')).evaluate().isNotEmpty));
+    expect(save.onPressed, isNotNull);
+
+    // Below the rate on a mid-month move-in: a proration, nothing to say.
+    await tester.enterText(amount, '8');
+    await tester.pumpAndSettle();
+    expect(find.textContaining('is not this tenant\'s rate'), findsNothing);
+  });
+
   group('payment dates', () {
     test('a full date or just a month', () {
       expect(parseHistoryDateInput('8/17/2026'), (date: DateTime(2026, 8, 17), monthOnly: false));
