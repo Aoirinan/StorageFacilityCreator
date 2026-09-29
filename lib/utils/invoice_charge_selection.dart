@@ -31,12 +31,20 @@ class SelectableCharge {
   /// `metadata['allocatedAmount']`.
   final double? allocatedAmount;
 
+  /// A card dispute's row (LedgerEntry.isCardDispute). Never invoiced: a
+  /// dispute is collected with "Record payment for this dispute", which
+  /// books the payment against it. Paid through an invoice, the payment
+  /// counted as rent while the dispute stayed open, so autopay under-charged
+  /// the rent and the Ledger still asked staff to collect the dispute.
+  final bool isCardDispute;
+
   const SelectableCharge({
     required this.id,
     required this.isCharge,
     required this.isActive,
     required this.amount,
     this.allocatedAmount,
+    this.isCardDispute = false,
   });
 }
 
@@ -53,7 +61,7 @@ List<String> selectableChargeIds({
   return charges
       .where((c) {
         if (restrictTo != null && !restrictTo.contains(c.id)) return false;
-        if (!c.isCharge || !c.isActive) return false;
+        if (!c.isCharge || !c.isActive || c.isCardDispute) return false;
         if (idsOnLiveInvoices.contains(c.id)) return false;
         final allocated = c.allocatedAmount;
         if (allocated != null && allocated >= c.amount) return false;

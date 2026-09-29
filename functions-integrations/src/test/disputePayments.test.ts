@@ -204,3 +204,23 @@ test('a card refund of a dispute payment made from the app is tagged too', async
   assert.equal((fake.read(`${LEDGERS}/refund_re_hand_1`)!.metadata as Record<string, unknown>).disputeId, 'du_1');
   assert.deepEqual(split(fake), { total: 200, disputed: 100, collectible: 100 });
 });
+
+test('a fraud dispute is never charged to the card on file, and nothing is charged', async () => {
+  const { fake } = lostDispute();
+  // What the webhook stores: Stripe's reason for the dispute.
+  fake.seed(`${LEDGERS}/dispute_du_1`, {
+    ...fake.read(`${LEDGERS}/dispute_du_1`)!,
+    metadata: { disputeId: 'du_1', paymentIntentId: 'pi_march', reason: 'fraudulent' },
+  });
+  const created = stripeCharges();
+
+  await assert.rejects(
+    charge({ facilityId: 'f1', tenantId: 't1', paymentMethodId: 'pm_1', amount: 100, disputeId: 'du_1' }, staff),
+    (error: unknown) =>
+      (error as { code?: string }).code === 'failed-precondition' &&
+      /did not make this charge/.test(String((error as Error).message)),
+  );
+  // Before: charged. The cardholder had told their bank the first charge was not theirs.
+  assert.deepEqual(created, []);
+  assert.deepEqual(split(fake), { total: 200, disputed: 100, collectible: 100 });
+});

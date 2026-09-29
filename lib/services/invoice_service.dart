@@ -165,6 +165,7 @@ class InvoiceService {
               isActive: e.isActive,
               amount: e.amount,
               allocatedAmount: (e.metadata?['allocatedAmount'] as num?)?.toDouble(),
+              isCardDispute: e.isCardDispute,
             )),
         idsOnLiveInvoices: idsOnLiveInvoices,
         onlyThese: (ledgerEntryIds != null && ledgerEntryIds.isNotEmpty)

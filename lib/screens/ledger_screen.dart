@@ -752,7 +752,11 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
     final messenger = ScaffoldMessenger.of(context);
     final entry = await showDialog<DisputePaymentEntry>(
       context: context,
-      builder: (_) => DisputePaymentDialog(outstanding: outstanding, hasCardOnFile: hasCardOnFile),
+      builder: (_) => DisputePaymentDialog(
+        outstanding: outstanding,
+        hasCardOnFile: hasCardOnFile,
+        disputeReason: dispute.metadata?['reason'] as String?,
+      ),
     );
     if (entry == null || !mounted || _recordingDisputePayment) return;
     final tenant = widget.tenant;
@@ -887,6 +891,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
               isActive: e.isActive,
               amount: e.amount,
               allocatedAmount: (e.metadata?['allocatedAmount'] as num?)?.toDouble(),
+              isCardDispute: e.isCardDispute,
             )),
         idsOnLiveInvoices: idsOnLiveInvoices,
       ).toSet();

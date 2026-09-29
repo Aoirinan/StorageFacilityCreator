@@ -27,6 +27,18 @@ typedef DisputePaymentEntry = ({
 /// Stripe's smallest card charge; the callable refuses less.
 const double _minimumCardCharge = 0.5;
 
+/// Stripe's dispute reason when the cardholder says they never made the charge.
+const String fraudulentDisputeReason = 'fraudulent';
+
+/// Why the card on file is not offered for a fraud dispute.
+const String fraudDisputeCardNote =
+    'The card on file is not offered: the cardholder told their bank they did '
+    'not make this charge. Take it by cash or check, or send a payment link '
+    'the tenant pays themselves.';
+
+/// What staff confirm before the card on file is charged for a dispute.
+const String cardConsentLabel = 'The tenant has agreed to this charge on their card';
+
 /// The Ledger's "Record payment for this dispute".
 ///
 /// Every way staff could collect a lost dispute (cash, the card on file, a
@@ -35,14 +47,22 @@ const double _minimumCardCharge = 0.5;
 /// the delinquency job then treated next month's rent as paid. Each way here
 /// carries the dispute's id, so the payment nets against the dispute. The
 /// amount is capped at what the dispute still has out ([outstanding]).
+///
+/// Charging the card on file again needs the cardholder's fresh consent, so
+/// staff tick that the tenant agreed; for a `fraudulent` dispute
+/// ([disputeReason]) it is not offered at all (the server refuses it too).
 class DisputePaymentDialog extends StatefulWidget {
   final double outstanding;
   final bool hasCardOnFile;
+
+  /// Stripe's reason for the dispute (the dispute row's `metadata.reason`).
+  final String? disputeReason;
 
   const DisputePaymentDialog({
     super.key,
     required this.outstanding,
     required this.hasCardOnFile,
+    this.disputeReason,
   });
 
   @override
@@ -60,6 +80,13 @@ class _DisputePaymentDialogState extends State<DisputePaymentDialog> {
   /// The method recorded when [_way] is by hand.
   PaymentMethod _method = PaymentMethod.cash;
   String? _error;
+
+  /// Staff confirmed the tenant agreed to the card charge.
+  bool _cardConsent = false;
+
+  bool get _fraudDispute => widget.disputeReason == fraudulentDisputeReason;
+
+  bool get _cardOnFileOffered => widget.hasCardOnFile && !_fraudDispute;
 
   @override
   void dispose() {
@@ -106,6 +133,8 @@ class _DisputePaymentDialogState extends State<DisputePaymentDialog> {
       error = 'This dispute has \$${widget.outstanding.toStringAsFixed(2)} left to collect.';
     } else if (_way == DisputePaymentWay.cardOnFile && cents < _minimumCardCharge) {
       error = 'A card charge must be at least \$0.50.';
+    } else if (_way == DisputePaymentWay.cardOnFile && !_cardConsent) {
+      error = 'Confirm the tenant agreed to this card charge.';
     }
     if (error != null) {
       setState(() => _error = error);
@@ -154,12 +183,28 @@ class _DisputePaymentDialogState extends State<DisputePaymentDialog> {
               items: [
                 for (final m in manualPaymentMethods)
                   DropdownMenuItem(value: m.name, child: Text(m.displayName)),
-                if (widget.hasCardOnFile)
+                if (_cardOnFileOffered)
                   const DropdownMenuItem(value: 'card', child: Text('Charge card on file')),
                 const DropdownMenuItem(value: 'link', child: Text('Send a payment link')),
               ],
               onChanged: _choose,
             ),
+            if (widget.hasCardOnFile && _fraudDispute) ...[
+              const SizedBox(height: 8),
+              Text(fraudDisputeCardNote, style: muted),
+            ],
+            if (_way == DisputePaymentWay.cardOnFile)
+              CheckboxListTile(
+                key: const ValueKey('dispute-card-consent'),
+                value: _cardConsent,
+                onChanged: (v) => setState(() {
+                  _cardConsent = v ?? false;
+                  _error = null;
+                }),
+                title: const Text(cardConsentLabel),
+                controlAffinity: ListTileControlAffinity.leading,
+                contentPadding: EdgeInsets.zero,
+              ),
             if (_way == DisputePaymentWay.byHand) ...[
               const SizedBox(height: 16),
               TextField(

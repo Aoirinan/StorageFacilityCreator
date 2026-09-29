@@ -315,6 +315,85 @@ void main() {
     final voided = _entry('dispute_du_1', 100,
         storedType: 'dispute', metadata: {'disputeId': 'du_1'}, status: LedgerEntryStatus.voided);
     expect(openDisputeOutstanding(voided, [voided]), isNull);
+    // Put on an invoice (before dispute rows were kept off them) and that
+    // invoice paid: the payment is not tagged, but the dispute is settled.
+    final invoiced = _entry('dispute_du_1', 100, storedType: 'dispute', metadata: {
+      'disputeId': 'du_1',
+      'allocatedAmount': 100,
+      'settledByInvoiceId': 'inv_1',
+    });
+    expect(openDisputeOutstanding(invoiced, [invoiced]), isNull);
+  });
+
+  test('a dispute paid by hand and then won is a credit against rent, not a disputed amount', () {
+    final entries = [
+      ..._lostDispute(),
+      _handPayment(100),
+      _entry('dispute_du_1_reinstated', -100, storedType: 'dispute_reversal', metadata: {'disputeId': 'du_1'}),
+    ];
+    // March paid twice, April owed once: nothing for autopay to charge.
+    // Before: {total 0, disputed -100, collectible 100}.
+    final split = splitPostedLedgerEntries(entries);
+    expect(split.total, 0);
+    expect(split.disputed, 0);
+    expect(split.collectible, 0);
+    expect(openDisputeOutstanding(entries[2], entries), isNull);
+  });
+
+  group('the dialog and the card on file', () {
+    Future<List<DisputePaymentEntry?>> open(WidgetTester tester, {String? reason}) async {
+      final results = <DisputePaymentEntry?>[];
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () async => results.add(await showDialog<DisputePaymentEntry>(
+                context: context,
+                builder: (_) => DisputePaymentDialog(outstanding: 100, hasCardOnFile: true, disputeReason: reason),
+              )),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      return results;
+    }
+
+    testWidgets('a fraud dispute does not offer the card on file, and says why', (tester) async {
+      await open(tester, reason: fraudulentDisputeReason);
+
+      expect(find.text(fraudDisputeCardNote), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('dispute-payment-method')));
+      await tester.pumpAndSettle();
+      // Before: offered, and the charge went back on a card whose holder
+      // told their bank the first charge was not theirs.
+      expect(find.text('Charge card on file'), findsNothing);
+      expect(find.text('Send a payment link'), findsWidgets);
+    });
+
+    testWidgets('any other dispute asks staff to confirm the tenant agreed before the card is charged',
+        (tester) async {
+      final results = await open(tester, reason: 'product_not_received');
+
+      expect(find.text(fraudDisputeCardNote), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('dispute-payment-method')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Charge card on file').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Charge card'));
+      await tester.pumpAndSettle();
+      expect(find.text('Confirm the tenant agreed to this card charge.'), findsOneWidget);
+      expect(results, isEmpty);
+
+      await tester.tap(find.text(cardConsentLabel));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Charge card'));
+      await tester.pumpAndSettle();
+      expect(results.single?.way, DisputePaymentWay.cardOnFile);
+      expect(results.single?.amount, 100);
+    });
   });
 
   test('a dispute payment by hand is tagged with the dispute and reads as a dispute row', () {

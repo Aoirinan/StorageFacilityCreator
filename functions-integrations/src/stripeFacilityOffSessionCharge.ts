@@ -83,7 +83,11 @@ export const chargeTenantOffSession = functions.runWith({ secrets: STRIPE_SECRET
 
     // "Record payment for this dispute" on the Ledger charges the card for a
     // card dispute: the charge is booked against the dispute, not as rent.
-    const dispute = await checkDisputeForPayment(admin.firestore(), facilityId, tenantId, data?.disputeId, amountNum);
+    // Never for a fraud dispute: the cardholder says they did not make the
+    // charge, so it is not going back on a card on file.
+    const dispute = await checkDisputeForPayment(admin.firestore(), facilityId, tenantId, data?.disputeId, amountNum, {
+      cardOnFile: true,
+    });
     if (!dispute.ok) {
       throw new functions.https.HttpsError('failed-precondition', dispute.message);
     }

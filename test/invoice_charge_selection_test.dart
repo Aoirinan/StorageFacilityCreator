@@ -27,6 +27,20 @@ void main() {
       expect(ids, ['rent-sep']);
     });
 
+    test('a card dispute is never offered for an invoice', () {
+      // Paid through an invoice, the payment counted as rent while the
+      // dispute stayed open: autopay under-charged the rent and the Ledger
+      // still asked staff to collect the dispute.
+      final ids = selectableChargeIds(
+        charges: [
+          charge('rent-sep'),
+          const SelectableCharge(id: 'dispute_du_1', isCharge: true, isActive: true, amount: 100, isCardDispute: true),
+        ],
+        idsOnLiveInvoices: const {},
+      );
+      expect(ids, ['rent-sep']);
+    });
+
     test('a charge already on a live invoice is not offered again', () {
       // The double-billing case: September rent was invoiced, so generating
       // another invoice must not pick it up a second time.

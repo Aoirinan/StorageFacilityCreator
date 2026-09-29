@@ -61,13 +61,16 @@ LedgerBalanceSplit splitPostedLedgerEntries(List<LedgerEntry> entries) {
 /// How much [dispute] (the webhook's `dispute` row) still has out, when staff
 /// can take a payment for it: a posted, unsettled dispute row with money
 /// left on it in [entries]. Null for any other row, and once it is won,
-/// voided or paid.
+/// voided or paid, including paid through an invoice made before dispute
+/// rows were kept off invoices (that payment is not tagged with the
+/// dispute, so the sum alone still shows it open).
 double? openDisputeOutstanding(LedgerEntry dispute, List<LedgerEntry> entries) {
   final disputeId = dispute.disputeId;
   if (dispute.storedType != disputeLedgerType ||
       dispute.status != LedgerEntryStatus.posted ||
       disputeId == null ||
-      dispute.metadata?['settledByEntryId'] != null) {
+      dispute.metadata?['settledByEntryId'] != null ||
+      dispute.metadata?['settledByInvoiceId'] != null) {
     return null;
   }
   final outstanding = disputeOutstanding([
