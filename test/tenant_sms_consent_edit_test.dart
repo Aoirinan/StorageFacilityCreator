@@ -16,6 +16,7 @@ import 'package:sfcapp/widgets/tenant_contact_edit_dialog.dart';
 class _FakeOperations extends TenantOperationsNotifier {
   bool saved = false;
   SmsConsentUpdate? consent;
+  String? email;
 
   @override
   Future<String?> updateTenant({
@@ -50,6 +51,7 @@ class _FakeOperations extends TenantOperationsNotifier {
   }) async {
     saved = true;
     consent = smsConsent;
+    this.email = email;
     // A save takes a round trip; the dialog finishes closing meanwhile.
     await Future<void>.delayed(const Duration(milliseconds: 500));
     return null;
@@ -61,11 +63,11 @@ class _FakeOperations extends TenantOperationsNotifier {
 /// wrote nothing at all.
 void main() {
   final agreed = DateTime(2025, 3, 14);
-  TenantModel tenant({DateTime? optIn, bool optOut = false, String? source}) => TenantModel(
+  TenantModel tenant({DateTime? optIn, bool optOut = false, String? source, String email = 'ada@example.com'}) => TenantModel(
         id: 't1',
         facilityId: 'f1',
         name: 'Ada Park',
-        email: 'ada@example.com',
+        email: email,
         phone: '9035550100',
         unitNumber: '101',
         monthlyRate: 100,
@@ -193,6 +195,26 @@ void main() {
       await tester.pump();
       await save(tester);
       expect(ops.consent!.grant, isTrue);
+    });
+
+    // The pencil said 'Email *' and refused to save without one, so a phone
+    // or unit change for a tenant with no email (most of them at a
+    // paper-ledger facility) needed a made-up address. Edit Tenant already
+    // treated it as optional.
+    testWidgets('a tenant with no email saves', (tester) async {
+      final ops = await open(tester, tenant(email: ''));
+      expect(find.text('Email'), findsOneWidget);
+      expect(find.text('Email *'), findsNothing);
+      await save(tester);
+      expect(ops.saved, isTrue);
+      expect(ops.email, '');
+    });
+
+    testWidgets('a malformed email is still refused', (tester) async {
+      final ops = await open(tester, tenant(email: 'not-an-address'));
+      await save(tester);
+      expect(ops.saved, isFalse);
+      expect(find.text('Please enter a valid email address, or leave it blank'), findsOneWidget);
     });
   });
 }

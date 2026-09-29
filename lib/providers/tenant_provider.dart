@@ -14,6 +14,7 @@ import '../providers/unit_provider.dart';
 import '../models/unit_model.dart';
 import '../utils/unit_areas.dart';
 import '../utils/sms_consent.dart';
+import 'package:sfcapp/models/address_model.dart';
 import 'package:sfcapp/utils/unit_number_sort.dart';
 
 // Provider for all tenants across all facilities
@@ -434,6 +435,20 @@ class TenantOperationsNotifier extends StateNotifier<AsyncValue<void>> {
           resetPortalStats: resetPortalStats,
           smsConsent: smsConsent,
           confirmFreeOldUnit: confirmFreeOldUnit,
+        ));
+  }
+
+  /// The tenant page's Edit Mailing Address: see
+  /// [TenantService.setMailingAddress].
+  Future<void> setMailingAddress({
+    required String facilityId,
+    required String tenantId,
+    required List<Address> addresses,
+  }) {
+    return _run(() => TenantService.setMailingAddress(
+          facilityId: facilityId,
+          tenantId: tenantId,
+          addresses: addresses,
         ));
   }
 

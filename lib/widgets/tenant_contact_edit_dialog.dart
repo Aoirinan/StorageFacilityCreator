@@ -6,6 +6,7 @@ import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/sms_consent.dart';
+import 'package:sfcapp/utils/tenant_contact_validation.dart';
 import 'package:sfcapp/widgets/confirm_free_old_unit_dialog.dart';
 import 'package:sfcapp/widgets/sms_consent_checkbox.dart';
 import 'package:sfcapp/widgets/tenant_facility_unit_picker.dart';
@@ -53,11 +54,21 @@ Future<void> editTenantContactInfo(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             TextFormField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Full Name *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.person)), validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null),
             const SizedBox(height: 12),
-            TextFormField(controller: emailCtrl, decoration: const InputDecoration(labelText: 'Email *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.email)), keyboardType: TextInputType.emailAddress, validator: (v) {
-              if (v == null || v.trim().isEmpty) return 'Required';
-              if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(v)) return 'Invalid email';
-              return null;
-            }),
+            // Optional, as on Edit Tenant: most tenants at a paper-ledger
+            // facility have none, and requiring one here meant the pencil
+            // could not save a phone or unit change without a made-up email.
+            TextFormField(
+              controller: emailCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Email',
+                helperText: 'Optional. Leave blank if you do not have one.',
+                helperMaxLines: 2,
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.email),
+              ),
+              keyboardType: TextInputType.emailAddress,
+              validator: validateOptionalTenantEmail,
+            ),
             const SizedBox(height: 12),
             TextFormField(controller: phoneCtrl, decoration: const InputDecoration(labelText: 'Phone *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.phone)), keyboardType: TextInputType.phone, validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null),
             const SizedBox(height: 12),
