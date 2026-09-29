@@ -24,6 +24,7 @@ import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/utils/unit_areas.dart';
 import 'package:sfcapp/utils/unit_label.dart';
 import 'package:sfcapp/widgets/move_out_action.dart';
+import 'package:sfcapp/widgets/security_deposit_dialogs.dart' show unassignDepositNote;
 
 /// Whether the unit menu offers Remove Lockout. Not only on occupied units:
 /// Set Lockout moves the unit to lockout status, and the tenant-archive and
@@ -61,6 +62,17 @@ class UnitDetailActions {
 
   Future<double> balance(String facilityId, String tenantId) =>
       LedgerService.getLedgerBalance(tenantId: tenantId, facilityId: facilityId);
+
+  /// Whether [tenantId] holds a unit besides [unitId] (as
+  /// TenantService.unitsHeldByTenant), so Unassign Tenant knows if it ends
+  /// their tenancy.
+  Future<bool> holdsOtherUnits(
+      String facilityId, String tenantId, String unitId) async {
+    final units =
+        await TenantService.recordsFor(facilityId).linkedUnits(tenantId);
+    return TenantService.unitsHeldByTenant(
+        tenantId, [for (final u in units) if (u.id != unitId) u]).isNotEmpty;
+  }
 
   Future<void> setStatus(String facilityId, String unitId, UnitStatus status) =>
       UnitService.updateUnit(facilityId: facilityId, unitId: unitId, status: status);
@@ -888,11 +900,44 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
   }
 
   void _showUnassignTenantDialog() async {
+    // Unassign posts no charges and no refund, so the deposit the facility
+    // still holds is only mentioned here: settle it now only if this was
+    // their last unit. Null when the other units could not be read.
+    final tenant = _tenant;
+    final deposit = tenant?.securityDeposit;
+    String? depositNote;
+    if (tenant != null && deposit != null && deposit.isHeld) {
+      bool? holdsOthers;
+      try {
+        holdsOthers = await ref
+            .read(unitDetailActionsProvider)
+            .holdsOtherUnits(widget.facilityId, tenant.id, widget.unitId);
+      } catch (e) {
+        if (kDebugMode) print('Error reading the tenant\'s other units: $e');
+      }
+      if (!mounted) return;
+      depositNote =
+          unassignDepositNote(deposit, holdsOtherUnits: holdsOthers);
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Unassign Tenant'),
-        content: Text('Are you sure you want to unassign the tenant from unit ${_unit!.unitNumber}?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Are you sure you want to unassign the tenant from unit ${_unit!.unitNumber}?'),
+            if (depositNote != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                depositNote,
+                key: const Key('unassign-security-deposit'),
+                style: const TextStyle(color: AppTheme.textSecondary),
+              ),
+            ],
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
