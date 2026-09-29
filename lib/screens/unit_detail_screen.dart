@@ -21,6 +21,7 @@ import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/utils/unit_areas.dart';
 import 'package:sfcapp/utils/unit_label.dart';
 import 'package:sfcapp/widgets/move_out_action.dart';
 
@@ -674,7 +675,11 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
       builder: (context) => Consumer(
         builder: (context, ref, _) {
           final tenantsAsync = ref.watch(activeTenantsProvider(widget.facilityId));
-          
+          // Each tenant's current units, so two records with one name (a
+          // person imported once per unit) can be told apart in the list.
+          final units = TenantUnitAreaIndex(
+              ref.watch(facilityUnitsProvider(widget.facilityId)).value ?? const <UnitModel>[]);
+
           return AlertDialog(
             title: const Text('Assign Tenant to Unit'),
             content: SizedBox(
@@ -691,6 +696,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
                   return _TenantSelectionDialogContent(
                     facilityId: widget.facilityId,
                     tenants: tenants,
+                    units: units,
                     unitLabel: unitPickerLabel(_unit!),
                   );
                 },
@@ -1195,6 +1201,10 @@ class _TenantSelectionDialogContent extends StatefulWidget {
   final String facilityId;
   final List<TenantModel> tenants;
 
+  /// The facility's units, for each tenant's current units under their name
+  /// ([tenantPickerUnitsText]).
+  final TenantUnitAreaIndex units;
+
   /// "Unit 12 (Complex 2)": with its area, so the operator can tell which
   /// of two units numbered alike they are assigning.
   final String unitLabel;
@@ -1202,6 +1212,7 @@ class _TenantSelectionDialogContent extends StatefulWidget {
   const _TenantSelectionDialogContent({
     required this.facilityId,
     required this.tenants,
+    required this.units,
     required this.unitLabel,
   });
 
@@ -1277,7 +1288,11 @@ class _TenantSelectionDialogContentState extends State<_TenantSelectionDialogCon
                     
                     return RadioListTile<String>(
                       title: Text(tenant.name),
-                      subtitle: Text('${tenant.email} • ${tenant.phone}'),
+                      subtitle: Text([
+                        tenantPickerUnitsText(tenant, widget.units),
+                        if (tenant.email.isNotEmpty) tenant.email,
+                        if (tenant.phone.isNotEmpty) tenant.phone,
+                      ].join(' • ')),
                       value: tenant.id,
                       groupValue: _selectedTenantId,
                       onChanged: (value) {

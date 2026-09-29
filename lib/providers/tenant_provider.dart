@@ -87,18 +87,21 @@ final filteredTenantsProvider = StreamProvider.family<List<TenantModel>, String>
   final sortOption = ref.watch(tenantSortProvider);
   final tenantsAsync = ref.watch(facilityTenantsProvider(facilityId));
   final areaFilter = ref.watch(tenantAreaFilterProvider);
-  // Units only when filtering by area: a tenant is in an area through its
-  // units (see TenantUnitAreaIndex).
+  // Units only when filtering by area (a tenant is in an area through its
+  // units, see TenantUnitAreaIndex) or searching, which matches any unit a
+  // tenant holds, not only the one their record names.
   final AsyncValue<List<UnitModel>>? unitsAsync =
-      areaFilter == null || facilityId.isEmpty || facilityId == 'all'
-      ? null
-      : ref.watch(facilityUnitsProvider(facilityId));
+      (areaFilter == null && searchQuery.isEmpty) ||
+              facilityId.isEmpty ||
+              facilityId == 'all'
+          ? null
+          : ref.watch(facilityUnitsProvider(facilityId));
 
   return tenantsAsync.when(
     data: (tenants) {
       List<TenantModel> filtered = tenants;
-      if (unitsAsync != null) {
-        final units = unitsAsync.value;
+      final units = unitsAsync?.value;
+      if (unitsAsync != null && areaFilter != null) {
         // Stay loading until the units are in, rather than show every
         // tenant under an area filter.
         if (units == null && unitsAsync.isLoading) {
@@ -110,15 +113,14 @@ final filteredTenantsProvider = StreamProvider.family<List<TenantModel>, String>
           filtered = filterTenantsByUnitArea(filtered, units, effective);
         }
       }
-      // Apply search filter
+      // Apply search filter. Until the units are in, the record's unit alone.
       if (searchQuery.isNotEmpty) {
         final normalizedQuery = searchQuery.toLowerCase().trim();
-        filtered = filtered.where((tenant) {
-          return tenant.name.toLowerCase().contains(normalizedQuery) ||
-                 tenant.email.toLowerCase().contains(normalizedQuery) ||
-                 tenant.phone.contains(normalizedQuery) ||
-                 tenant.unitNumber.toLowerCase().contains(normalizedQuery);
-        }).toList();
+        final index = units == null ? null : TenantUnitAreaIndex(units);
+        filtered = filtered
+            .where((tenant) =>
+                tenantMatchesSearch(tenant, normalizedQuery, units: index))
+            .toList();
       }
       
       // Apply sorting
@@ -196,6 +198,28 @@ int compareTenantsByUnit(TenantModel a, TenantModel b) {
   return a.id.compareTo(b.id);
 }
 
+/// Whether [tenant] matches the Tenants list search [query] (lower-cased and
+/// trimmed by the caller): by name, email, phone or unit number. With
+/// [units], any unit they hold counts ([TenantUnitAreaIndex.otherUnitsFor]),
+/// so a tenant renting two units is found by either number; without, only
+/// the unit their record names, as the All Facilities list has no units.
+bool tenantMatchesSearch(
+  TenantModel tenant,
+  String query, {
+  TenantUnitAreaIndex? units,
+}) {
+  if (tenant.name.toLowerCase().contains(query) ||
+      tenant.email.toLowerCase().contains(query) ||
+      tenant.phone.contains(query) ||
+      tenant.unitNumber.toLowerCase().contains(query)) {
+    return true;
+  }
+  if (units == null) return false;
+  return units
+      .otherUnitsFor(tenant)
+      .any((u) => u.unitNumber.toLowerCase().contains(query));
+}
+
 /// Apply search and sort to a tenant list (e.g. for "All Facilities" view).
 List<TenantModel> filterAndSortTenantsForDisplay(
   List<TenantModel> tenants,
@@ -205,12 +229,7 @@ List<TenantModel> filterAndSortTenantsForDisplay(
   List<TenantModel> filtered = tenants;
   if (searchQuery.isNotEmpty) {
     final q = searchQuery.toLowerCase().trim();
-    filtered = tenants.where((t) {
-      return t.name.toLowerCase().contains(q) ||
-          t.email.toLowerCase().contains(q) ||
-          t.phone.contains(q) ||
-          t.unitNumber.toLowerCase().contains(q);
-    }).toList();
+    filtered = tenants.where((t) => tenantMatchesSearch(t, q)).toList();
   }
   final sorted = List<TenantModel>.from(filtered);
   switch (sortOption) {

@@ -169,6 +169,32 @@ HistoryChargeProposal proposeHistoryCharges({
   return HistoryChargeProposal(charges: charges, stoppedBefore: firstCharged);
 }
 
+/// The amounts the owner typed into [charges] that are not [monthlyRate],
+/// each once in the order they appear, for the warning under the months. A
+/// person renting two units was entered at their combined rent on a record
+/// whose rate was one unit's, and nothing said the months were double the
+/// rate. Only ticked months with an amount count, and only when there is a
+/// rate to compare with. The move-in month is left out when it is dated
+/// after the 1st and below the rate: a prorated first month is the
+/// difference the form invites.
+List<double> historyAmountsOffRate({
+  required List<ProposedHistoryCharge> charges,
+  required double monthlyRate,
+}) {
+  if (monthlyRate <= 0) return const [];
+  final rate = _cents(monthlyRate);
+  final off = <double>[];
+  for (var i = 0; i < charges.length; i++) {
+    final c = charges[i];
+    if (!c.included || c.amount <= 0) continue;
+    final amount = _cents(c.amount);
+    if (amount == rate || off.contains(amount)) continue;
+    if (i == 0 && c.day != 1 && amount < rate) continue;
+    off.add(amount);
+  }
+  return off;
+}
+
 /// What to do with paidThrough when the recomputed date differs from the
 /// tenant's. Same names as the server's paidThroughChoice.
 enum PaidThroughChoice {

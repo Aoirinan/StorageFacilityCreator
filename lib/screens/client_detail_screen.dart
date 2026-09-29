@@ -28,6 +28,8 @@ import 'package:sfcapp/providers/unit_label_provider.dart';
 import 'package:sfcapp/utils/paid_through.dart';
 import 'package:sfcapp/utils/payment_month_status.dart';
 import 'package:sfcapp/utils/sms_consent.dart';
+import 'package:sfcapp/providers/unit_provider.dart';
+import 'package:sfcapp/utils/unit_areas.dart';
 import 'package:sfcapp/utils/unit_label.dart';
 import '../models/ledger_entry_model.dart';
 import '../theme/app_theme.dart';
@@ -835,12 +837,19 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
       orElse: () => widget.tenant,
     );
     // "12", or "12 (Complex 2)" once the facility numbers units per area.
-    final unitLabel = tenantUnitLabel(
+    final includeUnitArea = ref
+            .watch(unitLabelsIncludeAreaProvider(tenant.facilityId))
+            .value ??
+        false;
+    final unitLabel = tenantUnitLabel(tenant, includeArea: includeUnitArea);
+    // Every unit the tenant holds, for the Unit row: the record's unitNumber
+    // names one, and the rest point back through units.tenantId.
+    final facilityUnits =
+        ref.watch(facilityUnitsProvider(tenant.facilityId)).value;
+    final heldUnits = tenantHeldUnitLabels(
       tenant,
-      includeArea: ref
-              .watch(unitLabelsIncludeAreaProvider(tenant.facilityId))
-              .value ??
-          false,
+      units: facilityUnits == null ? null : TenantUnitAreaIndex(facilityUnits),
+      includeArea: includeUnitArea,
     );
     // The address the invoice and statement print, and what it is still
     // missing (a workbook import usually leaves only the street).
@@ -1119,7 +1128,7 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                         valueColor: mailingGap != null ? AppTheme.error : null,
                         onEdit: () => editTenantMailingAddress(context, ref, tenant),
                       ),
-                      _buildInfoItem(context, icon: Icons.home_work_outlined, label: 'Unit', value: _valueOrPlaceholder(unitLabel, fallback: 'No unit assigned')),
+                      _buildUnitsItem(context, heldUnits),
                       _buildInfoItem(context, icon: Icons.attach_money, label: 'Monthly Rate', value: _formatCurrency(tenant.monthlyRate)),
                       // Always shown, so the owner can see who cannot be
                       // texted yet (Edit Contact Information records it).
@@ -2561,8 +2570,43 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
     );
   }
 
+  /// The Contact card's Unit row: every unit the tenant holds, each a link
+  /// to its unit page when its unit doc is loaded, so a tenant renting two
+  /// units reads "B-14, B-15" rather than the first alone.
+  Widget _buildUnitsItem(BuildContext context, List<HeldUnitLabel> units) {
+    final style = Theme.of(context).textTheme.bodyMedium?.copyWith(color: AppTheme.textTertiary);
+    return _buildInfoItem(
+      context,
+      icon: Icons.home_work_outlined,
+      label: units.length > 1 ? 'Units' : 'Unit',
+      value: units.isEmpty ? 'No unit assigned' : units.map((u) => u.label).join(', '),
+      valueWidget: units.isEmpty
+          ? null
+          : Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                for (var i = 0; i < units.length; i++) ...[
+                  if (i > 0) Text(', ', style: style),
+                  if (units[i].unit == null)
+                    Text(units[i].label, style: style)
+                  else
+                    InkWell(
+                      onTap: () => context.push(
+                          '${AppRoute.unitDetail}?unitId=${units[i].unit!.id}&facilityId=${units[i].unit!.facilityId}'),
+                      child: Text(
+                        units[i].label,
+                        style: style?.copyWith(color: AppTheme.primaryBlue, decoration: TextDecoration.underline),
+                      ),
+                    ),
+                ],
+              ],
+            ),
+    );
+  }
+
+  /// [valueWidget], when given, stands in for the [value] text.
   Widget _buildInfoItem(BuildContext context,
-      {required IconData icon, required String label, required String value, Color? valueColor, VoidCallback? onEdit}) {
+      {required IconData icon, required String label, required String value, Color? valueColor, VoidCallback? onEdit, Widget? valueWidget}) {
     final textTheme = Theme.of(context).textTheme;
     final color = Theme.of(context).colorScheme.primary;
     return Padding(
@@ -2578,7 +2622,7 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
               children: [
                 Text(label, style: textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
                 const SizedBox(height: 2),
-                Text(value, style: textTheme.bodyMedium?.copyWith(color: valueColor ?? AppTheme.textTertiary)),
+                valueWidget ?? Text(value, style: textTheme.bodyMedium?.copyWith(color: valueColor ?? AppTheme.textTertiary)),
               ],
             ),
           ),

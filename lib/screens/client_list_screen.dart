@@ -318,8 +318,11 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
         : (ref.watch(facilityUnitsProvider(permFacilityId)).value ??
             const <UnitModel>[]);
     final areaOptions = unitAreaFilterOptions(facilityUnits);
-    final areaIndex =
-        areaOptions.isEmpty ? null : TenantUnitAreaIndex(facilityUnits);
+    // Every unit each tenant holds, for the card's unit line; the Area
+    // filter only once some unit has an area.
+    final unitIndex =
+        facilityUnits.isEmpty ? null : TenantUnitAreaIndex(facilityUnits);
+    final areaIndex = areaOptions.isEmpty ? null : unitIndex;
     final areaFilter = effectiveUnitAreaFilter(
         ref.watch(tenantAreaFilterProvider), areaOptions);
     // Whether this facility's unit labels carry the area, "12 (Complex 2)".
@@ -797,8 +800,9 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                                 tenant,
                                 shownTenants: tenants,
                                 areas: areaIndex?.areasFor(tenant) ?? const [],
-                                labelUnitArea:
-                                    areaIndex?.namedUnit(tenant)?.area,
+                                labelUnit: unitIndex?.namedUnit(tenant),
+                                otherUnits: unitIndex?.otherUnitsFor(tenant) ??
+                                    const [],
                                 includeUnitArea: includeUnitArea,
                                 gracePeriodDays: gracePeriodDays,
                                 canDeleteTenant: canDeleteTenant && _selectedFacilityId != 'all',
@@ -941,7 +945,8 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
     TenantModel tenant, {
     required List<TenantModel> shownTenants,
     List<String> areas = const [],
-    String? labelUnitArea,
+    UnitModel? labelUnit,
+    List<UnitModel> otherUnits = const [],
     bool includeUnitArea = false,
     int? gracePeriodDays,
     bool canDeleteTenant = false,
@@ -991,7 +996,8 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
               tenant,
               includeArea: includeUnitArea,
               areas: areas,
-              labelUnitArea: labelUnitArea,
+              labelUnit: labelUnit,
+              otherUnits: otherUnits,
             )),
             Text('Email: ${tenant.email}'),
             Text('Phone: ${tenant.phone}'),
