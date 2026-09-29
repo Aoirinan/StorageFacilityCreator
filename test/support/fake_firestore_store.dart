@@ -35,6 +35,10 @@ class FakeStore {
     }
   }
 
+  /// `get` on a document whose path this matches fails the way a read does
+  /// offline (unavailable).
+  bool Function(String path)? refuseRead;
+
   /// Every write, in order: 'set PATH', 'update PATH' or 'delete PATH'.
   final List<String> writes = [];
 
@@ -209,6 +213,9 @@ class _StoreDocRef extends Fake implements DocumentReference<Map<String, dynamic
 
   @override
   Future<DocumentSnapshot<Map<String, dynamic>>> get([GetOptions? options]) async {
+    if (_store.refuseRead?.call(path) ?? false) {
+      throw FirebaseException(plugin: 'cloud_firestore', code: 'unavailable');
+    }
     final data = _store._docs[path];
     if (data == null) return _StoreMissing(this);
     return _StoreDoc(this, data);

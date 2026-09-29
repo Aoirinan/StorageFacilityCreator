@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:sfcapp/utils/firestore_field_read.dart';
 
 /// Public facility page settings
 class FacilityPublicSettings {
@@ -109,50 +110,82 @@ class FacilityPublicSettings {
     };
   }
 
+  /// Reads each field on its own and never throws on a value of the wrong
+  /// type: a switch that is not a bool takes its default (as the server's
+  /// `=== true` and `!== false` read it), a list keeps its strings, a map its
+  /// string entries, and anything else reads as missing. This used casts, so
+  /// one odd value (a number in enabledPublicUnitTypes, a null image URL, an
+  /// updatedAt that was not a Timestamp) failed the whole read, and with
+  /// saves refusing on a failed read the owner could not save at all.
   factory FacilityPublicSettings.fromMap(Map<String, dynamic> map) {
+    bool flag(String key, bool fallback) {
+      final value = map[key];
+      return value is bool ? value : fallback;
+    }
+
+    String? text(String key) {
+      final value = map[key];
+      return value is String ? value : null;
+    }
+
+    List<String>? strings(String key) {
+      final value = map[key];
+      return value is List ? value.whereType<String>().toList() : null;
+    }
+
+    Map<String, dynamic>? object(String key) {
+      final value = map[key];
+      return value is Map
+          ? {
+              for (final e in value.entries)
+                if (e.key is String) e.key as String: e.value,
+            }
+          : null;
+    }
+
+    final imageUrls = object('unitTypeImageUrls');
     return FacilityPublicSettings(
-      facilityId: map['facilityId'] as String,
-      enabled: map['enabled'] as bool? ?? false,
-      publicRentalsEnabled: map['publicRentalsEnabled'] as bool? ?? false,
-      publicPricingEnabled: map['publicPricingEnabled'] as bool? ?? true,
-      publicUnitNumbersEnabled:
-          map['publicUnitNumbersEnabled'] as bool? ?? true,
-      allowAutoAssign: map['allowAutoAssign'] as bool? ?? true,
-      allowUnitSelection: map['allowUnitSelection'] as bool? ?? true,
-      showAvailabilityCount: map['showAvailabilityCount'] as bool? ?? true,
-      hideUnavailableTypes: map['hideUnavailableTypes'] as bool? ?? true,
-      enabledPublicUnitTypes: map['enabledPublicUnitTypes'] != null
-          ? List<String>.from(map['enabledPublicUnitTypes'])
-          : const <String>[],
-      publicRentalSlug: map['publicRentalSlug'] as String?,
-      customDomain: map['customDomain'] as String?,
-      publicLogoUrl: map['publicLogoUrl'] as String?,
-      marketingContent: map['marketingContent'] as String?,
-      unitTypeImageUrls: map['unitTypeImageUrls'] != null
-          ? Map<String, String>.from(map['unitTypeImageUrls'])
-          : null,
-      pageTitle: map['pageTitle'] as String?,
-      pageDescription: map['pageDescription'] as String?,
-      featuredImages: map['featuredImages'] != null
-          ? List<String>.from(map['featuredImages'])
-          : null,
-      showAvailableUnits: map['showAvailableUnits'] as bool? ?? true,
-      allowOnlineReservations: map['allowOnlineReservations'] as bool? ?? true,
-      allowOnlineMoveIn: map['allowOnlineMoveIn'] as bool? ?? false,
+      facilityId: text('facilityId') ?? '',
+      enabled: flag('enabled', false),
+      publicRentalsEnabled: flag('publicRentalsEnabled', false),
+      publicPricingEnabled: flag('publicPricingEnabled', true),
+      publicUnitNumbersEnabled: flag('publicUnitNumbersEnabled', true),
+      allowAutoAssign: flag('allowAutoAssign', true),
+      allowUnitSelection: flag('allowUnitSelection', true),
+      showAvailabilityCount: flag('showAvailabilityCount', true),
+      hideUnavailableTypes: flag('hideUnavailableTypes', true),
+      enabledPublicUnitTypes:
+          strings('enabledPublicUnitTypes') ?? const <String>[],
+      publicRentalSlug: text('publicRentalSlug'),
+      customDomain: text('customDomain'),
+      publicLogoUrl: text('publicLogoUrl'),
+      marketingContent: text('marketingContent'),
+      unitTypeImageUrls: imageUrls == null
+          ? null
+          : {
+              for (final e in imageUrls.entries)
+                if (e.value is String) e.key: e.value as String,
+            },
+      pageTitle: text('pageTitle'),
+      pageDescription: text('pageDescription'),
+      featuredImages: strings('featuredImages'),
+      showAvailableUnits: flag('showAvailableUnits', true),
+      allowOnlineReservations: flag('allowOnlineReservations', true),
+      allowOnlineMoveIn: flag('allowOnlineMoveIn', false),
       chargeNextMonthAfterMidMonthMoveIn:
-          map['chargeNextMonthAfterMidMonthMoveIn'] as bool? ?? false,
-      chargeInsuranceAtMoveIn: map['chargeInsuranceAtMoveIn'] as bool? ?? false,
-      publicInsuranceAmount: (map['publicInsuranceAmount'] as num?)?.toDouble(),
+          flag('chargeNextMonthAfterMidMonthMoveIn', false),
+      chargeInsuranceAtMoveIn: flag('chargeInsuranceAtMoveIn', false),
+      // As the server's Number() reads a move-in charge: '12' is 12.
+      publicInsuranceAmount: numberFromField(map['publicInsuranceAmount']),
       chargeSecurityDepositAtMoveIn:
-          map['chargeSecurityDepositAtMoveIn'] as bool? ?? false,
+          flag('chargeSecurityDepositAtMoveIn', false),
       publicSecurityDepositAmount:
-          (map['publicSecurityDepositAmount'] as num?)?.toDouble(),
-      onlineMoveInContractTemplateId:
-          map['onlineMoveInContractTemplateId'] as String?,
-      customStyles: map['customStyles'] as Map<String, dynamic>?,
-      widgets: map['widgets'] as Map<String, dynamic>?,
-      updatedAt: (map['updatedAt'] as Timestamp?)?.toDate(),
-      updatedBy: map['updatedBy'] as String?,
+          numberFromField(map['publicSecurityDepositAmount']),
+      onlineMoveInContractTemplateId: text('onlineMoveInContractTemplateId'),
+      customStyles: object('customStyles'),
+      widgets: object('widgets'),
+      updatedAt: dateFromField(map['updatedAt']),
+      updatedBy: text('updatedBy'),
     );
   }
 }
