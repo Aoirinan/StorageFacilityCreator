@@ -116,8 +116,9 @@ export async function executeCreateSubscriptionCheckout(
       return updatedInstead;
     }
 
-    // One trial and one free month per owner, ever. A running app trial keeps its end
-    // date; anyone who already used either gets neither again.
+    // One trial and one free month per owner, ever. An unused free month is extra trial
+    // time after the owner's trial; once it is used, only the rest of a running app
+    // trial is left, and nothing fresh is ever given again.
     const offer = await decideOfferForAccount({
       db,
       accountId,
@@ -128,7 +129,8 @@ export async function executeCreateSubscriptionCheckout(
     functions.logger.info('Account subscription checkout offer', {
       accountId,
       trialDecision: offer.trial.kind,
-      attachFirstMonthFree: offer.attachFirstMonthFree,
+      trialReason: offer.trial.reason,
+      firstMonthFree: offer.firstMonthFree,
       historyReasons: offer.history.reasons,
     });
 
@@ -144,7 +146,6 @@ export async function executeCreateSubscriptionCheckout(
       cancelUrl,
       ownerUid: context.auth!.uid,
       trial: offer.trial,
-      attachFirstMonthFree: offer.attachFirstMonthFree,
       auditLog,
     });
   } catch (error: any) {

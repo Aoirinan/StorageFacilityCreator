@@ -1,8 +1,9 @@
 /**
- * One trial and one free month per owner, ever. Drives the real checkout logic
- * (`executeCreateSubscriptionCheckout`, `executeCreateFacilitySubscriptionCheckout`)
- * and the subscription webhook writers against a fake Firestore and a fake Stripe
- * client. No network, no real keys; all data is fake.
+ * One trial and one free month per owner, ever, with the free month delivered as trial
+ * time (never a coupon). Drives the real checkout logic (`executeCreateSubscriptionCheckout`,
+ * `executeCreateFacilitySubscriptionCheckout`) and the subscription webhook writers
+ * against a fake Firestore and a fake Stripe client. No network, no real keys; all data
+ * is fake.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,11 +23,17 @@ import { FakeFirestore } from './support/fakeFirestore';
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
+const FREE_MONTH = 30 * DAY;
 const NOW = Date.parse('2026-10-01T12:00:00Z');
 const UID = 'uid_fake_owner';
 const ACCOUNT = 'acct_fake_1';
 const context = { auth: { uid: UID } } as unknown as functions.https.CallableContext;
 const ts = (ms: number) => admin.firestore.Timestamp.fromMillis(ms);
+const sec = (ms: number) => Math.floor(ms / 1000);
+
+/** The worked example: app trial ends 2026-10-21T03:30Z; subscribing on 2026-10-01 is free until 2026-11-20T03:30Z. */
+const EXAMPLE_APP_TRIAL_END = Date.parse('2026-10-21T03:30:00Z');
+const EXAMPLE_FREE_MONTH_END = Date.parse('2026-11-20T03:30:00Z');
 
 delete process.env.STRIPE_BASE_PRICE_ID;
 delete process.env.STRIPE_ADDON_PRICE_ID;
@@ -40,6 +47,9 @@ type FakeStripe = {
 function fakeStripe(): FakeStripe {
   const sessions: Stripe.Checkout.SessionCreateParams[] = [];
   const subscriptions = new Map<string, Partial<Stripe.Subscription>>();
+  const noCoupons = async () => {
+    throw new Error('fake stripe: checkout must not touch coupons any more');
+  };
   const stripe = {
     customers: { create: async () => ({ id: 'cus_fake_new' }) },
     prices: {
@@ -47,12 +57,7 @@ function fakeStripe(): FakeStripe {
         data: [{ id: `price_fake_${p.lookup_keys[0]}`, active: true }],
       }),
     },
-    coupons: {
-      retrieve: async (id: string) => ({ id, valid: true, percent_off: 100, duration: 'once' }),
-      create: async () => {
-        throw new Error('fake stripe: coupon should already exist');
-      },
-    },
+    coupons: { retrieve: noCoupons, create: noCoupons },
     checkout: {
       sessions: {
         create: async (params: Stripe.Checkout.SessionCreateParams) => {
@@ -102,32 +107,70 @@ async function facilityCheckout(w: ReturnType<typeof world>, facilityId = 'fac_f
   return w.sessions[w.sessions.length - 1];
 }
 
+/** What the session offers: the trial fields and any discounts (there must never be any). */
 function offerOf(params: Stripe.Checkout.SessionCreateParams) {
   const sd = params.subscription_data ?? {};
   return {
     trial_end: sd.trial_end,
     trial_period_days: sd.trial_period_days,
-    coupon: (params.discounts ?? []).map((d) => d.coupon),
+    discounts: params.discounts,
+    firstMonthFree: sd.metadata?.firstMonthFree,
   };
 }
 
-const COUPON = [FIRST_MONTH_FREE_COUPON_ID];
+/** The session carries the free month: trial_end = `freeMonthStartMs` + 30 days, flagged in metadata, no discounts. */
+function assertFreeMonthSession(params: Stripe.Checkout.SessionCreateParams, freeMonthStartMs: number) {
+  const trialEnd = sec(freeMonthStartMs + FREE_MONTH);
+  assert.deepEqual(offerOf(params), { trial_end: trialEnd, trial_period_days: undefined, discounts: undefined, firstMonthFree: 'true' });
+  assert.equal(params.subscription_data?.metadata?.trialDecision, 'free_month');
+  assert.equal(params.subscription_data?.metadata?.freeMonthStart, new Date(sec(freeMonthStartMs) * 1000).toISOString());
+  assert.equal(params.subscription_data?.metadata?.freeMonthTrialEnd, new Date(trialEnd * 1000).toISOString());
+  assert.equal(params.metadata?.firstMonthFree, 'true', 'session metadata flags it for checkout.session.completed');
+}
+
+const NOTHING = { trial_end: undefined, trial_period_days: undefined, discounts: undefined, firstMonthFree: 'false' };
+
 const runningAppTrial = (end = NOW + 20 * DAY) => ({
   subscriptionStatus: 'trialing',
   subscriptionTrialEnd: ts(end),
   platformTrialUsedAt: ts(end - 30 * DAY),
 });
 
+/** The subscription Stripe would create from these Checkout params. */
+function subscriptionFrom(
+  id: string,
+  params: Stripe.Checkout.SessionCreateParams,
+  extra: Partial<Stripe.Subscription> = {},
+): Partial<Stripe.Subscription> {
+  const trialEnd = params.subscription_data?.trial_end ?? null;
+  return {
+    id,
+    status: trialEnd ? 'trialing' : 'active',
+    trial_end: trialEnd,
+    trial_start: trialEnd ? sec(NOW) : null,
+    cancel_at_period_end: false,
+    canceled_at: null,
+    metadata: { ...(params.subscription_data?.metadata as Record<string, string>) },
+    discounts: [],
+    ...extra,
+  };
+}
+
 // --- Account checkout ------------------------------------------------------------------
 
-test('account: app trial running -> trial_end = app trial end + coupon', async () => {
-  const end = NOW + 20 * DAY;
-  const params = await accountCheckout(world(runningAppTrial(end)));
-  assert.deepEqual(offerOf(params), { trial_end: Math.floor(end / 1000), trial_period_days: undefined, coupon: COUPON });
-  assert.equal(params.subscription_data?.metadata?.firstMonthFreeCoupon, 'true');
+test('account: worked example, app trial ends 2026-10-21T03:30Z -> trial_end 2026-11-20T03:30Z, no discounts', async () => {
+  const params = await accountCheckout(world(runningAppTrial(EXAMPLE_APP_TRIAL_END)));
+  assert.equal(params.subscription_data?.trial_end, sec(EXAMPLE_FREE_MONTH_END));
+  assertFreeMonthSession(params, EXAMPLE_APP_TRIAL_END);
+  assert.equal(params.subscription_data?.metadata?.freeMonthTrialEnd, '2026-11-20T03:30:00.000Z');
 });
 
-test('account: app trial ended (swept to cancelled) -> no trial + coupon', async () => {
+test('account: app trial with under 48h left -> app trial end + 30 days', async () => {
+  const end = NOW + 30 * HOUR;
+  assertFreeMonthSession(await accountCheckout(world(runningAppTrial(end))), end);
+});
+
+test('account: app trial ended (swept to cancelled), free month unused -> now + 30 days', async () => {
   const params = await accountCheckout(
     world({
       subscriptionStatus: 'cancelled',
@@ -136,15 +179,14 @@ test('account: app trial ended (swept to cancelled) -> no trial + coupon', async
       stripeCustomerId: 'cus_fake_abandoned',
     }),
   );
-  assert.deepEqual(offerOf(params), { trial_end: undefined, trial_period_days: undefined, coupon: COUPON });
+  assertFreeMonthSession(params, NOW);
 });
 
-test('account: brand-new card-at-signup owner -> 30 days + coupon', async () => {
-  const params = await accountCheckout(world({ subscriptionStatus: 'pendingApproval' }));
-  assert.deepEqual(offerOf(params), { trial_end: undefined, trial_period_days: 30, coupon: COUPON });
+test('account: brand-new card-at-signup owner -> 30-day trial then the free month: now + 60 days', async () => {
+  assertFreeMonthSession(await accountCheckout(world({ subscriptionStatus: 'pendingApproval' })), NOW + 30 * DAY);
 });
 
-test('account: pastDue with an old trial end -> no fresh trial, no coupon', async () => {
+test('account: pastDue with an old trial end -> no trial, no free month, no discounts', async () => {
   const params = await accountCheckout(
     world({
       subscriptionStatus: 'pastDue',
@@ -153,33 +195,36 @@ test('account: pastDue with an old trial end -> no fresh trial, no coupon', asyn
       stripeSubscriptionId: 'sub_fake_pastdue',
     }),
   );
-  assert.deepEqual(offerOf(params), { trial_end: undefined, trial_period_days: undefined, coupon: [] });
-  assert.equal(params.discounts, undefined);
-  assert.equal(params.subscription_data?.metadata?.firstMonthFreeCoupon, 'false');
+  assert.deepEqual(offerOf(params), NOTHING);
+  assert.equal(params.subscription_data?.metadata?.freeMonthTrialEnd, undefined);
 });
 
-test('account: subscribe, cancel, resubscribe -> the second checkout has no trial and no coupon', async () => {
-  const w = world({ subscriptionStatus: 'pendingApproval' });
+test('account: resubscribe after the free month was used, app trial still running -> app trial end only', async () => {
+  const end = NOW + 10 * DAY;
+  const params = await accountCheckout(world({ ...runningAppTrial(end), platformFirstMonthFreeUsedAt: ts(NOW - DAY) }));
+  assert.deepEqual(offerOf(params), { trial_end: sec(end), trial_period_days: undefined, discounts: undefined, firstMonthFree: 'false' });
+  assert.equal(params.subscription_data?.metadata?.trialDecision, 'align_to_app_trial');
+});
 
-  // 1. First checkout: the full offer.
+test('account: subscribe, webhook, cancel, resubscribe -> free month marked from metadata; second checkout gets nothing', async () => {
+  const w = world(runningAppTrial(EXAMPLE_APP_TRIAL_END));
+
+  // 1. First checkout: the free month as trial time.
   const first = await accountCheckout(w);
-  assert.deepEqual(offerOf(first), { trial_end: undefined, trial_period_days: 30, coupon: COUPON });
+  assertFreeMonthSession(first, EXAMPLE_APP_TRIAL_END);
 
-  // 2. Stripe creates the subscription; the webhook mirrors it and sets the markers.
-  const trialEndSec = Math.floor((NOW + 30 * DAY) / 1000);
-  w.subscriptions.set('sub_fake_first', {
-    id: 'sub_fake_first',
-    status: 'trialing',
-    trial_end: trialEndSec,
-    cancel_at_period_end: false,
-    canceled_at: null,
-    metadata: { ...(first.subscription_data?.metadata as Record<string, string>) },
-    discounts: ['di_fake_1'],
-  });
+  // 2. Stripe creates the subscription (no discounts); the webhook mirrors it and sets the markers.
+  w.subscriptions.set('sub_fake_first', subscriptionFrom('sub_fake_first', first));
   await updateAccountFromSubscription(ACCOUNT, 'sub_fake_first', { db: w.deps.db, stripe: w.stripe });
   const afterSubscribe = w.db.read(`facilityCreatorAccounts/${ACCOUNT}`)!;
-  assert.ok(afterSubscribe.platformTrialUsedAt, 'trial marker set');
-  assert.ok(afterSubscribe.platformFirstMonthFreeUsedAt, 'coupon marker set');
+  assert.ok(afterSubscribe.platformTrialUsedAt, 'trial marker kept');
+  assert.ok(afterSubscribe.platformFirstMonthFreeUsedAt, 'free-month marker set from subscription metadata');
+  assert.equal(afterSubscribe.subscriptionStatus, 'trialing');
+  assert.equal(
+    (afterSubscribe.subscriptionTrialEnd as admin.firestore.Timestamp).toMillis(),
+    EXAMPLE_FREE_MONTH_END,
+    'account trial end moves to the end of the free month, so the app keeps access through it',
+  );
 
   // 3. Cancelled: what the deleted webhook plus reconcile write.
   await w.deps.db.collection('facilityCreatorAccounts').doc(ACCOUNT).update({
@@ -189,79 +234,71 @@ test('account: subscribe, cancel, resubscribe -> the second checkout has no tria
     stripeSubscriptionIdClearedFrom: 'sub_fake_first',
   });
 
-  // 4. Resubscribe.
+  // 4. Resubscribe: no fresh trial, no second free month.
   const second = await accountCheckout(w);
-  assert.deepEqual(offerOf(second), { trial_end: undefined, trial_period_days: undefined, coupon: [] });
+  assert.deepEqual(offerOf(second), NOTHING);
 });
 
 // --- Facility checkout -----------------------------------------------------------------
 
-test('facility: app trial running -> trial_end = app trial end + coupon', async () => {
-  const end = NOW + 12 * DAY;
-  const params = await facilityCheckout(world(runningAppTrial(end)));
-  assert.deepEqual(offerOf(params), { trial_end: Math.floor(end / 1000), trial_period_days: undefined, coupon: COUPON });
+test('facility: worked example, app trial ends 2026-10-21T03:30Z -> trial_end 2026-11-20T03:30Z, no discounts', async () => {
+  const params = await facilityCheckout(world(runningAppTrial(EXAMPLE_APP_TRIAL_END)));
+  assert.equal(params.subscription_data?.trial_end, sec(EXAMPLE_FREE_MONTH_END));
+  assertFreeMonthSession(params, EXAMPLE_APP_TRIAL_END);
+  assert.equal(params.subscription_data?.metadata?.facilityId, 'fac_fake_1');
 });
 
-test('facility: app trial with under 48h left -> no trial + coupon', async () => {
-  const params = await facilityCheckout(world(runningAppTrial(NOW + 30 * HOUR)));
-  assert.deepEqual(offerOf(params), { trial_end: undefined, trial_period_days: undefined, coupon: COUPON });
+test('facility: app trial with under 48h left -> app trial end + 30 days', async () => {
+  const end = NOW + 30 * HOUR;
+  assertFreeMonthSession(await facilityCheckout(world(runningAppTrial(end))), end);
 });
 
-test('facility: app trial ended -> no trial + coupon', async () => {
-  const params = await facilityCheckout(world({ subscriptionStatus: 'cancelled', subscriptionTrialEnd: ts(NOW - DAY) }));
-  assert.deepEqual(offerOf(params), { trial_end: undefined, trial_period_days: undefined, coupon: COUPON });
+test('facility: app trial ended, free month unused -> now + 30 days', async () => {
+  assertFreeMonthSession(await facilityCheckout(world({ subscriptionStatus: 'cancelled', subscriptionTrialEnd: ts(NOW - DAY) })), NOW);
 });
 
-test('facility: brand-new card-at-signup owner -> 30 days + coupon', async () => {
-  const params = await facilityCheckout(world({ subscriptionStatus: 'pendingApproval' }));
-  assert.deepEqual(offerOf(params), { trial_end: undefined, trial_period_days: 30, coupon: COUPON });
+test('facility: brand-new card-at-signup owner -> now + 60 days', async () => {
+  assertFreeMonthSession(await facilityCheckout(world({ subscriptionStatus: 'pendingApproval' })), NOW + 30 * DAY);
 });
 
-test('facility: referred brand-new owner -> referral trial days + coupon', async () => {
+test('facility: referred brand-new owner -> referral trial days, then the free month', async () => {
   const params = await facilityCheckout(
     world({ subscriptionStatus: 'pendingApproval' }, { fac_fake_1: { platformReferralReferredByAccountId: 'acct_fake_referrer' } }),
   );
-  assert.deepEqual(offerOf(params), { trial_end: undefined, trial_period_days: 30, coupon: COUPON });
+  assertFreeMonthSession(params, NOW + 30 * DAY);
 });
 
-test('facility: referred owner inside a running app trial -> app trial end, not referral days', async () => {
+test('facility: referred owner inside a running app trial -> app trial end + 30 days, not referral days', async () => {
   const end = NOW + 20 * DAY;
   const params = await facilityCheckout(
     world(runningAppTrial(end), { fac_fake_1: { platformReferralReferredByAccountId: 'acct_fake_referrer' } }),
   );
-  assert.deepEqual(offerOf(params), { trial_end: Math.floor(end / 1000), trial_period_days: undefined, coupon: COUPON });
+  assertFreeMonthSession(params, end);
 });
 
-test("facility: the facility's own old trial record blocks a new trial and the coupon", async () => {
+test("facility: the facility's own old trial record blocks a new trial and the free month", async () => {
   const params = await facilityCheckout(
     world(
       { subscriptionStatus: 'cancelled' },
       { fac_fake_1: { platformSubscriptionStatus: 'cancelled', platformSubscriptionTrialEnd: ts(NOW - 60 * DAY) } },
     ),
   );
-  assert.deepEqual(offerOf(params), { trial_end: undefined, trial_period_days: undefined, coupon: [] });
+  assert.deepEqual(offerOf(params), NOTHING);
 });
 
-test('facility: pastDue account with an existing trial end -> no fresh trial, no coupon', async () => {
+test('facility: pastDue account with an existing trial end -> no trial, no free month', async () => {
   const params = await facilityCheckout(
     world({ subscriptionStatus: 'pastDue', subscriptionTrialEnd: ts(NOW - 40 * DAY), stripeCustomerId: 'cus_fake_1' }),
   );
-  assert.deepEqual(offerOf(params), { trial_end: undefined, trial_period_days: undefined, coupon: [] });
+  assert.deepEqual(offerOf(params), NOTHING);
 });
 
-test('facility: subscribe, cancel, resubscribe -> no trial and no coupon the second time', async () => {
+test('facility: subscribe, webhook, cancel, resubscribe -> no trial and no free month the second time', async () => {
   const w = world({ subscriptionStatus: 'pendingApproval' });
   const first = await facilityCheckout(w);
-  assert.deepEqual(offerOf(first), { trial_end: undefined, trial_period_days: 30, coupon: COUPON });
+  assertFreeMonthSession(first, NOW + 30 * DAY);
 
-  w.subscriptions.set('sub_fake_fac', {
-    id: 'sub_fake_fac',
-    status: 'trialing',
-    trial_end: Math.floor((NOW + 30 * DAY) / 1000),
-    cancel_at_period_end: false,
-    metadata: { ...(first.subscription_data?.metadata as Record<string, string>) },
-    discounts: [],
-  });
+  w.subscriptions.set('sub_fake_fac', subscriptionFrom('sub_fake_fac', first));
   await updateFacilityFromPlatformSubscription('fac_fake_1', 'sub_fake_fac', { db: w.deps.db, stripe: w.stripe });
   const account = w.db.read(`facilityCreatorAccounts/${ACCOUNT}`)!;
   assert.ok(account.platformTrialUsedAt && account.platformFirstMonthFreeUsedAt, 'both markers set from the facility subscription');
@@ -273,33 +310,94 @@ test('facility: subscribe, cancel, resubscribe -> no trial and no coupon the sec
     stripePlatformSubscriptionId: admin.firestore.FieldValue.delete(),
   });
   const second = await facilityCheckout(w);
-  assert.deepEqual(offerOf(second), { trial_end: undefined, trial_period_days: undefined, coupon: [] });
+  assert.deepEqual(offerOf(second), NOTHING);
 });
 
-test('facility: second facility during a running app trial -> same trial_end, no second coupon', async () => {
-  const end = NOW + 20 * DAY;
+test('facility: second facility during a running app trial -> app trial end only, no second free month', async () => {
+  const end = EXAMPLE_APP_TRIAL_END;
   const w = world(runningAppTrial(end), { fac_fake_1: {}, fac_fake_2: {} });
 
-  // Facility 1: aligned trial + coupon, then the webhook mirrors the subscription.
+  // Facility 1: the free month, then the webhook mirrors the subscription.
   const first = await facilityCheckout(w, 'fac_fake_1');
-  assert.deepEqual(offerOf(first), { trial_end: Math.floor(end / 1000), trial_period_days: undefined, coupon: COUPON });
-  w.subscriptions.set('sub_fake_fac1', {
-    id: 'sub_fake_fac1',
-    status: 'trialing',
-    trial_end: Math.floor(end / 1000),
-    cancel_at_period_end: false,
-    metadata: { ...(first.subscription_data?.metadata as Record<string, string>) },
-    discounts: ['di_fake_1'],
-  });
+  assertFreeMonthSession(first, end);
+  w.subscriptions.set('sub_fake_fac1', subscriptionFrom('sub_fake_fac1', first));
   await updateFacilityFromPlatformSubscription('fac_fake_1', 'sub_fake_fac1', { db: w.deps.db, stripe: w.stripe });
-  assert.equal(w.db.read('facilities/fac_fake_1')!.platformSubscriptionStatus, 'trialing');
+  const fac1 = w.db.read('facilities/fac_fake_1')!;
+  assert.equal(fac1.platformSubscriptionStatus, 'trialing');
+  assert.equal((fac1.platformSubscriptionTrialEnd as admin.firestore.Timestamp).toMillis(), EXAMPLE_FREE_MONTH_END);
+  const account = w.db.read(`facilityCreatorAccounts/${ACCOUNT}`)!;
+  assert.ok(account.platformFirstMonthFreeUsedAt, 'free month used by facility 1');
+  assert.equal(
+    (account.subscriptionTrialEnd as admin.firestore.Timestamp).toMillis(),
+    end,
+    'a facility subscription leaves the account app trial end alone',
+  );
 
-  // Facility 2, still inside the app trial: not charged now, trial ends with the app trial.
+  // Facility 2, still inside the app trial: not charged before the app trial ends, no free month.
   const second = await facilityCheckout(w, 'fac_fake_2');
-  assert.deepEqual(offerOf(second), { trial_end: Math.floor(end / 1000), trial_period_days: undefined, coupon: [] });
+  assert.deepEqual(offerOf(second), { trial_end: sec(end), trial_period_days: undefined, discounts: undefined, firstMonthFree: 'false' });
+});
+
+test('facility: second facility after the app trial, during facility 1 free month -> no trial', async () => {
+  const appTrialEnd = NOW - 2 * DAY;
+  const w = world(
+    // Rollup keeps the account `trialing` while facility 1 is in its free month.
+    { subscriptionStatus: 'trialing', subscriptionTrialEnd: ts(appTrialEnd), platformTrialUsedAt: ts(appTrialEnd - 30 * DAY), platformFirstMonthFreeUsedAt: ts(NOW - 10 * DAY) },
+    {
+      fac_fake_1: {
+        stripePlatformSubscriptionId: 'sub_fake_fac1',
+        platformSubscriptionStatus: 'trialing',
+        platformSubscriptionTrialEnd: ts(appTrialEnd + FREE_MONTH),
+      },
+      fac_fake_2: {},
+    },
+  );
+  assert.deepEqual(offerOf(await facilityCheckout(w, 'fac_fake_2')), NOTHING);
 });
 
 // --- Webhook writers ---------------------------------------------------------------------
+
+test('webhook: a free-month subscription with no discounts sets platformFirstMonthFreeUsedAt from its metadata', async () => {
+  const w = world(runningAppTrial(EXAMPLE_APP_TRIAL_END));
+  w.subscriptions.set('sub_fake_free', {
+    id: 'sub_fake_free',
+    status: 'trialing',
+    trial_end: sec(EXAMPLE_FREE_MONTH_END),
+    cancel_at_period_end: false,
+    canceled_at: null,
+    metadata: {
+      accountId: ACCOUNT,
+      trialDecision: 'free_month',
+      firstMonthFree: 'true',
+      freeMonthStart: '2026-10-21T03:30:00.000Z',
+      freeMonthTrialEnd: '2026-11-20T03:30:00.000Z',
+    },
+    discounts: [],
+  });
+  await updateAccountFromSubscription(ACCOUNT, 'sub_fake_free', { db: w.deps.db, stripe: w.stripe });
+  const account = w.db.read(`facilityCreatorAccounts/${ACCOUNT}`)!;
+  assert.ok(account.platformFirstMonthFreeUsedAt, 'free-month marker set');
+  assert.ok(account.platformTrialUsedAt, 'trial marker kept');
+  assert.equal((account.subscriptionTrialEnd as admin.firestore.Timestamp).toMillis(), EXAMPLE_FREE_MONTH_END);
+});
+
+test('webhook: a trial subscription not flagged as the free month does not set the free-month marker', async () => {
+  const end = NOW + 5 * DAY;
+  const w = world(runningAppTrial(end));
+  w.subscriptions.set('sub_fake_aligned', {
+    id: 'sub_fake_aligned',
+    status: 'trialing',
+    trial_end: sec(end),
+    cancel_at_period_end: false,
+    canceled_at: null,
+    metadata: { accountId: ACCOUNT, trialDecision: 'align_to_app_trial', firstMonthFree: 'false' },
+    discounts: [],
+  });
+  await updateAccountFromSubscription(ACCOUNT, 'sub_fake_aligned', { db: w.deps.db, stripe: w.stripe });
+  const account = w.db.read(`facilityCreatorAccounts/${ACCOUNT}`)!;
+  assert.equal(account.platformFirstMonthFreeUsedAt, undefined);
+  assert.ok(account.platformTrialUsedAt);
+});
 
 test('webhook: a subscription with no trial never nulls an existing subscriptionTrialEnd', async () => {
   const oldTrialEnd = ts(NOW - 10 * DAY);
@@ -310,7 +408,7 @@ test('webhook: a subscription with no trial never nulls an existing subscription
     trial_end: null,
     cancel_at_period_end: false,
     canceled_at: null,
-    metadata: { accountId: ACCOUNT, firstMonthFreeCoupon: 'true' },
+    metadata: { accountId: ACCOUNT, firstMonthFree: 'true' },
     discounts: [],
   });
   await updateAccountFromSubscription(ACCOUNT, 'sub_fake_notrial', { db: w.deps.db, stripe: w.stripe });
@@ -318,20 +416,35 @@ test('webhook: a subscription with no trial never nulls an existing subscription
   assert.equal(account.subscriptionStatus, 'active');
   assert.equal(account.stripeSubscriptionId, 'sub_fake_notrial');
   assert.equal((account.subscriptionTrialEnd as admin.firestore.Timestamp).toMillis(), oldTrialEnd.toMillis());
-  assert.ok(account.platformFirstMonthFreeUsedAt, 'coupon marker set from subscription metadata');
+  assert.ok(account.platformFirstMonthFreeUsedAt, 'free-month marker set from subscription metadata');
   assert.equal(account.platformTrialUsedAt, undefined, 'no trial on this subscription');
+});
+
+test('webhook: a legacy subscription carrying the retired coupon still counts as the free month', async () => {
+  const w = world({ subscriptionStatus: 'cancelled' });
+  w.subscriptions.set('sub_fake_legacy', {
+    id: 'sub_fake_legacy',
+    status: 'active',
+    trial_end: null,
+    cancel_at_period_end: false,
+    canceled_at: null,
+    metadata: { accountId: ACCOUNT },
+    discounts: ['di_fake_legacy'],
+  } as unknown as Partial<Stripe.Subscription>);
+  await updateAccountFromSubscription(ACCOUNT, 'sub_fake_legacy', { db: w.deps.db, stripe: w.stripe });
+  assert.ok(w.db.read(`facilityCreatorAccounts/${ACCOUNT}`)!.platformFirstMonthFreeUsedAt);
 });
 
 test('webhook: a trial subscription writes its trial end and the trial marker; existing markers are kept', async () => {
   const firstUse = ts(NOW - 100 * DAY);
   const w = world({ platformFirstMonthFreeUsedAt: firstUse });
-  const trialEndSec = Math.floor((NOW + 5 * DAY) / 1000);
+  const trialEndSec = sec(NOW + 5 * DAY);
   w.subscriptions.set('sub_fake_trial', {
     id: 'sub_fake_trial',
     status: 'trialing',
     trial_end: trialEndSec,
     cancel_at_period_end: false,
-    metadata: { accountId: ACCOUNT, firstMonthFreeCoupon: 'true' },
+    metadata: { accountId: ACCOUNT, firstMonthFree: 'true' },
     discounts: [],
   });
   await updateAccountFromSubscription(ACCOUNT, 'sub_fake_trial', { db: w.deps.db, stripe: w.stripe });
@@ -349,7 +462,7 @@ test('webhook: a facility subscription with no trial keeps the facility trial en
     status: 'active',
     trial_end: null,
     cancel_at_period_end: false,
-    metadata: { accountId: ACCOUNT, facilityId: 'fac_fake_1', firstMonthFreeCoupon: 'false' },
+    metadata: { accountId: ACCOUNT, facilityId: 'fac_fake_1', firstMonthFree: 'false' },
     discounts: [],
   });
   await updateFacilityFromPlatformSubscription('fac_fake_1', 'sub_fake_fac2', { db: w.deps.db, stripe: w.stripe });
@@ -361,14 +474,19 @@ test('webhook: a facility subscription with no trial keeps the facility trial en
   assert.equal(account.platformTrialUsedAt, undefined);
 });
 
-test('webhook: a completed checkout with the coupon sets the free-month marker once', async () => {
-  const session = {
-    metadata: { accountId: ACCOUNT },
-    discounts: [{ coupon: FIRST_MONTH_FREE_COUPON_ID, promotion_code: null }],
-  } as unknown as Stripe.Checkout.Session;
+test('webhook: a completed checkout carrying the free month sets the marker once; legacy coupon sessions count too', async () => {
+  const session = { metadata: { accountId: ACCOUNT, firstMonthFree: 'true' }, discounts: [] } as unknown as Stripe.Checkout.Session;
   assert.deepEqual(platformOfferUsageFromCheckoutSession(session), { trialUsed: false, firstMonthFreeUsed: true });
   assert.deepEqual(
-    platformOfferUsageFromCheckoutSession({ metadata: { firstMonthFreeCoupon: 'false' }, discounts: [] } as unknown as Stripe.Checkout.Session),
+    platformOfferUsageFromCheckoutSession({
+      metadata: { accountId: ACCOUNT },
+      discounts: [{ coupon: FIRST_MONTH_FREE_COUPON_ID, promotion_code: null }],
+    } as unknown as Stripe.Checkout.Session),
+    { trialUsed: false, firstMonthFreeUsed: true },
+    'a session created before this change, with the retired coupon',
+  );
+  assert.deepEqual(
+    platformOfferUsageFromCheckoutSession({ metadata: { firstMonthFree: 'false' }, discounts: [] } as unknown as Stripe.Checkout.Session),
     { trialUsed: false, firstMonthFreeUsed: false },
   );
 

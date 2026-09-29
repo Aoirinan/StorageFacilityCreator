@@ -2,10 +2,9 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
 import {
-  FIRST_MONTH_FREE_METADATA_KEY,
   getOrCreateBasePriceId,
-  getOrCreateFirstMonthFreeCouponId,
   getRefereePlatformTrialDays,
+  platformCheckoutOfferMetadata,
   platformCheckoutTrialSubscriptionData,
   type PlatformCheckoutTrialDecision,
 } from '@sfc/functions-shared';
@@ -25,38 +24,34 @@ export type FacilitySubscriptionCheckoutInput = {
 
 /**
  * Pure: the Checkout Session params for one facility's platform subscription.
- * Trial and coupon come from `decidePlatformCheckoutOffer`; `firstMonthFreeCouponId`
- * is null when the coupon is not offered.
+ * The trial comes from `decidePlatformCheckoutOffer`. The free month is trial time
+ * (`trial_end`); no coupon or discount is sent.
  */
 export function buildFacilitySubscriptionCheckoutParams(options: {
   accountId: string;
   facilityId: string;
   customerId: string;
   basePriceId: string;
-  firstMonthFreeCouponId: string | null;
   trial: PlatformCheckoutTrialDecision;
   ownerUid: string;
   successUrl?: string;
   cancelUrl?: string;
 }): Stripe.Checkout.SessionCreateParams {
-  const { accountId, facilityId, customerId, basePriceId, firstMonthFreeCouponId, trial, ownerUid, successUrl, cancelUrl } =
-    options;
-  const couponFlag = String(!!firstMonthFreeCouponId);
-  const params: Stripe.Checkout.SessionCreateParams = {
+  const { accountId, facilityId, customerId, basePriceId, trial, ownerUid, successUrl, cancelUrl } = options;
+  const offerMetadata = platformCheckoutOfferMetadata(trial);
+  return {
     customer: customerId,
     mode: 'subscription',
     line_items: [{ price: basePriceId, quantity: 1 }],
     success_url:
       successUrl || `https://app.storagefacilitycreator.com/subscription/success?session_id={CHECKOUT_SESSION_ID}&facility_id=${facilityId}`,
     cancel_url: cancelUrl || `https://app.storagefacilitycreator.com/subscription/cancel?facility_id=${facilityId}`,
-    metadata: { accountId, facilityId, ownerUid, [FIRST_MONTH_FREE_METADATA_KEY]: couponFlag },
+    metadata: { accountId, facilityId, ownerUid, ...offerMetadata },
     subscription_data: {
       ...platformCheckoutTrialSubscriptionData(trial),
-      metadata: { accountId, facilityId, trialDecision: trial.kind, [FIRST_MONTH_FREE_METADATA_KEY]: couponFlag },
+      metadata: { accountId, facilityId, ...offerMetadata },
     },
   };
-  if (firstMonthFreeCouponId) params.discounts = [{ coupon: firstMonthFreeCouponId }];
-  return params;
 }
 
 /**
@@ -112,10 +107,10 @@ export async function executeCreateFacilitySubscriptionCheckout(
     }
 
     const basePriceId = process.env.STRIPE_BASE_PRICE_ID || (await getOrCreateBasePriceId(stripe));
-    // Public offer: 30-day trial, then the first paid month is free, once per owner ever.
-    // Judged on the account, every facility it owns, and this facility's own record
-    // (`platformSubscriptionTrialEnd` and friends). A running app trial keeps its end
-    // date; the referral days apply only to an owner with no trial record at all.
+    // Public offer: 30-day trial, then the first month free, once per owner ever. The
+    // free month is extra trial time after the owner's trial. Judged on the account,
+    // every facility it owns, and this facility's own record (`platformSubscriptionTrialEnd`
+    // and friends). The referral days apply only to an owner with no trial record at all.
     const offer = await decideOfferForAccount({
       db,
       accountId,
@@ -129,17 +124,15 @@ export async function executeCreateFacilitySubscriptionCheckout(
       facilityId,
       trialDecision: offer.trial.kind,
       trialReason: offer.trial.reason,
-      attachFirstMonthFree: offer.attachFirstMonthFree,
+      firstMonthFree: offer.firstMonthFree,
       historyReasons: offer.history.reasons,
     });
-    const firstMonthFreeCouponId = offer.attachFirstMonthFree ? await getOrCreateFirstMonthFreeCouponId(stripe) : null;
     const session = await stripe.checkout.sessions.create(
       buildFacilitySubscriptionCheckoutParams({
         accountId,
         facilityId,
         customerId,
         basePriceId,
-        firstMonthFreeCouponId,
         trial: offer.trial,
         ownerUid: context.auth!.uid,
         successUrl,

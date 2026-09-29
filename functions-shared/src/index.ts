@@ -150,14 +150,18 @@ export type {
 } from './stripe/subscriptionCleanup';
 export { mapStripeErrorToUserMessage } from './stripe/errors';
 export { getOrCreateBasePriceId, getOrCreateAddOnPriceId } from './stripe/subscriptionPricing';
-export { FIRST_MONTH_FREE_COUPON_ID, getOrCreateFirstMonthFreeCouponId } from './stripe/firstMonthFreeCoupon';
+export { FIRST_MONTH_FREE_COUPON_ID } from './stripe/firstMonthFreeCoupon';
 export {
   DEFAULT_PLATFORM_TRIAL_DAYS,
+  FIRST_MONTH_FREE_DAYS,
   FIRST_MONTH_FREE_METADATA_KEY,
+  FREE_MONTH_START_METADATA_KEY,
+  FREE_MONTH_TRIAL_END_METADATA_KEY,
   STRIPE_CHECKOUT_MIN_TRIAL_END_LEAD_MS,
   TRIAL_END_SAFETY_MARGIN_MS,
   assessPlatformOfferHistory,
   decidePlatformCheckoutOffer,
+  platformCheckoutOfferMetadata,
   platformCheckoutTrialSubscriptionData,
   platformOfferMarkerUpdates,
   platformOfferUsageFromSubscription,

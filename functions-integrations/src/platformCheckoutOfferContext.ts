@@ -37,8 +37,8 @@ export async function loadAccountFacilities(
 }
 
 /**
- * The trial and coupon for this owner's checkout, from the account, all of its
- * facilities, and (for a facility checkout) the facility being subscribed.
+ * The trial (including any free month) for this owner's checkout, from the account, all
+ * of its facilities, and (for a facility checkout) the facility being subscribed.
  */
 export async function decideOfferForAccount(options: {
   db: FirebaseFirestore.Firestore;

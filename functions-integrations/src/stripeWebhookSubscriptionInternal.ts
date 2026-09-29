@@ -220,6 +220,10 @@ export async function updateFacilityFromPlatformSubscription(
  * Account fields mirrored from an account-level platform subscription, plus the offer
  * markers. A subscription without a trial never nulls an existing
  * `subscriptionTrialEnd`: that date is the record that the owner's one trial happened.
+ * A subscription carrying the free month moves `subscriptionTrialEnd` to the end of the
+ * free month (its Stripe `trial_end`). The app reads a `trialing` account whose trial end
+ * has passed as expired, so leaving the app trial's end there would lock the owner out
+ * for the free month.
  */
 export function accountUpdateFromPlatformSubscription(
   subscription: Stripe.Subscription,

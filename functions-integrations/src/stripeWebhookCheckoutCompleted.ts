@@ -15,22 +15,24 @@ import {
 import { reconcileAccountSubscription } from './accountSubscriptionReconcile';
 
 /**
- * Did this completed platform checkout carry the first-month-free coupon? Read from the
- * session's discounts (coupon id or expanded coupon) or the metadata flag checkout sets.
- * The trial marker comes from the subscription itself (see updateAccountFromSubscription).
+ * Did this completed platform checkout carry the owner's free month? Read from the
+ * `firstMonthFree` metadata flag checkout sets, or, for sessions created before the free
+ * month became trial time, the retired first-month-free coupon in the session's
+ * discounts (coupon id or expanded coupon). The trial marker comes from the subscription
+ * itself (see updateAccountFromSubscription).
  */
 export function platformOfferUsageFromCheckoutSession(session: Stripe.Checkout.Session): {
   trialUsed: boolean;
   firstMonthFreeUsed: boolean;
 } {
-  const discountHasCoupon = (session.discounts ?? []).some((d) => {
+  const discountHasLegacyCoupon = (session.discounts ?? []).some((d) => {
     const coupon = d?.coupon;
     const id = typeof coupon === 'string' ? coupon : coupon?.id;
     return id === FIRST_MONTH_FREE_COUPON_ID;
   });
   return {
     trialUsed: false,
-    firstMonthFreeUsed: discountHasCoupon || session.metadata?.[FIRST_MONTH_FREE_METADATA_KEY] === 'true',
+    firstMonthFreeUsed: discountHasLegacyCoupon || session.metadata?.[FIRST_MONTH_FREE_METADATA_KEY] === 'true',
   };
 }
 
@@ -54,7 +56,7 @@ export async function handleCheckoutCompleted(session: Stripe.Checkout.Session) 
     return;
   }
 
-  // A completed platform checkout that carried the coupon has used the owner's one free month.
+  // A completed platform checkout that carried the free month has used the owner's one free month.
   // The subscription events record the same thing from the subscription's metadata, so
   // a failure here is logged rather than failing (and replaying) the whole event.
   try {

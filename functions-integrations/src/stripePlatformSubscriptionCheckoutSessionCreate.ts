@@ -1,8 +1,7 @@
 import * as functions from 'firebase-functions/v1';
 import type Stripe from 'stripe';
 import {
-  FIRST_MONTH_FREE_METADATA_KEY,
-  getOrCreateFirstMonthFreeCouponId,
+  platformCheckoutOfferMetadata,
   platformCheckoutTrialSubscriptionData,
   writeAuditLog,
   type PlatformCheckoutTrialDecision,
@@ -10,23 +9,22 @@ import {
 
 /**
  * Pure: the Checkout Session params for an account-level platform subscription.
- * Trial and coupon come from `decidePlatformCheckoutOffer`: one trial and one free
- * month per owner, ever. `firstMonthFreeCouponId` is null when the coupon is not offered.
+ * The trial comes from `decidePlatformCheckoutOffer`: one trial and one free month per
+ * owner, ever. The free month is trial time (`trial_end`); no coupon or discount is sent.
  */
 export function buildAccountSubscriptionCheckoutParams(options: {
   accountId: string;
   customerId: string;
   facilityCount: number;
   lineItems: Stripe.Checkout.SessionCreateParams.LineItem[];
-  firstMonthFreeCouponId: string | null;
   trial: PlatformCheckoutTrialDecision;
   successUrl?: string;
   cancelUrl?: string;
   ownerUid: string;
 }): Stripe.Checkout.SessionCreateParams {
-  const { accountId, customerId, facilityCount, lineItems, firstMonthFreeCouponId, trial, successUrl, cancelUrl, ownerUid } =
-    options;
-  const params: Stripe.Checkout.SessionCreateParams = {
+  const { accountId, customerId, facilityCount, lineItems, trial, successUrl, cancelUrl, ownerUid } = options;
+  const offerMetadata = platformCheckoutOfferMetadata(trial);
+  return {
     customer: customerId,
     mode: 'subscription',
     line_items: lineItems,
@@ -36,20 +34,17 @@ export function buildAccountSubscriptionCheckoutParams(options: {
       accountId: accountId,
       ownerUid,
       facilityCount: facilityCount.toString(),
-      [FIRST_MONTH_FREE_METADATA_KEY]: String(!!firstMonthFreeCouponId),
+      ...offerMetadata,
     },
     subscription_data: {
       ...platformCheckoutTrialSubscriptionData(trial),
       metadata: {
         accountId: accountId,
         facilityCount: facilityCount.toString(),
-        trialDecision: trial.kind,
-        [FIRST_MONTH_FREE_METADATA_KEY]: String(!!firstMonthFreeCouponId),
+        ...offerMetadata,
       },
     },
   };
-  if (firstMonthFreeCouponId) params.discounts = [{ coupon: firstMonthFreeCouponId }];
-  return params;
 }
 
 export async function createSubscriptionCheckoutSessionAndAudit(options: {
@@ -65,7 +60,6 @@ export async function createSubscriptionCheckoutSessionAndAudit(options: {
   ownerUid: string;
   /** From `decidePlatformCheckoutOffer`. */
   trial: PlatformCheckoutTrialDecision;
-  attachFirstMonthFree: boolean;
   auditLog?: typeof writeAuditLog;
 }): Promise<{ checkoutUrl: string | null; sessionId: string }> {
   const {
@@ -80,7 +74,6 @@ export async function createSubscriptionCheckoutSessionAndAudit(options: {
     cancelUrl,
     ownerUid,
     trial,
-    attachFirstMonthFree,
   } = options;
   const auditLog = options.auditLog ?? writeAuditLog;
 
@@ -107,17 +100,16 @@ export async function createSubscriptionCheckoutSessionAndAudit(options: {
       lineItemsCount: lineItems.length,
       trialDecision: trial.kind,
       trialReason: trial.reason,
-      attachFirstMonthFree,
+      firstMonthFree: trial.kind === 'free_month',
     });
-    // Public offer: 30-day trial, then the first paid month is free, once per owner.
-    const firstMonthFreeCouponId = attachFirstMonthFree ? await getOrCreateFirstMonthFreeCouponId(stripe) : null;
+    // Public offer: 30-day trial, then the first month free, once per owner; the free
+    // month is extra trial time, so the first invoice after it is the full price.
     const session = await stripe.checkout.sessions.create(
       buildAccountSubscriptionCheckoutParams({
         accountId,
         customerId,
         facilityCount,
         lineItems,
-        firstMonthFreeCouponId,
         trial,
         successUrl,
         cancelUrl,
