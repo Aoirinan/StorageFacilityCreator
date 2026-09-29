@@ -227,7 +227,7 @@ test('entitlement: mirrors _assertFacilityAllowsPermanentTenantDeletion', () => 
   }
 
   // The card-backed free month (trialing with a Stripe subscription) counts as paid,
-  // like active: it does not end at the trial end date.
+  // like active, until its trial end plus a few days' grace for the webhook.
   assert.equal(
     facilityAllowsPermanentTenantDelete(
       { platformSubscriptionStatus: 'trialing', stripePlatformSubscriptionId: 'sub_test_1', platformSubscriptionTrialEnd: earlier },
@@ -247,7 +247,33 @@ test('entitlement: mirrors _assertFacilityAllowsPermanentTenantDeletion', () => 
   assert.equal(
     facilityAllowsPermanentTenantDelete(
       unpaid,
-      { subscriptionStatus: 'trialing', stripeSubscriptionId: 'sub_test_2', suspended: true },
+      { subscriptionStatus: 'trialing', stripeSubscriptionId: 'sub_test_2', subscriptionTrialEnd: later, suspended: true },
+      now,
+    ),
+    false,
+  );
+  // Stale: the trial end is past the grace, or missing. Not paid.
+  const longAgo = { toMillis: () => now - 10 * 86_400_000 };
+  assert.equal(
+    facilityAllowsPermanentTenantDelete(
+      { platformSubscriptionStatus: 'trialing', stripePlatformSubscriptionId: 'sub_test_1', platformSubscriptionTrialEnd: longAgo },
+      null,
+      now,
+    ),
+    false,
+  );
+  assert.equal(
+    facilityAllowsPermanentTenantDelete(
+      { platformSubscriptionStatus: 'trialing', stripePlatformSubscriptionId: 'sub_test_1' },
+      null,
+      now,
+    ),
+    false,
+  );
+  assert.equal(
+    facilityAllowsPermanentTenantDelete(
+      unpaid,
+      { subscriptionStatus: 'trialing', stripeSubscriptionId: 'sub_test_2', subscriptionTrialEnd: longAgo },
       now,
     ),
     false,

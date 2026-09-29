@@ -3,7 +3,12 @@
  *
  * The first free month is Stripe trial time (`stripe/platformCheckoutTrial.ts`), so an
  * owner who subscribes with a card reads `trialing` for up to two months before the
- * first charge. Every entitlement treats that subscription exactly like `active`.
+ * first charge. Every entitlement treats that subscription like `active`, but only
+ * until its recorded trial end (plus CARD_TRIAL_GRACE_MS for webhook lag): at the
+ * trial end Stripe charges and the webhook moves the status on (`active`, `pastDue`,
+ * or cancelled). A `trialing` record with a subscription id whose trial end is long
+ * past, or missing, is stale (a lost webhook, a pointer nobody cleared) and does not
+ * count.
  *
  * The unpaid app trial also reads `trialing`: `startTrial` and the super-admin
  * approve/grant actions write `subscriptionStatus: 'trialing'` with no Stripe
@@ -15,37 +20,69 @@
  * `facilityPaidOrCardTrial` in firestore.rules and storage.rules.
  */
 
+import { trialEndToMillis } from '../stripe/platformCheckoutTrial';
+
 /** A Firestore document's data, or nothing. */
 export type SubscriptionDocData = Record<string, unknown> | null | undefined;
+
+/**
+ * How long past its recorded trial end a card-backed trial still counts as paid: the
+ * webhook that moves it to `active` (or `pastDue`) can lag the trial end. Same value as
+ * `cardTrialGrace` in the app and `duration.value(3, 'd')` in the rules.
+ */
+export const CARD_TRIAL_GRACE_MS = 3 * 24 * 60 * 60 * 1000;
 
 function isNonEmptyString(value: unknown): boolean {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
 /**
- * `active`, or `trialing` with a Stripe subscription behind it.
+ * `active`; or `trialing` with a Stripe subscription behind it whose trial end, plus
+ * CARD_TRIAL_GRACE_MS, is still ahead of [nowMs]. A missing trial end does not count.
  *
  * [status] is an account's `subscriptionStatus` or a facility's
  * `platformSubscriptionStatus`. [stripeSubscriptionId] is the account's
- * `stripeSubscriptionId` or the facility's `stripePlatformSubscriptionId`.
+ * `stripeSubscriptionId` or the facility's `stripePlatformSubscriptionId`. [trialEnd] is
+ * the account's `subscriptionTrialEnd` or the facility's `platformSubscriptionTrialEnd`
+ * (a Firestore Timestamp, Date or epoch ms).
  */
-export function hasPaidOrCardTrialSubscription(status: unknown, stripeSubscriptionId: unknown): boolean {
+export function hasPaidOrCardTrialSubscription(
+  status: unknown,
+  stripeSubscriptionId: unknown,
+  trialEnd: unknown,
+  nowMs: number = Date.now(),
+): boolean {
   if (status === 'active') return true;
-  return status === 'trialing' && isNonEmptyString(stripeSubscriptionId);
+  if (status !== 'trialing' || !isNonEmptyString(stripeSubscriptionId)) return false;
+  const trialEndMs = trialEndToMillis(trialEnd);
+  return trialEndMs !== null && nowMs < trialEndMs + CARD_TRIAL_GRACE_MS;
 }
 
 /** [hasPaidOrCardTrialSubscription] for a `facilityCreatorAccounts` doc. */
-export function accountHasPaidOrCardTrialSubscription(account: SubscriptionDocData): boolean {
+export function accountHasPaidOrCardTrialSubscription(
+  account: SubscriptionDocData,
+  nowMs: number = Date.now(),
+): boolean {
   if (!account) return false;
-  return hasPaidOrCardTrialSubscription(account.subscriptionStatus, account.stripeSubscriptionId);
+  return hasPaidOrCardTrialSubscription(
+    account.subscriptionStatus,
+    account.stripeSubscriptionId,
+    account.subscriptionTrialEnd,
+    nowMs,
+  );
 }
 
 /** [hasPaidOrCardTrialSubscription] for a `facilities` doc's per-facility platform subscription. */
-export function facilityHasPaidOrCardTrialSubscription(facility: SubscriptionDocData): boolean {
+export function facilityHasPaidOrCardTrialSubscription(
+  facility: SubscriptionDocData,
+  nowMs: number = Date.now(),
+): boolean {
   if (!facility) return false;
   return hasPaidOrCardTrialSubscription(
     facility.platformSubscriptionStatus,
     facility.stripePlatformSubscriptionId,
+    facility.platformSubscriptionTrialEnd,
+    nowMs,
   );
 }
 
@@ -62,9 +99,10 @@ export function facilityHasPaidOrCardTrialSubscription(facility: SubscriptionDoc
 export function ownerHasPaidOrCardTrialSubscription(
   account: SubscriptionDocData,
   facilities: readonly SubscriptionDocData[],
+  nowMs: number = Date.now(),
 ): boolean {
-  if (accountHasPaidOrCardTrialSubscription(account)) return true;
-  return facilities.some((facility) => facilityHasPaidOrCardTrialSubscription(facility));
+  if (accountHasPaidOrCardTrialSubscription(account, nowMs)) return true;
+  return facilities.some((facility) => facilityHasPaidOrCardTrialSubscription(facility, nowMs));
 }
 
 /**
@@ -74,9 +112,10 @@ export function ownerHasPaidOrCardTrialSubscription(
 export function isUnpaidAppTrial(
   account: SubscriptionDocData,
   facilities: readonly SubscriptionDocData[],
+  nowMs: number = Date.now(),
 ): boolean {
   if (!account || account.subscriptionStatus !== 'trialing') return false;
-  return !ownerHasPaidOrCardTrialSubscription(account, facilities);
+  return !ownerHasPaidOrCardTrialSubscription(account, facilities, nowMs);
 }
 
 /**
@@ -90,8 +129,9 @@ export async function ownerOnUnpaidAppTrial(
   account: SubscriptionDocData,
   facility: SubscriptionDocData,
   loadLinkedFacilities: () => Promise<SubscriptionDocData[]>,
+  nowMs: number = Date.now(),
 ): Promise<boolean> {
-  if (!isUnpaidAppTrial(account, [facility])) return false;
+  if (!isUnpaidAppTrial(account, [facility], nowMs)) return false;
   const linked = await loadLinkedFacilities();
-  return isUnpaidAppTrial(account, [facility, ...linked]);
+  return isUnpaidAppTrial(account, [facility, ...linked], nowMs);
 }

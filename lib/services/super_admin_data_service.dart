@@ -54,8 +54,9 @@ class WebsiteAdminRow {
       facility.billingExempt || account?.billingExempt == true;
 
   /// Same rule as hasActiveBasePlatformSubscription in functions-integrations:
-  /// paid (the card-backed free month counts, whatever its trial end says),
-  /// or a trial whose end is still ahead, on the account or the facility.
+  /// paid (the card-backed free month counts until its trial end plus
+  /// `cardTrialGrace`), or a trial whose end is still ahead, on the account or
+  /// the facility.
   bool get hasActiveBaseSubscription {
     if (account?.suspended == true) return false;
     // active, or trialing with a Stripe subscription behind it.
@@ -1350,37 +1351,61 @@ class SuperAdminDataService {
         .map((s) => s.docs.map(SuperAdminNote.fromFirestore).toList());
   }
 
-  /// Extend a trial by N days for a given account.
+  /// Writes [fields] to the account in a transaction, unless its current data
+  /// has a Stripe subscription id ([adminAppTrialRefusal]): then writes
+  /// nothing and throws [AdminAppTrialRefused] (after the transaction, so the
+  /// message is not wrapped). [fields] gets the current data (null when the
+  /// account is missing, which the update then fails on).
+  static Future<void> _writeAppTrial(
+    String accountId,
+    Map<String, dynamic> Function(Map<String, dynamic>? current) fields,
+  ) async {
+    final ref = _db.collection('facilityCreatorAccounts').doc(accountId);
+    final refusal = await _db.runTransaction<String?>((transaction) async {
+      final snap = await transaction.get(ref);
+      final refusal = adminAppTrialRefusal(snap.data());
+      if (refusal != null) return refusal;
+      transaction.update(ref, fields(snap.data()));
+      return null;
+    });
+    if (refusal != null) throw AdminAppTrialRefused(refusal);
+  }
+
+  /// Extend a trial by N days for a given account. Refused
+  /// ([AdminAppTrialRefused]) on an account with a Stripe subscription id,
+  /// whose trial end is Stripe's.
   static Future<void> extendTrial(String accountId, int days) async {
     final doc =
         await _db.collection('facilityCreatorAccounts').doc(accountId).get();
     if (!doc.exists) return;
-    final data = doc.data()!;
-    final currentEnd = (data['subscriptionTrialEnd'] as Timestamp?)?.toDate() ??
-        DateTime.now();
-    final newEnd = currentEnd.isAfter(DateTime.now())
-        ? currentEnd.add(Duration(days: days))
-        : DateTime.now().add(Duration(days: days));
-    await _db
-        .collection('facilityCreatorAccounts')
-        .doc(accountId)
-        .update({'subscriptionTrialEnd': Timestamp.fromDate(newEnd)});
+    await _writeAppTrial(accountId, (current) {
+      final currentEnd =
+          (current?['subscriptionTrialEnd'] as Timestamp?)?.toDate() ??
+              DateTime.now();
+      final newEnd = currentEnd.isAfter(DateTime.now())
+          ? currentEnd.add(Duration(days: days))
+          : DateTime.now().add(Duration(days: days));
+      return {'subscriptionTrialEnd': Timestamp.fromDate(newEnd)};
+    });
   }
 
   /// Grant a fresh N-day trial to any account (admin-only).
-  /// Sets status to trialing with a new trial end date regardless of current status.
+  /// Sets status to trialing with a new trial end date regardless of current
+  /// status, except on an account with a Stripe subscription id: that is
+  /// refused ([AdminAppTrialRefused]), since the app trial would layer on the
+  /// subscription Stripe bills.
   static Future<void> grantTrial(String accountId, {int days = 30}) async {
     final now = DateTime.now();
     final trialEnd = now.add(Duration(days: days));
-    await _db.collection('facilityCreatorAccounts').doc(accountId).update({
-      'subscriptionStatus': 'trialing',
-      'subscriptionTrialEnd': Timestamp.fromDate(trialEnd),
-      'subscriptionCurrentPeriodStart': Timestamp.fromDate(now),
-      'subscriptionCurrentPeriodEnd': Timestamp.fromDate(trialEnd),
-      // Checkout reads this so the owner never gets a second Stripe trial.
-      'platformTrialUsedAt': FieldValue.serverTimestamp(),
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
+    await _writeAppTrial(accountId, (_) => {
+          'subscriptionStatus': 'trialing',
+          'subscriptionTrialEnd': Timestamp.fromDate(trialEnd),
+          'subscriptionCurrentPeriodStart': Timestamp.fromDate(now),
+          'subscriptionCurrentPeriodEnd': Timestamp.fromDate(trialEnd),
+          // Checkout reads this so the owner never gets a second Stripe trial.
+          'platformTrialUsedAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
   }
 
   /// Revoke an active trial — sets status back to cancelled and clears trial end.
@@ -1413,19 +1438,22 @@ class SuperAdminDataService {
     });
   }
 
+  /// Refused ([AdminAppTrialRefused]) on an account that already has a
+  /// Stripe subscription id (an owner who subscribed with a card while
+  /// pending): its trial and billing are Stripe's.
   static Future<void> approveTrial(String accountId, {int days = 30}) async {
     final now = DateTime.now();
     final trialEnd = now.add(Duration(days: days));
-    await _db.collection('facilityCreatorAccounts').doc(accountId).update({
-      'subscriptionStatus': 'trialing',
-      'subscriptionTrialEnd': Timestamp.fromDate(trialEnd),
-      'subscriptionCurrentPeriodStart': Timestamp.fromDate(now),
-      'subscriptionCurrentPeriodEnd': Timestamp.fromDate(trialEnd),
-      'approvedAt': FieldValue.serverTimestamp(),
-      // Checkout reads this so the owner never gets a second Stripe trial.
-      'platformTrialUsedAt': FieldValue.serverTimestamp(),
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
+    await _writeAppTrial(accountId, (_) => {
+          'subscriptionStatus': 'trialing',
+          'subscriptionTrialEnd': Timestamp.fromDate(trialEnd),
+          'subscriptionCurrentPeriodStart': Timestamp.fromDate(now),
+          'subscriptionCurrentPeriodEnd': Timestamp.fromDate(trialEnd),
+          'approvedAt': FieldValue.serverTimestamp(),
+          // Checkout reads this so the owner never gets a second Stripe trial.
+          'platformTrialUsedAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
   }
 
   /// Reject a pending account — marks it cancelled so the user sees the
@@ -1670,22 +1698,24 @@ class SuperAdminDataService {
     required String actorUid,
     required String actorEmail,
   }) async {
-    final update = <String, dynamic>{
-      'suspended': suspended,
-      'updatedAt': FieldValue.serverTimestamp(),
-      'suspendedByUid': suspended ? actorUid : null,
-      'suspendedByEmail': suspended ? actorEmail : null,
-      'suspendedAt': suspended ? FieldValue.serverTimestamp() : null,
-      'suspensionReason': suspended ? reason : null,
-    };
-    if (suspended) {
-      update['subscriptionStatus'] = 'cancelled';
-      update['subscriptionCurrentPeriodEnd'] = FieldValue.delete();
-      update['subscriptionTrialEnd'] = FieldValue.delete();
-    }
-    await _db
-        .collection('facilityCreatorAccounts')
-        .doc(accountId)
-        .update(update);
+    // Read in the same transaction: suspending deletes the trial end, so it
+    // records `platformTrialUsedAt` when that is missing
+    // ([accountSuspensionFields]).
+    final ref = _db.collection('facilityCreatorAccounts').doc(accountId);
+    await _db.runTransaction((transaction) async {
+      final snap = await transaction.get(ref);
+      transaction.update(
+        ref,
+        accountSuspensionFields(
+          snap.data(),
+          suspended: suspended,
+          reason: reason,
+          actorUid: actorUid,
+          actorEmail: actorEmail,
+          stamp: FieldValue.serverTimestamp(),
+          deleteValue: FieldValue.delete(),
+        ),
+      );
+    });
   }
 }

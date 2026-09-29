@@ -67,11 +67,16 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
       SubscriptionTrialNotice.of(_account!, _subscribedFacilities);
 
   /// A facility's plan line: in the card-backed free month it names the date
-  /// of the first charge (the Stripe trial end) instead of the raw status.
+  /// of the first charge (the Stripe trial end) instead of the raw status, or
+  /// the date it ends when it is set to cancel (then there is no charge).
   String _facilityPlanLine(FacilityModel f) {
     final firstCharge = SubscriptionTrialNotice.facilityFirstCharge(f);
     if (firstCharge != null) {
       return 'First charge ${_formatDate(firstCharge)} • \$75/mo';
+    }
+    final endsOn = SubscriptionTrialNotice.facilityEndsOn(f);
+    if (endsOn != null) {
+      return 'Ends ${_formatDate(endsOn)}';
     }
     return '${f.platformSubscriptionStatus ?? "Active"} • \$75/mo';
   }
@@ -856,7 +861,7 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
             '• You cannot refer yourself or your own company.\n'
             '• We may disqualify referrals that abuse the program or do not represent a good-faith customer.\n\n'
             'What referred operators get\n'
-            '• Their facility’s platform subscription checkout uses the standard 30-day trial before the first bill.\n\n'
+            '• Their facility’s platform subscription checkout uses the standard 30-day trial, then the first month free, before the first bill.\n\n'
             'What you get\n'
             '• After their first paid invoice on that referred facility’s platform subscription, you receive '
             'one month at no charge on one of your own facility platform subscriptions (the one you pick above, '
@@ -1116,12 +1121,21 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
                               // Inline alerts (trial, past due, cancel warning).
                               // The trial lines are for the unpaid app trial only;
                               // an owner in the card-backed free month sees the
-                              // date of the first charge instead.
+                              // date of the first charge instead, or the date it
+                              // ends once it is set to cancel (no charge then).
                               if (_notice.firstCharge != null)
                                 Padding(
                                   padding: const EdgeInsets.only(top: 6),
                                   child: Text(
                                     'First charge ${_formatDate(_notice.firstCharge!)}',
+                                    style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                                  ),
+                                ),
+                              if (_notice.endsOn != null)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 6),
+                                  child: Text(
+                                    'Ends ${_formatDate(_notice.endsOn!)}',
                                     style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
                                   ),
                                 ),

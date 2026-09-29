@@ -38,10 +38,11 @@ void main() {
     );
   });
 
-  test('a per-facility subscription trialing past its trial end is paid for, like active', () {
+  test('a per-facility subscription trialing just past its trial end is paid for, like active', () {
     // A per-facility subscription always has a card behind it (Checkout), and
     // the first free month is Stripe trial time: trialing is the free month
-    // before the first charge, never a lapsed trial.
+    // before the first charge. A day past the trial end the webhook that
+    // moves it to active may simply be late (3-day grace).
     final decision = decideSubscriptionBanner(
       account: AccountSubscriptionState(status: 'trialing', trialEnd: DateTime(2026, 8, 18)),
       facilities: [
@@ -49,12 +50,33 @@ void main() {
           name: 'North Lot',
           perFacility: true,
           status: 'trialing',
-          trialEnd: DateTime(2026, 9, 1),
+          trialEnd: DateTime(2026, 9, 13),
         ),
       ],
       now: now,
     );
     expect(decision.show, isFalse);
+  });
+
+  test('a per-facility subscription still trialing long past its trial end is stale and warns', () {
+    // Stripe has charged or ended it by now; the app never heard.
+    for (final trialEnd in [DateTime(2026, 9, 1), null]) {
+      final decision = decideSubscriptionBanner(
+        account: AccountSubscriptionState(status: 'trialing', trialEnd: DateTime(2026, 8, 18)),
+        facilities: [
+          FacilitySubscriptionState(
+            name: 'North Lot',
+            perFacility: true,
+            status: 'trialing',
+            trialEnd: trialEnd,
+          ),
+        ],
+        now: now,
+      );
+      expect(decision.show, isTrue);
+      expect(decision.critical, isTrue);
+      expect(decision.message, 'The trial for North Lot has ended. Subscribe to keep using it.');
+    }
   });
 
   test('an account in the card-backed free month is not told its trial expired', () {

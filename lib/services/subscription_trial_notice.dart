@@ -10,7 +10,9 @@ import 'package:sfcapp/models/paid_subscription.dart';
 /// ([ownerHasPaidOrCardTrialSubscription]). They get no trial countdown, no
 /// "Trial expired" line or dialog, and the account is shown as active; a
 /// card-backed trial on the account shows the date of the first charge
-/// instead. The unpaid app trial keeps every trial notice.
+/// instead, or, once it is set to cancel at period end, the date it ends
+/// (there is no first charge then). The unpaid app trial keeps every trial
+/// notice.
 class SubscriptionTrialNotice {
   /// The owner is subscribed with a card (or paying).
   final bool ownerSubscribed;
@@ -24,8 +26,13 @@ class SubscriptionTrialNotice {
   final bool showAccountPeriod;
 
   /// "First charge `<date>`": the Stripe trial end of a card-backed trial on
-  /// the account. Null otherwise.
+  /// the account that is not set to cancel. Null otherwise.
   final DateTime? firstCharge;
+
+  /// "Ends `<date>`": the Stripe trial end of a card-backed trial on the
+  /// account that is set to cancel at period end. Stripe ends it then and
+  /// never charges, so it has no first charge. Null otherwise.
+  final DateTime? endsOn;
 
   /// "Trial: N days left".
   final bool showTrialDaysLeft;
@@ -41,6 +48,7 @@ class SubscriptionTrialNotice {
     required this.displayStatus,
     required this.showAccountPeriod,
     required this.firstCharge,
+    required this.endsOn,
     required this.showTrialDaysLeft,
     required this.showTrialExpired,
     required this.showTrialEndingSoon,
@@ -60,7 +68,12 @@ class SubscriptionTrialNotice {
           : account.subscriptionStatus,
       showAccountPeriod:
           !(trialing && subscribed && !account.hasCardBackedTrial),
-      firstCharge: account.hasCardBackedTrial ? account.subscriptionTrialEnd : null,
+      firstCharge: account.hasCardBackedTrial && !account.subscriptionCancelAtPeriodEnd
+          ? account.subscriptionTrialEnd
+          : null,
+      endsOn: account.hasCardBackedTrial && account.subscriptionCancelAtPeriodEnd
+          ? account.subscriptionTrialEnd
+          : null,
       showTrialDaysLeft: appTrialNotices &&
           account.daysUntilTrialExpiration != null &&
           !account.isTrialExpired,
@@ -78,10 +91,24 @@ class SubscriptionTrialNotice {
 
   /// The first charge of a facility's card-backed free month (its Stripe
   /// trial end), shown on its plan line instead of the raw `trialing`. Null
-  /// for any other facility.
+  /// for any other facility, and for one set to cancel at period end
+  /// ([facilityEndsOn]).
   static DateTime? facilityFirstCharge(FacilityModel facility) {
-    if (facility.platformSubscriptionStatus != 'trialing') return null;
-    if (!facility.hasPaidOrCardTrialPlatformSubscription) return null;
+    if (!_facilityCardTrial(facility)) return null;
+    if (facility.platformSubscriptionCancelAtPeriodEnd) return null;
     return facility.platformSubscriptionTrialEnd;
   }
+
+  /// The end of a facility's card-backed free month that is set to cancel at
+  /// period end: Stripe ends it on that date without charging. Null for any
+  /// other facility.
+  static DateTime? facilityEndsOn(FacilityModel facility) {
+    if (!_facilityCardTrial(facility)) return null;
+    if (!facility.platformSubscriptionCancelAtPeriodEnd) return null;
+    return facility.platformSubscriptionTrialEnd;
+  }
+
+  static bool _facilityCardTrial(FacilityModel facility) =>
+      facility.platformSubscriptionStatus == 'trialing' &&
+      facility.hasPaidOrCardTrialPlatformSubscription;
 }

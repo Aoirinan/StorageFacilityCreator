@@ -573,11 +573,13 @@ class FacilityModel {
 
   /// A paid per-facility platform subscription: `active`, or `trialing` with a
   /// Stripe subscription behind it (the card-backed free month, which counts
-  /// as paid like `active`). See [hasPaidOrCardTrialSubscription].
+  /// as paid like `active` until [platformSubscriptionTrialEnd] plus
+  /// [cardTrialGrace]). See [hasPaidOrCardTrialSubscription].
   bool get hasPaidOrCardTrialPlatformSubscription =>
       hasPaidOrCardTrialSubscription(
         status: platformSubscriptionStatus,
         stripeSubscriptionId: stripePlatformSubscriptionId,
+        trialEnd: platformSubscriptionTrialEnd,
       );
 
   /// True if this facility has an active platform subscription (per-facility

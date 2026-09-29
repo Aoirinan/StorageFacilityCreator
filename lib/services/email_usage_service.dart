@@ -77,10 +77,12 @@ class EmailUsageService {
   /// A facility with its own platform subscription is judged by that (the
   /// account-level trial is a legacy leftover for those owners), and there
   /// `trialing` has a Stripe subscription behind it: the card-backed free
-  /// month, paid for like active, so the paid cap. Otherwise the trial cap is
-  /// for the unpaid app trial only ([ownerOnUnpaidAppTrial]), the rule the
-  /// send path enforces (outboundRaw.ts): a card-backed subscription on the
-  /// account or on another of the owner's facilities gets the paid cap.
+  /// month, paid for like active until its trial end plus [cardTrialGrace],
+  /// so the paid cap; a stale one (trial end long past, or none) gets the
+  /// trial cap, as the send path gives it. Otherwise the trial cap is for the
+  /// unpaid app trial only ([ownerOnUnpaidAppTrial]), the rule the send path
+  /// enforces (outboundRaw.ts): a card-backed subscription on the account or
+  /// on another of the owner's facilities gets the paid cap.
   @visibleForTesting
   static int defaultLimitFor({
     required Map<String, dynamic> facility,
@@ -88,7 +90,21 @@ class EmailUsageService {
     Iterable<FacilityModel> facilities = const [],
   }) {
     final perFacilitySub = (facility['stripePlatformSubscriptionId'] as String?)?.trim() ?? '';
-    if (perFacilitySub.isNotEmpty) return kEmailMonthlyLimitPaid;
+    if (perFacilitySub.isNotEmpty) {
+      final status = facility['platformSubscriptionStatus'] as String?;
+      final trialEnd = facility['platformSubscriptionTrialEnd'];
+      final stale = status == 'trialing' &&
+          !hasPaidOrCardTrialSubscription(
+            status: status,
+            stripeSubscriptionId: perFacilitySub,
+            trialEnd: trialEnd is Timestamp
+                ? trialEnd.toDate()
+                : trialEnd is DateTime
+                    ? trialEnd
+                    : null,
+          );
+      return emailMonthlyLimitForAccount(isTrialing: stale);
+    }
     return emailMonthlyLimitForAccount(
       isTrialing: ownerOnUnpaidAppTrial(account, facilities),
     );

@@ -33,15 +33,19 @@ service firebase.storage {
     }
 
     // A paid subscription: 'active', or 'trialing' with a Stripe subscription
-    // behind it (the card-backed free month before the first charge). The
-    // unpaid app trial is 'trialing' with no subscription id. Mirrors
-    // accountPaidOrCardTrial / facilityPaidOrCardTrial in firestore.rules.
+    // behind it (the card-backed free month before the first charge) whose
+    // recorded trial end is less than 3 days past; a missing trial end does
+    // not count. The unpaid app trial is 'trialing' with no subscription id.
+    // Mirrors accountPaidOrCardTrial / facilityPaidOrCardTrial in
+    // firestore.rules.
     function accountPaidOrCardTrial(data) {
       return data.get('subscriptionStatus', '') == 'active' ||
         (
           data.get('subscriptionStatus', '') == 'trialing' &&
           data.get('stripeSubscriptionId', null) is string &&
-          data.get('stripeSubscriptionId', '').size() > 0
+          data.get('stripeSubscriptionId', '').size() > 0 &&
+          data.get('subscriptionTrialEnd', null) is timestamp &&
+          data.get('subscriptionTrialEnd', null) > request.time - duration.value(3, 'd')
         );
     }
 
@@ -50,7 +54,9 @@ service firebase.storage {
         (
           data.get('platformSubscriptionStatus', '') == 'trialing' &&
           data.get('stripePlatformSubscriptionId', null) is string &&
-          data.get('stripePlatformSubscriptionId', '').size() > 0
+          data.get('stripePlatformSubscriptionId', '').size() > 0 &&
+          data.get('platformSubscriptionTrialEnd', null) is timestamp &&
+          data.get('platformSubscriptionTrialEnd', null) > request.time - duration.value(3, 'd')
         );
     }
 

@@ -49,6 +49,17 @@ function loadLimitsFromSource() {
   };
 }
 
+/** CARD_TRIAL_GRACE_MS in functions-shared src/subscription/paidSubscription.ts. */
+const CARD_TRIAL_GRACE_MS = 3 * 24 * 60 * 60 * 1000;
+
+/** hasPaidOrCardTrialSubscription (functions-shared) for a Firestore Timestamp trial end. */
+function paidOrCardTrial(status, subscriptionId, trialEnd, nowMs = Date.now()) {
+  if (status === 'active') return true;
+  if (status !== 'trialing' || typeof subscriptionId !== 'string' || subscriptionId.trim().length === 0) return false;
+  const endMs = trialEnd && typeof trialEnd.toMillis === 'function' ? trialEnd.toMillis() : null;
+  return typeof endMs === 'number' && Number.isFinite(endMs) && nowMs < endMs + CARD_TRIAL_GRACE_MS;
+}
+
 function currentMonthKey() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -111,13 +122,18 @@ async function main() {
       const status = acctSnap.docs[0].get('subscriptionStatus');
       // The trial cap is for the unpaid app trial only: trialing with a Stripe
       // subscription (on the account or this facility) is the card-backed free
-      // month, paid for like active. The send path (outboundRaw.ts) also
-      // counts the account's other facilities and rewrites this value.
-      const hasId = (value) => typeof value === 'string' && value.trim().length > 0;
+      // month, paid for like active until its trial end plus a 3-day grace
+      // (hasPaidOrCardTrialSubscription in functions-shared
+      // src/subscription/paidSubscription.ts). The send path (outboundRaw.ts)
+      // also counts the account's other facilities and rewrites this value.
+      const acct = acctSnap.docs[0];
       const cardBacked =
-        hasId(acctSnap.docs[0].get('stripeSubscriptionId')) ||
-        (doc.get('platformSubscriptionStatus') === 'active' ||
-          (doc.get('platformSubscriptionStatus') === 'trialing' && hasId(doc.get('stripePlatformSubscriptionId'))));
+        paidOrCardTrial(acct.get('subscriptionStatus'), acct.get('stripeSubscriptionId'), acct.get('subscriptionTrialEnd')) ||
+        paidOrCardTrial(
+          doc.get('platformSubscriptionStatus'),
+          doc.get('stripePlatformSubscriptionId'),
+          doc.get('platformSubscriptionTrialEnd'),
+        );
       isTrialing = status === 'trialing' && !cardBacked;
     } else {
       console.warn(`[warn] ${facilityId} — no facilityCreatorAccounts row; using paid limit`);

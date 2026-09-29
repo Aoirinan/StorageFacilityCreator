@@ -18,8 +18,9 @@ function timestampMillis(value: unknown): number | null {
 
 /**
  * The $75 base plan the website add-on needs, on the account or on the facility: paid,
- * in the card-backed free month (`trialing` with a Stripe subscription, which counts as
- * paid whatever its end date), or in a trial whose end is still ahead.
+ * in the card-backed free month (`trialing` with a Stripe subscription, paid until its
+ * trial end plus a few days' grace for the webhook), or in a trial whose end is still
+ * ahead.
  * Same rule as WebsiteAdminRow.hasActiveBaseSubscription in the app.
  */
 export function hasActiveBasePlatformSubscription(
@@ -32,8 +33,13 @@ export function hasActiveBasePlatformSubscription(
   const facilityStatus = String(facility.platformSubscriptionStatus || '').toLowerCase();
   const accountTrialEndMs = timestampMillis(account.subscriptionTrialEnd);
   const facilityTrialEndMs = timestampMillis(facility.platformSubscriptionTrialEnd);
-  return hasPaidOrCardTrialSubscription(accountStatus, account.stripeSubscriptionId) ||
-    hasPaidOrCardTrialSubscription(facilityStatus, facility.stripePlatformSubscriptionId) ||
+  return hasPaidOrCardTrialSubscription(accountStatus, account.stripeSubscriptionId, account.subscriptionTrialEnd, nowMs) ||
+    hasPaidOrCardTrialSubscription(
+      facilityStatus,
+      facility.stripePlatformSubscriptionId,
+      facility.platformSubscriptionTrialEnd,
+      nowMs,
+    ) ||
     (accountStatus === 'trialing' &&
       accountTrialEndMs !== null &&
       accountTrialEndMs > nowMs) ||

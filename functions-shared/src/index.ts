@@ -182,6 +182,7 @@ export type {
   FacilitySubscriptionSnapshot,
 } from './subscription/accountRollup';
 export {
+  CARD_TRIAL_GRACE_MS,
   accountHasPaidOrCardTrialSubscription,
   facilityHasPaidOrCardTrialSubscription,
   hasPaidOrCardTrialSubscription,

@@ -6,6 +6,33 @@ import {
   writeAuditLog,
 } from '@sfc/functions-shared';
 
+/** Shown when an account billed by Stripe asks for the app trial. */
+export const START_TRIAL_STRIPE_SUBSCRIPTION_MESSAGE =
+  'This account already has a Stripe subscription, so an app trial cannot be added to it. ' +
+  'Its free time and billing come from that subscription: see Subscription.';
+
+/**
+ * Why [account] cannot start the app trial, or null when it can.
+ *
+ * An account with a Stripe subscription id never gets the app trial on top: the app
+ * trial writes `trialing` and a new `subscriptionTrialEnd`, which on such an account
+ * would read as a card-backed free month and move its trial end away from Stripe's.
+ */
+export function startTrialRefusal(account: Record<string, unknown>): string | null {
+  const subscriptionId = typeof account.stripeSubscriptionId === 'string' ? account.stripeSubscriptionId.trim() : '';
+  if (subscriptionId) return START_TRIAL_STRIPE_SUBSCRIPTION_MESSAGE;
+  const status = account.subscriptionStatus;
+  if (status === 'active' || status === 'trialing') {
+    return 'Account already has an active subscription or trial';
+  }
+  // One trial per account, ever. Expired trials are moved out of `trialing` by the
+  // nightly sweep, so the status check above does not block a second grant on its own.
+  if (account.subscriptionTrialEnd || account.platformTrialUsedAt) {
+    return 'This account has already used its free trial. Choose a plan to continue.';
+  }
+  return null;
+}
+
 /**
  * Start a 30-day trial for an account
  */
@@ -41,19 +68,9 @@ export const startTrial = functions.https.onCall(async (data: any, context) => {
       throw new functions.https.HttpsError('permission-denied', 'Access denied');
     }
 
-    const currentStatus = accountData.subscriptionStatus as string;
-    if (currentStatus === 'active' || currentStatus === 'trialing') {
-      throw new functions.https.HttpsError('failed-precondition', 'Account already has an active subscription or trial');
-    }
-
-    // One trial per account, ever. Expired trials are now moved out of
-    // `trialing` by the nightly sweep, so the status check above no longer
-    // blocks a second grant on its own.
-    if (accountData.subscriptionTrialEnd || accountData.platformTrialUsedAt) {
-      throw new functions.https.HttpsError(
-        'failed-precondition',
-        'This account has already used its free trial. Choose a plan to continue.',
-      );
+    const refusal = startTrialRefusal(accountData);
+    if (refusal) {
+      throw new functions.https.HttpsError('failed-precondition', refusal);
     }
 
     const now = new Date();

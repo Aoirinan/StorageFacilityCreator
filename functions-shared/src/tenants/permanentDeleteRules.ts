@@ -341,11 +341,11 @@ export function timestampMillis(value: unknown): number | null {
 
 /**
  * FacilityModel.hasActivePlatformSubscription: paid, in the card-backed free month
- * (`trialing` with a Stripe subscription, whatever its end date), or trialing with an
- * end date still ahead.
+ * (`trialing` with a Stripe subscription, until its trial end plus the webhook grace), or
+ * trialing with an end date still ahead.
  */
 function facilityHasActivePlatformSubscription(facility: DocData, nowMs: number): boolean {
-  if (facilityHasPaidOrCardTrialSubscription(facility)) return true;
+  if (facilityHasPaidOrCardTrialSubscription(facility, nowMs)) return true;
   const status = facility.platformSubscriptionStatus;
   const trialEnd = timestampMillis(facility.platformSubscriptionTrialEnd);
   return status === 'trialing' && trialEnd !== null && trialEnd > nowMs;
@@ -354,8 +354,8 @@ function facilityHasActivePlatformSubscription(facility: DocData, nowMs: number)
 /** FacilityCreatorAccountModel.allowsPermanentTenantDeletion. */
 function accountAllowsPermanentTenantDelete(account: DocData, nowMs: number): boolean {
   if (account.suspended === true) return false;
-  // Paid, or the card-backed free month: like `active`, it does not end at the trial end.
-  if (accountHasPaidOrCardTrialSubscription(account)) return true;
+  // Paid, or the card-backed free month (until its trial end plus the webhook grace).
+  if (accountHasPaidOrCardTrialSubscription(account, nowMs)) return true;
   // A missing or unknown status parses as pendingApproval in the app.
   const status = account.subscriptionStatus;
   if (status !== 'trialing') return false;

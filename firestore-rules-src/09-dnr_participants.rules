@@ -1,16 +1,22 @@
     // A paid subscription: 'active', or 'trialing' with a Stripe subscription
-    // behind it. The first free month is Stripe trial time, so an owner who
-    // subscribed with a card reads 'trialing' until the first charge, and that
-    // counts as paid. The unpaid app trial is 'trialing' with no subscription
-    // id. Same rule as hasPaidOrCardTrialSubscription in functions-shared
-    // (subscription/paidSubscription.ts) and the app (lib/models/paid_subscription.dart).
-    // Both ids are backend-only (the entitlement forbidden-key lists).
+    // behind it whose recorded trial end is less than 3 days past (the
+    // webhook that moves it on can lag the trial end). The first free month is
+    // Stripe trial time, so an owner who subscribed with a card reads
+    // 'trialing' until the first charge, and that counts as paid; a 'trialing'
+    // record with an id whose trial end is long past, or missing, is stale and
+    // does not. The unpaid app trial is 'trialing' with no subscription id.
+    // Same rule as hasPaidOrCardTrialSubscription in functions-shared
+    // (subscription/paidSubscription.ts, CARD_TRIAL_GRACE_MS) and the app
+    // (lib/models/paid_subscription.dart, cardTrialGrace). The ids and trial
+    // ends are backend-only (the entitlement forbidden-key lists).
     function accountPaidOrCardTrial(data) {
       return data.get('subscriptionStatus', '') == 'active' ||
         (
           data.get('subscriptionStatus', '') == 'trialing' &&
           data.get('stripeSubscriptionId', null) is string &&
-          data.get('stripeSubscriptionId', '').size() > 0
+          data.get('stripeSubscriptionId', '').size() > 0 &&
+          data.get('subscriptionTrialEnd', null) is timestamp &&
+          data.get('subscriptionTrialEnd', null) > request.time - duration.value(3, 'd')
         );
     }
 
@@ -19,7 +25,9 @@
         (
           data.get('platformSubscriptionStatus', '') == 'trialing' &&
           data.get('stripePlatformSubscriptionId', null) is string &&
-          data.get('stripePlatformSubscriptionId', '').size() > 0
+          data.get('stripePlatformSubscriptionId', '').size() > 0 &&
+          data.get('platformSubscriptionTrialEnd', null) is timestamp &&
+          data.get('platformSubscriptionTrialEnd', null) > request.time - duration.value(3, 'd')
         );
     }
 

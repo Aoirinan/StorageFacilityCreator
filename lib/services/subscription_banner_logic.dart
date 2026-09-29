@@ -1,3 +1,5 @@
+import 'package:sfcapp/models/paid_subscription.dart';
+
 /// Decides what the subscription warning banner should say.
 ///
 /// Pure: takes plain values, returns a decision. The widget maps models to
@@ -36,12 +38,16 @@ class FacilitySubscriptionState {
       status == 'trialing' && trialEnd != null && !trialEnd!.isAfter(now);
 
   /// A per-facility `trialing` subscription is the card-backed free month
-  /// (`hasPaidOrCardTrialSubscription`): paid for, like `active`, whatever
-  /// its trial end says.
+  /// (`hasPaidOrCardTrialSubscription`): paid for, like `active`, until its
+  /// trial end plus [cardTrialGrace]. Past that, or with no trial end, it is
+  /// stale (Stripe has charged or ended it and the webhook never arrived).
   bool healthyAt(DateTime now) =>
       billingExempt ||
       status == 'active' ||
-      (status == 'trialing' && (perFacility || !trialEndedBy(now)));
+      (status == 'trialing' &&
+          (perFacility
+              ? trialEnd != null && now.isBefore(trialEnd!.add(cardTrialGrace))
+              : !trialEndedBy(now)));
 }
 
 class AccountSubscriptionState {
@@ -53,10 +59,11 @@ class AccountSubscriptionState {
   /// Set by a super admin on accounts the platform does not bill.
   final bool billingExempt;
 
-  /// `trialing` with a Stripe subscription behind it
-  /// (`FacilityCreatorAccountModel.hasCardBackedTrial`): the owner subscribed
-  /// with a card and is in the free month. Paid for, like `active`: its trial
-  /// never "expires" here.
+  /// `trialing` with a Stripe subscription behind it, still counting as paid
+  /// (`FacilityCreatorAccountModel.hasCardBackedTrial`, which is bounded by
+  /// the trial end plus `cardTrialGrace`): the owner subscribed with a card
+  /// and is in the free month. Paid for, like `active`: while it counts, its
+  /// trial does not "expire" here.
   final bool cardBackedTrial;
 
   const AccountSubscriptionState({
@@ -129,9 +136,12 @@ SubscriptionBannerDecision _decideFromFacilities(List<FacilitySubscriptionState>
   final who = '${first.name}$suffix';
 
   String message;
-  // No 'trialing' case: a per-facility subscription is card-backed, so a
-  // trialing one is always healthy (the free month before the first charge).
   switch (first.status) {
+    // A card-backed free month whose trial end is long past (or missing):
+    // Stripe has charged or ended it and the app never heard.
+    case 'trialing':
+      message = 'The trial for $who has ended. Subscribe to keep using it.';
+      break;
     case 'past_due':
       message = 'The subscription payment for $who is past due. Update payment to keep access.';
       break;

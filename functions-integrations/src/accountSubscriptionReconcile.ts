@@ -58,6 +58,10 @@ async function clearStaleAccountSubscriptionId(
   } catch (err: unknown) {
     const code = (err as { code?: string })?.code;
     // A subscription Stripe cannot find is as dead as one it reports cancelled.
+    // Any other error leaves the pointer. The deleted-event handler does not rely on
+    // this: it clears a pointer to the subscription it was told about in its own write
+    // (accountUpdateForDeletedSubscription), and a `trialing` record left with an id
+    // stops counting as paid past its trial end (hasPaidOrCardTrialSubscription).
     if (code !== 'resource_missing') {
       functions.logger.warn('Could not verify account subscription; leaving the pointer alone', {
         subscriptionId,
