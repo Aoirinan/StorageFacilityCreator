@@ -125,6 +125,26 @@ function assertOctober(charges: Record<string, Row[]>) {
   assert.equal(charges.midSep[0].description, 'Monthly Rent - October 2026');
 }
 
+/**
+ * Rent-generation audit rows, queried the way the Generation History panel
+ * queries them (lib/services/rent_generation_history.dart).
+ */
+async function auditRows(eventType: string): Promise<Array<Record<string, any>>> {
+  const snap = await fac().collection('auditLogs').where('eventType', '==', eventType).orderBy('timestamp', 'desc').get();
+  return snap.docs.map((d) => d.data());
+}
+
+/** The writeAuditLog shape, not the job's old action/at/details. */
+function assertAuditShape(r: Record<string, any>) {
+  assert.ok(r.timestamp instanceof admin.firestore.Timestamp, 'timestamp');
+  assert.equal(r.facilityId, FACILITY);
+  assert.equal(r.targetType, 'ledgerEntry');
+  assert.equal(r.after.chargeType, 'monthlyRent');
+  assert.equal(r.action, undefined);
+  assert.equal(r.at, undefined);
+  assert.equal(r.details, undefined);
+}
+
 test.beforeEach(async () => {
   if (!skipWithoutEmulator) await clearEmulator();
 });
@@ -142,8 +162,22 @@ test('the job on 1 Oct skips rent charged at move-in, and a rerun posts nothing'
   });
   assertOctober(await octoberCharges());
 
-  const flagged = await fac().collection('auditLogs').where('action', '==', 'recurringCharge.needsReview').get();
-  assert.deepEqual(flagged.docs.map((d) => d.data().tenantId), ['short']);
+  const flagged = await auditRows('recurringCharge.needsReview');
+  assert.deepEqual(flagged.map((r) => r.tenantId), ['short']);
+  assert.equal(flagged[0].targetType, 'tenant');
+  assert.equal(flagged[0].metadata.runId, 'scheduled_2026_10');
+
+  const generated = await auditRows('recurringCharge.generated');
+  assert.deepEqual(generated.map((r) => [r.tenantId, r.after.amount]).sort(), [['leftB', 50], ['midSep', 120], ['twoUnits', 50]]);
+  for (const r of generated) {
+    assertAuditShape(r);
+    assert.equal(r.actorUid, 'system');
+    assert.equal(r.actorEmail, 'system@scheduled-job');
+    assert.deepEqual(r.metadata, { runId: 'scheduled_2026_10', source: 'scheduled' });
+    assert.equal(r.after.month, 10);
+    assert.equal(r.after.year, 2026);
+  }
+  assert.equal(generated.find((r) => r.tenantId === 'twoUnits')!.after.lessCoveredAtMoveIn, 100);
 
   const again = await generateFacilityRentCharges(FACILITY, '2026-10-01');
   assert.equal(again.successCount, 0);
@@ -179,4 +213,19 @@ test('the callable for October makes the same decisions', { skip: skipWithoutEmu
   assert.equal(result.errors.length, 1);
   assert.match(result.errors[0], /Tenant short: not charged, check by hand/);
   assertOctober(await octoberCharges());
+
+  // The preview wrote nothing; the run wrote one row per tenant, in the
+  // job's shape, all under one run id.
+  const generated = await auditRows('recurringCharge.generated');
+  assert.deepEqual(generated.map((r) => [r.tenantId, r.after.amount]).sort(), [['leftB', 50], ['midSep', 120], ['twoUnits', 50]]);
+  const runIds = new Set(generated.map((r) => r.metadata.runId));
+  assert.equal(runIds.size, 1);
+  assert.match([...runIds][0], /^manual_/);
+  for (const r of generated) {
+    assertAuditShape(r);
+    assert.equal(r.actorUid, OWNER);
+    assert.equal(r.metadata.source, 'manual');
+  }
+  const flagged = await auditRows('recurringCharge.needsReview');
+  assert.deepEqual(flagged.map((r) => [r.tenantId, r.metadata.runId]), [['short', [...runIds][0]]]);
 });

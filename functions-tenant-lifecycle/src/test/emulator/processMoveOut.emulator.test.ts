@@ -31,6 +31,30 @@ const context = {
 const fac = () => emulatorDb().collection('facilities').doc(FACILITY);
 const tenant = async (id = 't1') => (await fac().collection('tenants').doc(id).get()).data()!;
 const unit = async (id: string) => (await fac().collection('units').doc(id).get()).data()!;
+const contract = async (id: string) => (await fac().collection('contracts').doc(id).get()).data()!;
+
+/** The tenant's posted ledger rows, oldest amount first, as the app reads them. */
+async function ledger(): Promise<Array<Record<string, unknown>>> {
+  const snap = await fac().collection('ledgers').where('tenantId', '==', 't1').where('status', '==', 'posted').get();
+  return snap.docs.map((d) => d.data()).sort((a, b) => Number(a.amount) - Number(b.amount));
+}
+
+/** What LedgerService.getLedgerBalance shows: the plain sum of posted amounts. */
+async function balance(): Promise<number> {
+  return (await ledger()).reduce((sum, row) => sum + Number(row.amount), 0);
+}
+
+/** A tenant paid up and then some: a $50 payment with nothing to apply it to. */
+async function seedCredit(amount = 50): Promise<void> {
+  await fac().collection('ledgers').doc('pay1').set({
+    tenantId: 't1',
+    facilityId: FACILITY,
+    type: 'payment',
+    amount: -amount,
+    description: 'Payment',
+    status: 'posted',
+  });
+}
 
 function moveOut(unitId: string, contractId: string, extra: Record<string, unknown> = {}) {
   return callable.run(
@@ -165,4 +189,150 @@ test('an archived contract is refused before anything is written', { skip: skipW
   await rejectsWith(moveOut('u101', 'c101'), 'failed-precondition', /archived or has already ended/);
   assert.equal((await unit('u101')).status, 'occupied');
   assert.equal((await tenant()).monthlyRate, 250);
+});
+
+// Refunds. The screen sends moveOutRefund (the credit it worked out) whether
+// or not Process Refund is ticked, and processRefund says whether it was.
+// The ledger balance is the plain sum of posted amounts, so a refund of a
+// credit must be posted positive to bring it back to 0.
+
+test('a credit balance with Process Refund on: one positive refund row, the balance ends at 0', { skip: skipWithoutEmulator }, async () => {
+  await seed();
+  await seedCredit(50);
+  assert.equal(await balance(), -50);
+
+  const result = await moveOut('u101', 'c101', {
+    moveOutCharges: 0,
+    moveOutRefund: 50,
+    processRefund: true,
+    refundMethod: 'check',
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.refundPosted, true);
+
+  const rows = await ledger();
+  assert.equal(rows.length, 2, 'the payment and one refund row');
+  const refund = rows[1];
+  assert.equal(refund.type, 'refund');
+  assert.equal(refund.amount, 50, 'positive: the credit is gone once the money is handed back');
+  assert.equal(refund.description, 'Move-out refund');
+  assert.equal(refund.referenceId, 'c101');
+  assert.equal(refund.createdBy, OWNER);
+  assert.deepEqual(refund.metadata, {
+    moveOutDate: '2026-09-23T12:00:00.000Z',
+    moveOutRefund: true,
+    refundMethod: 'check',
+  });
+  assert.equal(await balance(), 0);
+  assert.equal((await contract('c101')).moveOutRefund, 50);
+});
+
+test('Process Refund off: no refund row, the credit stays on the ledger', { skip: skipWithoutEmulator }, async () => {
+  await seed();
+  await seedCredit(50);
+
+  // The screen sends the refund it worked out either way; only the flag
+  // says whether the owner is giving it. The amount alone used to post it.
+  const result = await moveOut('u101', 'c101', { moveOutCharges: 0, moveOutRefund: 50, processRefund: false });
+  assert.equal(result.success, true);
+  assert.equal(result.refundPosted, false);
+
+  const rows = await ledger();
+  assert.equal(rows.length, 1, 'only the payment');
+  assert.equal(rows[0].type, 'payment');
+  assert.equal(await balance(), -50);
+  // The contract records what was refunded, which is nothing.
+  assert.equal((await contract('c101')).moveOutRefund, 0);
+  assert.equal((await unit('u101')).status, 'available', 'the move-out itself went through');
+});
+
+test('a refund is not posted when the flag is missing or not exactly true', { skip: skipWithoutEmulator }, async () => {
+  await seed();
+  await seedCredit(50);
+  await moveOut('u101', 'c101', { moveOutRefund: 50 });
+  assert.equal((await ledger()).length, 1);
+  await moveOut('u102', 'c102', { moveOutRefund: 50, processRefund: 'true' });
+  assert.equal((await ledger()).length, 1);
+  assert.equal(await balance(), -50);
+});
+
+test('net charges below zero (unused prorated rent) are posted as a credit, so refunding it ends at 0', { skip: skipWithoutEmulator }, async () => {
+  // The month was billed in advance and the tenant leaves early: the screen's
+  // lines net to a credit for the unused days, and it counts that credit in
+  // the refund. Dropping the credit while posting the refund left the tenant
+  // owing the very amount they were handed back.
+  await seed();
+  const result = await moveOut('u101', 'c101', {
+    moveOutCharges: -100,
+    moveOutRefund: 100,
+    processRefund: true,
+    refundMethod: 'cash',
+  });
+  assert.equal(result.success, true);
+
+  const rows = await ledger();
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].type, 'credit');
+  assert.equal(rows[0].amount, -100);
+  assert.match(String(rows[0].description), /^Move-out credit/);
+  assert.equal(rows[0].referenceId, 'c101');
+  assert.equal(rows[1].type, 'refund');
+  assert.equal(rows[1].amount, 100);
+  assert.equal(await balance(), 0);
+  assert.equal((await contract('c101')).moveOutCharges, -100);
+});
+
+test('a net credit with Process Refund off stays as the credit', { skip: skipWithoutEmulator }, async () => {
+  await seed();
+  await moveOut('u101', 'c101', { moveOutCharges: -100, moveOutRefund: 100, processRefund: false });
+  const rows = await ledger();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].type, 'credit');
+  assert.equal(rows[0].amount, -100);
+  assert.equal(await balance(), -100);
+});
+
+test('positive charges post a move-out fee, as before; zero posts nothing', { skip: skipWithoutEmulator }, async () => {
+  await seed();
+  await moveOut('u101', 'c101', { moveOutCharges: 40.004 });
+  let rows = await ledger();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].type, 'moveOutFee');
+  assert.equal(rows[0].amount, 40, 'whole cents');
+  assert.equal(rows[0].description, 'Move-out charges');
+  assert.equal(await balance(), 40);
+
+  await moveOut('u102', 'c102', { moveOutCharges: 0 });
+  rows = await ledger();
+  assert.equal(rows.length, 1);
+});
+
+// The move-out date. The screen sends the day the owner picked as a calendar
+// day; the client deployed before this sent local midnight with no offset,
+// which Node read as UTC, so it showed as the evening before in US zones.
+
+test('the move-out date is the day the owner picked, at noon UTC, in either form', { skip: skipWithoutEmulator }, async () => {
+  await seed();
+  await moveOut('u101', 'c101', { moveOutDate: '2026-09-23', moveOutCharges: 10 });
+  const at = (doc: Record<string, unknown>) =>
+    (doc.moveOutDate as { toDate: () => Date }).toDate().toISOString();
+  assert.equal(at(await contract('c101')), '2026-09-23T12:00:00.000Z');
+  assert.equal(at(await unit('u101')), '2026-09-23T12:00:00.000Z');
+  const fee = (await ledger())[0];
+  assert.equal((fee.entryDate as { toDate: () => Date }).toDate().toISOString(), '2026-09-23T12:00:00.000Z');
+  assert.equal((fee.metadata as Record<string, unknown>).moveOutDate, '2026-09-23T12:00:00.000Z');
+
+  // The deployed client's form: toIso8601String() of a local DateTime.
+  await moveOut('u102', 'c102', { moveOutDate: '2026-09-23T00:00:00.000' });
+  assert.equal(at(await contract('c102')), '2026-09-23T12:00:00.000Z');
+  assert.equal(at(await unit('u102')), '2026-09-23T12:00:00.000Z');
+});
+
+test('a move-out date that is not a date is refused before anything is written', { skip: skipWithoutEmulator }, async () => {
+  await seed();
+  await rejectsWith(moveOut('u101', 'c101', { moveOutDate: '2026-02-30' }), 'invalid-argument', /moveOutDate/);
+  await rejectsWith(moveOut('u101', 'c101', { moveOutDate: 'soon' }), 'invalid-argument', /moveOutDate/);
+  assert.equal((await unit('u101')).status, 'occupied');
+  assert.equal((await contract('c101')).isActive, true);
+  assert.equal((await ledger()).length, 0);
 });
