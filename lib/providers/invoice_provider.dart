@@ -22,6 +22,17 @@ final overdueInvoicesProvider = FutureProvider.family<List<InvoiceModel>, String
   return InvoiceService.getOverdueInvoices(facilityId);
 });
 
+/// What a tenant's live invoices already cover, for the ledger's Generate
+/// Invoice, which refreshes it (ref.refresh) each time it opens: the invoice
+/// made a moment ago has to count, and a cached read would not know about it.
+final liveInvoiceCoverageProvider =
+    FutureProvider.family<LiveInvoiceCoverage, InvoiceParams>((ref, params) {
+  return InvoiceService.liveInvoiceCoverage(
+    facilityId: params.facilityId,
+    tenantId: params.tenantId,
+  );
+});
+
 /// Provider for invoice operations
 final invoiceOperationsProvider = StateNotifierProvider<InvoiceOperationsNotifier, AsyncValue<void>>((ref) {
   return InvoiceOperationsNotifier();
