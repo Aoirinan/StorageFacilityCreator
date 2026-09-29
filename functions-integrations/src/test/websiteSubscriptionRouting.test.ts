@@ -84,6 +84,50 @@ test('website checkout rejects suspended and expired base subscriptions', () => 
   );
 });
 
+test('website checkout counts the card-backed free month as the base plan, like active', () => {
+  const nowMs = 1_000_000;
+  const ended = admin.firestore.Timestamp.fromMillis(nowMs - 1);
+  // Trialing with a Stripe subscription: paid for, whatever the trial end says.
+  assert.equal(
+    hasActiveBasePlatformSubscription(
+      { subscriptionStatus: 'trialing', stripeSubscriptionId: 'sub_test_account', subscriptionTrialEnd: ended },
+      {},
+      nowMs,
+    ),
+    true,
+  );
+  assert.equal(
+    hasActiveBasePlatformSubscription(
+      { subscriptionStatus: 'trialing', subscriptionTrialEnd: ended },
+      {
+        platformSubscriptionStatus: 'trialing',
+        stripePlatformSubscriptionId: 'sub_test_facility',
+        platformSubscriptionTrialEnd: ended,
+      },
+      nowMs,
+    ),
+    true,
+  );
+  // The unpaid app trial still ends at its trial end.
+  assert.equal(
+    hasActiveBasePlatformSubscription(
+      { subscriptionStatus: 'trialing', subscriptionTrialEnd: ended },
+      {},
+      nowMs,
+    ),
+    false,
+  );
+  // Suspension still wins.
+  assert.equal(
+    hasActiveBasePlatformSubscription(
+      { subscriptionStatus: 'trialing', stripeSubscriptionId: 'sub_test_account', suspended: true },
+      {},
+      nowMs,
+    ),
+    false,
+  );
+});
+
 test('website admin trial is active only before its expiry', () => {
   const nowMs = 1_000_000;
   assert.equal(

@@ -1121,6 +1121,112 @@ test('DNR evidence storage reads require current premium entitlement', async () 
   );
 });
 
+// The first free month is Stripe trial time: an owner who subscribed with a
+// card reads 'trialing' with a Stripe subscription id until the first charge,
+// and that counts as paid. The unpaid app trial ('trialing', no id) does not.
+async function seedPaidTrialDnrFixtures() {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('facilityCreatorAccounts').doc('acct-card-trial').set({
+      ownerUid: 'dnr-card-trial',
+      subscriptionStatus: 'trialing',
+      stripeSubscriptionId: 'sub_test_account',
+    });
+    await db.collection('facilityCreatorAccounts').doc('acct-app-trial').set({
+      ownerUid: 'dnr-app-trial',
+      subscriptionStatus: 'trialing',
+      stripeSubscriptionId: null,
+    });
+    // Per-facility billing: the account only rolls the facility up as trialing.
+    await db.collection('facilityCreatorAccounts').doc('acct-rollup').set({
+      ownerUid: 'dnr-facility-trial',
+      subscriptionStatus: 'trialing',
+    });
+    await db.collection('facilities').doc('fac-card-trial').set({
+      ownerUid: 'dnr-facility-trial',
+      facilityCreatorAccountId: 'acct-rollup',
+      platformSubscriptionStatus: 'trialing',
+      stripePlatformSubscriptionId: 'sub_test_facility',
+    });
+    await db.collection('facilities').doc('fac-app-trial').set({
+      ownerUid: 'dnr-app-trial',
+      facilityCreatorAccountId: 'acct-app-trial',
+      platformSubscriptionStatus: 'trialing',
+    });
+    await db.collection('global_dnr_entries').doc('entry-1').set({
+      createdByUserId: 'someone-else',
+      createdByFacilityId: 'fac-elsewhere',
+    });
+  });
+}
+
+test('DNR acceptance: the card-backed free month counts as paid, the unpaid app trial does not', async () => {
+  await seedPaidTrialDnrFixtures();
+  const accept = (uid, fields) =>
+    testEnv
+      .authenticatedContext(uid)
+      .firestore()
+      .collection('dnr_participants')
+      .doc(uid)
+      .set({ accepted: true, termsVersion: '1.0', ...fields });
+
+  // Account-level subscription in its free month.
+  await assertSucceeds(accept('dnr-card-trial', { accountId: 'acct-card-trial' }));
+  // Facility subscription in its free month: named on the acceptance.
+  await assertFails(accept('dnr-facility-trial', { accountId: 'acct-rollup' }));
+  await assertSucceeds(accept('dnr-facility-trial', { accountId: 'acct-rollup', facilityId: 'fac-card-trial' }));
+  // The unpaid app trial, on the account or the facility.
+  await assertFails(accept('dnr-app-trial', { accountId: 'acct-app-trial' }));
+  await assertFails(accept('dnr-app-trial', { accountId: 'acct-app-trial', facilityId: 'fac-app-trial' }));
+});
+
+test('DNR reads: the card-backed free month keeps participants in, the unpaid app trial is shut out', async () => {
+  await seedPaidTrialDnrFixtures();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('dnr_participants').doc('dnr-card-trial').set({ accepted: true, accountId: 'acct-card-trial' });
+    await db
+      .collection('dnr_participants')
+      .doc('dnr-facility-trial')
+      .set({ accepted: true, accountId: 'acct-rollup', facilityId: 'fac-card-trial' });
+    // Accepted earlier, now on the unpaid app trial.
+    await db
+      .collection('dnr_participants')
+      .doc('dnr-app-trial')
+      .set({ accepted: true, accountId: 'acct-app-trial', facilityId: 'fac-app-trial' });
+  });
+  const read = (uid) =>
+    testEnv.authenticatedContext(uid).firestore().collection('global_dnr_entries').doc('entry-1').get();
+  await assertSucceeds(read('dnr-card-trial'));
+  await assertSucceeds(read('dnr-facility-trial'));
+  await assertFails(read('dnr-app-trial'));
+});
+
+test('DNR evidence storage: the card-backed free month counts as premium', async () => {
+  await seedPaidTrialDnrFixtures();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('dnr_participants').doc('dnr-card-trial').set({ accepted: true, accountId: 'acct-card-trial' });
+    await db
+      .collection('dnr_participants')
+      .doc('dnr-facility-trial')
+      .set({ accepted: true, accountId: 'acct-rollup', facilityId: 'fac-card-trial' });
+    await db
+      .collection('dnr_participants')
+      .doc('dnr-app-trial')
+      .set({ accepted: true, accountId: 'acct-app-trial', facilityId: 'fac-app-trial' });
+    await uploadBytes(
+      storageRef(context.storage(), 'dnrEvidence/entry-2/evidence.txt'),
+      new TextEncoder().encode('evidence'),
+    );
+  });
+  const read = (uid) =>
+    getBytes(storageRef(testEnv.authenticatedContext(uid).storage(), 'dnrEvidence/entry-2/evidence.txt'));
+  await assertSucceeds(read('dnr-card-trial'));
+  await assertSucceeds(read('dnr-facility-trial'));
+  await assertFails(read('dnr-app-trial'));
+});
+
 test('an operator cannot seize another operator’s public storefront slug', async () => {
   // Slugs are the public storefront URL, so they are discoverable by design.
   // The update rule used to accept the INCOMING payload's facilityId, which let

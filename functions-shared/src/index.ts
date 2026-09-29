@@ -182,6 +182,15 @@ export type {
   FacilitySubscriptionSnapshot,
 } from './subscription/accountRollup';
 export {
+  accountHasPaidOrCardTrialSubscription,
+  facilityHasPaidOrCardTrialSubscription,
+  hasPaidOrCardTrialSubscription,
+  isUnpaidAppTrial,
+  ownerHasPaidOrCardTrialSubscription,
+  ownerOnUnpaidAppTrial,
+} from './subscription/paidSubscription';
+export type { SubscriptionDocData } from './subscription/paidSubscription';
+export {
   OWNER_ACCOUNT_READ_LIMIT,
   OWNER_ACCOUNT_STANDING_FIELD,
   accountWriteAffectsStanding,

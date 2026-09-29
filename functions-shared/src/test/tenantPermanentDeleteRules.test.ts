@@ -226,6 +226,33 @@ test('entitlement: mirrors _assertFacilityAllowsPermanentTenantDeletion', () => 
     assert.equal(facilityAllowsPermanentTenantDelete(unpaid, { subscriptionStatus: status }, now), false, String(status));
   }
 
+  // The card-backed free month (trialing with a Stripe subscription) counts as paid,
+  // like active: it does not end at the trial end date.
+  assert.equal(
+    facilityAllowsPermanentTenantDelete(
+      { platformSubscriptionStatus: 'trialing', stripePlatformSubscriptionId: 'sub_test_1', platformSubscriptionTrialEnd: earlier },
+      null,
+      now,
+    ),
+    true,
+  );
+  assert.equal(
+    facilityAllowsPermanentTenantDelete(
+      unpaid,
+      { subscriptionStatus: 'trialing', stripeSubscriptionId: 'sub_test_2', subscriptionTrialEnd: earlier },
+      now,
+    ),
+    true,
+  );
+  assert.equal(
+    facilityAllowsPermanentTenantDelete(
+      unpaid,
+      { subscriptionStatus: 'trialing', stripeSubscriptionId: 'sub_test_2', suspended: true },
+      now,
+    ),
+    false,
+  );
+
   assert.equal(facilityCreatorAccountIdOf({ facilityCreatorAccountId: 'acc1' }), 'acc1');
   assert.equal(facilityCreatorAccountIdOf({ facilityCreatorAccountId: '' }), null);
   assert.equal(facilityCreatorAccountIdOf({}), null);

@@ -21,9 +21,29 @@ void main() {
     expect(decision.show, isFalse);
   });
 
-  test('a facility whose own trial ended is called out by name', () {
+  test('an unhealthy facility is called out by name', () {
     final decision = decideSubscriptionBanner(
       account: const AccountSubscriptionState(status: 'active'),
+      facilities: const [
+        FacilitySubscriptionState(name: 'North Lot', perFacility: true, status: 'past_due'),
+        FacilitySubscriptionState(name: 'South Lot', perFacility: true, status: 'active'),
+      ],
+      now: now,
+    );
+    expect(decision.show, isTrue);
+    expect(decision.critical, isTrue);
+    expect(
+      decision.message,
+      'The subscription payment for North Lot is past due. Update payment to keep access.',
+    );
+  });
+
+  test('a per-facility subscription trialing past its trial end is paid for, like active', () {
+    // A per-facility subscription always has a card behind it (Checkout), and
+    // the first free month is Stripe trial time: trialing is the free month
+    // before the first charge, never a lapsed trial.
+    final decision = decideSubscriptionBanner(
+      account: AccountSubscriptionState(status: 'trialing', trialEnd: DateTime(2026, 8, 18)),
       facilities: [
         FacilitySubscriptionState(
           name: 'North Lot',
@@ -31,13 +51,33 @@ void main() {
           status: 'trialing',
           trialEnd: DateTime(2026, 9, 1),
         ),
-        const FacilitySubscriptionState(name: 'South Lot', perFacility: true, status: 'active'),
       ],
       now: now,
     );
-    expect(decision.show, isTrue);
-    expect(decision.critical, isTrue);
-    expect(decision.message, 'The trial for North Lot has ended. Subscribe to keep using it.');
+    expect(decision.show, isFalse);
+  });
+
+  test('an account in the card-backed free month is not told its trial expired', () {
+    // Account-level subscription: trialing with a Stripe subscription. Even in
+    // the minutes between the Stripe trial end and the webhook, no banner.
+    final cardTrial = decideSubscriptionBanner(
+      account: AccountSubscriptionState(
+        status: 'trialing',
+        trialEnd: DateTime(2026, 9, 1),
+        cardBackedTrial: true,
+      ),
+      facilities: const [],
+      now: now,
+    );
+    expect(cardTrial.show, isFalse);
+
+    // The unpaid app trial with the same dates still expires.
+    final appTrial = decideSubscriptionBanner(
+      account: AccountSubscriptionState(status: 'trialing', trialEnd: DateTime(2026, 9, 1)),
+      facilities: const [],
+      now: now,
+    );
+    expect(appTrial.message, 'Your trial has expired. Please subscribe to continue using the app.');
   });
 
   test('several unhealthy facilities are summarised', () {

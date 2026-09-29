@@ -45,7 +45,7 @@ import 'yield_management_screen.dart';
 import 'ai_assistant_screen.dart';
 import '../services/facility_creator_account_service.dart';
 import '../services/superadmin_service.dart';
-import '../models/facility_creator_account_model.dart';
+import 'package:sfcapp/models/paid_subscription.dart';
 import 'home_screen_modern_helper.dart';
 import '../widgets/keyboard_scrollable.dart';
 import '../utils/error_message_helper.dart';
@@ -277,8 +277,10 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
       // Check if user has facilities
       final facilities = await ref.read(userFacilitiesProvider(widget.user.uid).future);
 
-      // Check if user is on trial and already has a facility
-      if (account?.subscriptionStatus == SubscriptionStatus.trialing && facilities.length >= 1) {
+      // Check if user is on the unpaid trial and already has a facility. An
+      // owner who subscribed with a card reads `trialing` through the free
+      // month and is not limited.
+      if (ownerOnUnpaidAppTrial(account, facilities) && facilities.length >= 1) {
         // Show upgrade dialog for trial users
         showDialog(
           context: context,

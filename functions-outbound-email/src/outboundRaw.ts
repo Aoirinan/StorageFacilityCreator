@@ -14,6 +14,7 @@ import {
   initializeSendGrid,
   isCustomerEmailAllowed,
   isSuperAdmin,
+  ownerOnUnpaidAppTrial,
   releasePlatformOutgoing,
   reservePlatformOutgoing,
   sendFacilityEmailWithCompliance,
@@ -1152,10 +1153,29 @@ async function checkAndIncrementEmailUsage(facilityId: string): Promise<{success
       const accountDoc = await findOwnerAccountDoc(admin.firestore(), ownerUid);
 
       if (accountDoc) {
-        const accountData = accountDoc.data();
-        derivedLimit = emailMonthlyLimitForAccount(
-          accountData.subscriptionStatus === 'trialing',
-        );
+        // The trial cap is for the unpaid app trial only. An owner who
+        // subscribed with a card reads `trialing` through the free month and
+        // gets the paid cap, like `active`, whether the subscription is on the
+        // account, on this facility, or on another facility of the account.
+        let unpaidTrial = true;
+        try {
+          unpaidTrial = await ownerOnUnpaidAppTrial(accountDoc.data(), facilityDoc.data(), async () => {
+            const linked = await admin
+              .firestore()
+              .collection('facilities')
+              .where('facilityCreatorAccountId', '==', accountDoc.id)
+              .get();
+            return linked.docs.map((d) => d.data());
+          });
+        } catch (err) {
+          // Only the linked-facilities read can fail, and only for a trialing
+          // account with no card on it or on this facility: keep the trial cap.
+          functions.logger.warn('Email cap: could not read the owner\'s facilities; judging by the account alone', {
+            facilityId,
+            err,
+          });
+        }
+        derivedLimit = emailMonthlyLimitForAccount(unpaidTrial);
       }
     }
   }
@@ -1184,6 +1204,10 @@ async function checkAndIncrementEmailUsage(facilityId: string): Promise<{success
     // Update usage count
     transaction.set(usageRef, {
       ...currentUsage,
+      // The cap just enforced, so the app's usage card shows it rather than
+      // the cap written when the month started (a trial's 500 kept showing
+      // after the owner subscribed).
+      emailMonthlyLimit: limit,
       emailMonthlyCount: newCount,
       emailMonth: monthKey,
       lastUpdated: admin.firestore.FieldValue.serverTimestamp(),

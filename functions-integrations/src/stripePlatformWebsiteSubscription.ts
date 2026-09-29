@@ -4,6 +4,7 @@ import type Stripe from 'stripe';
 import {
   enforceAppCheckOrThrow,
   getStripeClient,
+  hasPaidOrCardTrialSubscription,
 } from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
 
@@ -15,6 +16,12 @@ function timestampMillis(value: unknown): number | null {
   return null;
 }
 
+/**
+ * The $75 base plan the website add-on needs, on the account or on the facility: paid,
+ * in the card-backed free month (`trialing` with a Stripe subscription, which counts as
+ * paid whatever its end date), or in a trial whose end is still ahead.
+ * Same rule as WebsiteAdminRow.hasActiveBaseSubscription in the app.
+ */
 export function hasActiveBasePlatformSubscription(
   account: Record<string, unknown>,
   facility: Record<string, unknown>,
@@ -25,11 +32,11 @@ export function hasActiveBasePlatformSubscription(
   const facilityStatus = String(facility.platformSubscriptionStatus || '').toLowerCase();
   const accountTrialEndMs = timestampMillis(account.subscriptionTrialEnd);
   const facilityTrialEndMs = timestampMillis(facility.platformSubscriptionTrialEnd);
-  return accountStatus === 'active' ||
+  return hasPaidOrCardTrialSubscription(accountStatus, account.stripeSubscriptionId) ||
+    hasPaidOrCardTrialSubscription(facilityStatus, facility.stripePlatformSubscriptionId) ||
     (accountStatus === 'trialing' &&
       accountTrialEndMs !== null &&
       accountTrialEndMs > nowMs) ||
-    facilityStatus === 'active' ||
     (facilityStatus === 'trialing' &&
       facilityTrialEndMs !== null &&
       facilityTrialEndMs > nowMs);

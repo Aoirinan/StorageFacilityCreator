@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:sfcapp/models/document_logo_layout.dart';
 import 'package:sfcapp/models/owner_account_standing.dart';
+import 'package:sfcapp/models/paid_subscription.dart';
 import 'package:sfcapp/models/stripe_connect_status_model.dart';
 
 class FacilityModel {
@@ -570,9 +571,20 @@ class FacilityModel {
     );
   }
 
-  /// True if this facility has an active platform subscription (per-facility model)
+  /// A paid per-facility platform subscription: `active`, or `trialing` with a
+  /// Stripe subscription behind it (the card-backed free month, which counts
+  /// as paid like `active`). See [hasPaidOrCardTrialSubscription].
+  bool get hasPaidOrCardTrialPlatformSubscription =>
+      hasPaidOrCardTrialSubscription(
+        status: platformSubscriptionStatus,
+        stripeSubscriptionId: stripePlatformSubscriptionId,
+      );
+
+  /// True if this facility has an active platform subscription (per-facility
+  /// model): a paid one ([hasPaidOrCardTrialPlatformSubscription]), or a trial
+  /// whose end is still ahead.
   bool get hasActivePlatformSubscription =>
-      platformSubscriptionStatus == 'active' ||
+      hasPaidOrCardTrialPlatformSubscription ||
       (platformSubscriptionStatus == 'trialing' &&
           platformSubscriptionTrialEnd?.isAfter(DateTime.now()) == true);
 

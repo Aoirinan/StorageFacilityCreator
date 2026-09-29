@@ -53,10 +53,13 @@ class WebsiteAdminRow {
   bool get billingExempt =>
       facility.billingExempt || account?.billingExempt == true;
 
+  /// Same rule as hasActiveBasePlatformSubscription in functions-integrations:
+  /// paid (the card-backed free month counts, whatever its trial end says),
+  /// or a trial whose end is still ahead, on the account or the facility.
   bool get hasActiveBaseSubscription {
     if (account?.suspended == true) return false;
-    final accountActive =
-        account?.subscriptionStatus == SubscriptionStatus.active;
+    // active, or trialing with a Stripe subscription behind it.
+    final accountActive = account?.hasActiveSubscription == true;
     final accountTrialing =
         account?.subscriptionStatus == SubscriptionStatus.trialing &&
             account?.subscriptionTrialEnd?.isAfter(DateTime.now()) == true;

@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:sfcapp/models/paid_subscription.dart';
 
 /// Subscription status enum
 enum SubscriptionStatus {
@@ -233,9 +234,30 @@ class FacilityCreatorAccountModel {
   }
 
   // Helper getters
-  bool get hasActiveSubscription =>
-      subscriptionStatus == SubscriptionStatus.active;
-  bool get hasTrial => subscriptionStatus == SubscriptionStatus.trialing;
+
+  /// `trialing` with a Stripe subscription behind it: the owner subscribed
+  /// with a card and is in the free time before the first charge (the first
+  /// free month is Stripe trial time). Counts as a paid subscription
+  /// everywhere, like [SubscriptionStatus.active]; see
+  /// [hasPaidOrCardTrialSubscription].
+  bool get hasCardBackedTrial =>
+      subscriptionStatus == SubscriptionStatus.trialing &&
+      (stripeSubscriptionId ?? '').trim().isNotEmpty;
+
+  /// A paid subscription on this account: `active`, or [hasCardBackedTrial].
+  /// Per-facility subscriptions are not on the account; see
+  /// [ownerHasPaidOrCardTrialSubscription].
+  bool get hasActiveSubscription => hasPaidOrCardTrialSubscription(
+        status: subscriptionStatus.name,
+        stripeSubscriptionId: stripeSubscriptionId,
+      );
+
+  /// The unpaid app trial: `trialing` with no Stripe subscription, as
+  /// `startTrial` and the super admin approve/grant actions write it. It is
+  /// limited (one facility, the trial email cap, no DNR) and expires at
+  /// [subscriptionTrialEnd]. A [hasCardBackedTrial] account is not on it.
+  bool get hasTrial =>
+      subscriptionStatus == SubscriptionStatus.trialing && !hasCardBackedTrial;
   bool get isSubscriptionActive =>
       subscriptionStatus == SubscriptionStatus.active ||
       subscriptionStatus == SubscriptionStatus.trialing;
@@ -271,11 +293,11 @@ class FacilityCreatorAccountModel {
   }
 
   /// Check if user has access to premium features (DNR, etc.)
-  /// Only active subscriptions have access - trials do not
+  /// Only paid subscriptions have access, including the card-backed free
+  /// month ([hasCardBackedTrial]); the unpaid app trial does not.
+  /// Per-facility subscriptions count too: see the DNR screen.
   /// Note: Superadmins bypass this check (handled in UI layer)
-  bool get hasPremiumAccess {
-    return subscriptionStatus == SubscriptionStatus.active;
-  }
+  bool get hasPremiumAccess => hasActiveSubscription;
 
   /// Permanent tenant delete (vs archive) requires paid active or a non-expired trial.
   /// Stricter than [canAccessPlatform] (excludes past-due grace and cancelled access windows).

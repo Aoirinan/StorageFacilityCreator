@@ -654,7 +654,10 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
     final a = widget.account;
     final color = _statusColor(a.subscriptionStatus);
     final fmt = DateFormat('MMM d, yyyy');
-    final isTrialing = a.subscriptionStatus == SubscriptionStatus.trialing;
+    // The unpaid app trial only. A card-backed free month (trialing with a
+    // Stripe subscription) is a subscription, like active: extending or
+    // revoking it here would rewrite the account while Stripe bills on.
+    final isTrialing = a.hasTrial;
     final isPending = a.subscriptionStatus == SubscriptionStatus.pendingApproval;
     final isSuspended = a.suspended;
 

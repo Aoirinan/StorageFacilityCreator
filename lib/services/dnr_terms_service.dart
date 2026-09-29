@@ -3,8 +3,12 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'package:sfcapp/models/facility_creator_account_model.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/models/paid_subscription.dart';
 import '../theme/app_theme.dart';
 import 'facility_creator_account_service.dart';
+import 'package:sfcapp/services/facility_service.dart';
 import 'superadmin_service.dart';
 
 /// One-time Do Not Rent terms acceptance ("DNR participation").
@@ -62,8 +66,48 @@ class DnrTermsService {
     }
   }
 
-  /// Record acceptance. Requires an active paid subscription (enforced by
-  /// Firestore rules; this will throw permission-denied otherwise).
+  /// Whether the owner of [account] may use the DNR list: a paid subscription,
+  /// including the card-backed free month, on the account
+  /// ([FacilityCreatorAccountModel.hasPremiumAccess]) or on a facility linked
+  /// to it. The unpaid app trial may not. The rules
+  /// (firestore-rules-src/09-dnr_participants.rules) apply the same test.
+  static bool hasPremiumAccess(
+    FacilityCreatorAccountModel account,
+    Iterable<FacilityModel> facilities,
+  ) {
+    if (account.hasPremiumAccess) return true;
+    // Per-facility billing: the subscription is on a facility, and in its
+    // free month the account only rolls it up as `trialing`.
+    return ownerHasPaidOrCardTrialSubscription(account, facilities);
+  }
+
+  /// The facility to name on the acceptance so the rules can find the
+  /// owner's subscription when it is on a facility rather than the account:
+  /// the first of [facilities] that [uid] owns, is linked to [account] and has
+  /// a paid or card-backed per-facility subscription. Null when there is none.
+  ///
+  /// Under per-facility billing the account only rolls the facility up, and
+  /// in the facility's free month it reads `trialing` with no subscription of
+  /// its own, so the rules' account check alone refuses the owner.
+  @visibleForTesting
+  static String? premiumFacilityIdForAcceptance(
+    FacilityCreatorAccountModel account,
+    Iterable<FacilityModel> facilities,
+    String uid,
+  ) {
+    for (final f in facilities) {
+      if (f.ownerUid == uid &&
+          f.facilityCreatorAccountId == account.accountId &&
+          f.hasPaidOrCardTrialPlatformSubscription) {
+        return f.id;
+      }
+    }
+    return null;
+  }
+
+  /// Record acceptance. Requires a paid subscription, on the account or on one
+  /// of its facilities (enforced by Firestore rules; this will throw
+  /// permission-denied otherwise).
   static Future<void> recordAcceptance() async {
     final user = _auth.currentUser;
     if (user == null) throw Exception('Not signed in');
@@ -75,12 +119,27 @@ class DnrTermsService {
           'No subscription account found. DNR participation requires an active subscription.');
     }
 
+    String? facilityId;
+    try {
+      facilityId = premiumFacilityIdForAcceptance(
+        account,
+        await FacilityService.getUserFacilities(includeArchived: false),
+        user.uid,
+      );
+    } catch (e) {
+      // The account alone may still qualify; the rules decide.
+      if (kDebugMode) {
+        print('⚠️ [DnrTerms] Could not load facilities: $e');
+      }
+    }
+
     await _firestore.collection(_collection).doc(user.uid).set({
       'accepted': true,
       'termsVersion': termsVersion,
       'acceptedAt': FieldValue.serverTimestamp(),
       'acceptedByEmail': user.email,
       'accountId': account.accountId,
+      if (facilityId != null) 'facilityId': facilityId,
     });
 
     if (kDebugMode) {

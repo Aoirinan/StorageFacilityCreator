@@ -35,10 +35,13 @@ class FacilitySubscriptionState {
   bool trialEndedBy(DateTime now) =>
       status == 'trialing' && trialEnd != null && !trialEnd!.isAfter(now);
 
+  /// A per-facility `trialing` subscription is the card-backed free month
+  /// (`hasPaidOrCardTrialSubscription`): paid for, like `active`, whatever
+  /// its trial end says.
   bool healthyAt(DateTime now) =>
       billingExempt ||
       status == 'active' ||
-      (status == 'trialing' && !trialEndedBy(now));
+      (status == 'trialing' && (perFacility || !trialEndedBy(now)));
 }
 
 class AccountSubscriptionState {
@@ -50,11 +53,18 @@ class AccountSubscriptionState {
   /// Set by a super admin on accounts the platform does not bill.
   final bool billingExempt;
 
+  /// `trialing` with a Stripe subscription behind it
+  /// (`FacilityCreatorAccountModel.hasCardBackedTrial`): the owner subscribed
+  /// with a card and is in the free month. Paid for, like `active`: its trial
+  /// never "expires" here.
+  final bool cardBackedTrial;
+
   const AccountSubscriptionState({
     this.status,
     this.trialEnd,
     this.currentPeriodEnd,
     this.billingExempt = false,
+    this.cardBackedTrial = false,
   });
 
   bool get hasTrial => status == 'trialing';
@@ -69,7 +79,7 @@ class AccountSubscriptionState {
   bool trialExpiredAt(DateTime now) =>
       trialEnd != null &&
       now.isAfter(trialEnd!) &&
-      (status == 'trialing' || status == 'cancelled');
+      ((status == 'trialing' && !cardBackedTrial) || status == 'cancelled');
   bool get isActive => status == 'active' || status == 'trialing';
 }
 
@@ -119,10 +129,9 @@ SubscriptionBannerDecision _decideFromFacilities(List<FacilitySubscriptionState>
   final who = '${first.name}$suffix';
 
   String message;
+  // No 'trialing' case: a per-facility subscription is card-backed, so a
+  // trialing one is always healthy (the free month before the first charge).
   switch (first.status) {
-    case 'trialing':
-      message = 'The trial for $who has ended. Subscribe to keep using it.';
-      break;
     case 'past_due':
       message = 'The subscription payment for $who is past due. Update payment to keep access.';
       break;

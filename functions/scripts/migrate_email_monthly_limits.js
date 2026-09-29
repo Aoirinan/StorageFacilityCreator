@@ -109,7 +109,16 @@ async function main() {
     let isTrialing = false;
     if (!acctSnap.empty) {
       const status = acctSnap.docs[0].get('subscriptionStatus');
-      isTrialing = status === 'trialing';
+      // The trial cap is for the unpaid app trial only: trialing with a Stripe
+      // subscription (on the account or this facility) is the card-backed free
+      // month, paid for like active. The send path (outboundRaw.ts) also
+      // counts the account's other facilities and rewrites this value.
+      const hasId = (value) => typeof value === 'string' && value.trim().length > 0;
+      const cardBacked =
+        hasId(acctSnap.docs[0].get('stripeSubscriptionId')) ||
+        (doc.get('platformSubscriptionStatus') === 'active' ||
+          (doc.get('platformSubscriptionStatus') === 'trialing' && hasId(doc.get('stripePlatformSubscriptionId'))));
+      isTrialing = status === 'trialing' && !cardBacked;
     } else {
       console.warn(`[warn] ${facilityId} — no facilityCreatorAccounts row; using paid limit`);
     }

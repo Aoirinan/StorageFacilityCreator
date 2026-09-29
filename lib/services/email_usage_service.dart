@@ -2,7 +2,11 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 
 import 'package:sfcapp/constants/email_monthly_limits.dart';
+import 'package:sfcapp/models/facility_creator_account_model.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/models/paid_subscription.dart';
 import 'facility_creator_account_service.dart';
+import 'package:sfcapp/services/facility_service.dart';
 
 /// Service for tracking email usage and limits per facility
 class EmailUsageService {
@@ -37,16 +41,22 @@ class EmailUsageService {
         final data = facilityDoc.data() ?? {};
         final perFacilitySub = (data['stripePlatformSubscriptionId'] as String?)?.trim() ?? '';
         if (perFacilitySub.isNotEmpty) {
-          return emailMonthlyLimitForAccount(
-            isTrialing: data['platformSubscriptionStatus'] == 'trialing',
-          );
+          return defaultLimitFor(facility: data, account: null);
         }
         final ownerUid = data['ownerUid'] as String?;
         if (ownerUid != null) {
           final account = await FacilityCreatorAccountService.getAccountByOwnerUid(ownerUid);
-          
+
           if (account != null) {
-            return emailMonthlyLimitForAccount(isTrialing: account.hasTrial);
+            List<FacilityModel> facilities = const [];
+            if (account.hasTrial) {
+              try {
+                facilities = await FacilityService.getUserFacilities(includeArchived: false);
+              } catch (_) {
+                // The account alone decides.
+              }
+            }
+            return defaultLimitFor(facility: data, account: account, facilities: facilities);
           }
         }
       }
@@ -58,6 +68,30 @@ class EmailUsageService {
       }
       return kEmailMonthlyLimitPaid;
     }
+  }
+
+  /// The cap for a facility with none stored: [facility] is its document,
+  /// [account] its owner's account (null when not read) and [facilities] the
+  /// owner's facilities.
+  ///
+  /// A facility with its own platform subscription is judged by that (the
+  /// account-level trial is a legacy leftover for those owners), and there
+  /// `trialing` has a Stripe subscription behind it: the card-backed free
+  /// month, paid for like active, so the paid cap. Otherwise the trial cap is
+  /// for the unpaid app trial only ([ownerOnUnpaidAppTrial]), the rule the
+  /// send path enforces (outboundRaw.ts): a card-backed subscription on the
+  /// account or on another of the owner's facilities gets the paid cap.
+  @visibleForTesting
+  static int defaultLimitFor({
+    required Map<String, dynamic> facility,
+    required FacilityCreatorAccountModel? account,
+    Iterable<FacilityModel> facilities = const [],
+  }) {
+    final perFacilitySub = (facility['stripePlatformSubscriptionId'] as String?)?.trim() ?? '';
+    if (perFacilitySub.isNotEmpty) return kEmailMonthlyLimitPaid;
+    return emailMonthlyLimitForAccount(
+      isTrialing: ownerOnUnpaidAppTrial(account, facilities),
+    );
   }
 
   /// Helper to pad month to 2 digits
