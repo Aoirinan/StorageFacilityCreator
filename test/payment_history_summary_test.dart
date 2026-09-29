@@ -138,4 +138,20 @@ void main() {
     expect(inkWells, hasLength(12));
     expect(inkWells.every((w) => w.onTap == null), isTrue);
   });
+
+  testWidgets('a refund is not a payment made', (tester) async {
+    await pump(
+      tester,
+      _tenant(moveInDate: DateTime(2026, 8, 17), paidThrough: DateTime(2026, 9, 30)),
+      [
+        _entry('p1', LedgerEntryType.payment, -50),
+        _entry('r1', LedgerEntryType.refund, 50),
+      ],
+    );
+    final made = tester.widget<Text>(find.descendant(
+      of: find.ancestor(of: find.text('Payments made: '), matching: find.byType(Row)).first,
+      matching: find.text('1'),
+    ));
+    expect(made.data, '1');
+  });
 }
