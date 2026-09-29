@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeFirestore, installFakeFirestore } from '@sfc/functions-shared/testing/fakeFirestore';
 import { createPublicPaymentLink } from '../publicPaymentCheckout';
-import { getOrCreatePublicLinkCheckout } from '../publicPaymentCheckoutSession';
+import { DISPUTE_LINK_NOT_DUE_MESSAGE, getOrCreatePublicLinkCheckout } from '../publicPaymentCheckoutSession';
 import { FakeCheckoutSessions } from './support/fakeCheckoutSessions';
 
 const OWNER = 'owner_uid';
@@ -104,4 +104,86 @@ test('a link naming another tenant\'s, a won, or an unknown dispute, or more tha
     );
   }
   assert.deepEqual(fake.list('publicPaymentLinks'), []);
+});
+
+// --- A dispute link is re-checked before every checkout ----------------------
+
+const checkout = (fake: FakeFirestore, stripe: FakeCheckoutSessions, token: string) =>
+  getOrCreatePublicLinkCheckout(token, {
+    db: fake.firestore(),
+    sessions: stripe.api(),
+    appUrl: 'https://app.example.test',
+    now: () => stripe.now,
+  });
+
+async function refusedAsNotDue(promise: Promise<unknown>): Promise<void> {
+  await assert.rejects(promise, (error: unknown) => {
+    assert.equal((error as { code?: string }).code, 'failed-precondition');
+    assert.equal((error as Error).message, DISPUTE_LINK_NOT_DUE_MESSAGE);
+    return true;
+  });
+}
+
+test('a dispute link is not offered for payment once the dispute has been won, and its open session is closed', async () => {
+  const { fake, stripe } = setup();
+  const { token } = await create({ facilityId: 'f1', tenantId: 't1', amount: 100, disputeId: 'du_1' }, staff);
+  const opened = await checkout(fake, stripe, token);
+  assert.equal(opened.kind, 'checkout');
+  // The facility wins: the webhook marks the dispute settled and posts the reversal.
+  fake.seed('facilities/f1/ledgers/dispute_du_1', {
+    ...fake.read('facilities/f1/ledgers/dispute_du_1')!,
+    metadata: { disputeId: 'du_1', allocatedAmount: 100, settledByEntryId: 'dispute_du_1_reinstated' },
+  });
+  fake.seed('facilities/f1/ledgers/dispute_du_1_reinstated', {
+    tenantId: 't1', facilityId: 'f1', type: 'dispute_reversal', amount: -100, status: 'posted', metadata: { disputeId: 'du_1' },
+  });
+
+  // Before: the open session was handed back and the tenant paid it twice.
+  await refusedAsNotDue(checkout(fake, stripe, token));
+  assert.deepEqual(stripe.payable(), []);
+  assert.equal(stripe.created().length, 1);
+});
+
+test('a dispute link is not offered once staff recorded the dispute paid by hand', async () => {
+  const { fake, stripe } = setup();
+  const { token } = await create({ facilityId: 'f1', tenantId: 't1', amount: 100, disputeId: 'du_1' }, staff);
+  fake.seed('facilities/f1/ledgers/cash1', {
+    tenantId: 't1', facilityId: 'f1', type: 'payment', amount: -100, status: 'posted', metadata: { disputeId: 'du_1', paymentMethod: 'cash' },
+  });
+
+  await refusedAsNotDue(checkout(fake, stripe, token));
+  assert.deepEqual(stripe.created(), []);
+});
+
+test('a dispute link partly paid another way since is no longer due for its full amount', async () => {
+  const { fake, stripe } = setup();
+  const { token } = await create({ facilityId: 'f1', tenantId: 't1', amount: 100, disputeId: 'du_1' }, staff);
+  fake.seed('facilities/f1/ledgers/cash1', {
+    tenantId: 't1', facilityId: 'f1', type: 'payment', amount: -40, status: 'posted', metadata: { disputeId: 'du_1', paymentMethod: 'cash' },
+  });
+
+  await refusedAsNotDue(checkout(fake, stripe, token));
+});
+
+test('a dispute link already paid is still reported paid, not refused', async () => {
+  const { fake, stripe } = setup();
+  const { token } = await create({ facilityId: 'f1', tenantId: 't1', amount: 100, disputeId: 'du_1' }, staff);
+  const opened = await checkout(fake, stripe, token);
+  assert.equal(opened.kind, 'checkout');
+  stripe.pay((opened as { sessionId: string }).sessionId, 'pi_link');
+  // The payment webhook booked it against the dispute before the link was marked.
+  fake.seed('facilities/f1/ledgers/payment_pi_link', {
+    tenantId: 't1', facilityId: 'f1', type: 'payment', amount: -100, status: 'posted', metadata: { paymentIntentId: 'pi_link', disputeId: 'du_1' },
+  });
+
+  assert.deepEqual(await checkout(fake, stripe, token), { kind: 'paid' });
+});
+
+test('an open dispute link still hands back its open session', async () => {
+  const { fake, stripe } = setup();
+  const { token } = await create({ facilityId: 'f1', tenantId: 't1', amount: 100, disputeId: 'du_1' }, staff);
+  const first = await checkout(fake, stripe, token);
+  const second = await checkout(fake, stripe, token);
+
+  assert.deepEqual(second, { ...first, reused: true });
 });

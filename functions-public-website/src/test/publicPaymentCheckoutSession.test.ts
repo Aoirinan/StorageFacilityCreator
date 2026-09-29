@@ -377,3 +377,59 @@ test('a Stripe outage while confirming says try again, not "not this link\'s ses
   // Once Stripe answers again the same call confirms it.
   assert.deepEqual(await confirmPublicLinkCheckout(TOKEN, checkout.sessionId, deps), { status: 'paid' });
 });
+
+// --- A facility that reconnected a different Stripe account ------------------
+
+const OLD_ACCOUNT = 'acct_old';
+
+/** The link's session cs_old lives on the account the facility used before reconnecting. */
+function reconnected(session: { status: 'open' | 'complete' | 'expired'; paid?: boolean }) {
+  const ctx = setup({ checkoutSessionId: 'cs_old', checkoutSessionIds: ['cs_old'], checkoutAttempt: 1 });
+  ctx.fake.seed('facilities/f1', {
+    ...ctx.fake.read('facilities/f1')!,
+    stripeConnectPreviousAccountId: OLD_ACCOUNT,
+  });
+  ctx.stripe.inject({
+    id: 'cs_old',
+    account: OLD_ACCOUNT,
+    status: session.status,
+    payment_status: session.paid ? 'paid' : 'unpaid',
+    payment_intent: session.paid ? 'pi_old' : null,
+    amount_total: 8000,
+    metadata: { facilityId: 'f1', tenantId: 't1', type: 'public_payment_link', paymentLinkToken: TOKEN },
+  });
+  return ctx;
+}
+
+test('a session still open on the old account is closed before a new one opens on the new account', async () => {
+  const { stripe, deps } = reconnected({ status: 'open' });
+
+  const result = checkoutOf(await getOrCreatePublicLinkCheckout(TOKEN, deps));
+
+  // Before: cs_old read as missing on the new account and stayed payable
+  // alongside the new session.
+  assert.deepEqual(stripe.expireCalls, ['cs_old']);
+  assert.deepEqual(stripe.payable(), [result.sessionId]);
+  assert.equal(stripe.createCalls[0].options.stripeAccount, ACCOUNT);
+});
+
+test('a session already paid on the old account stops a second payment', async () => {
+  const { stripe, fake, deps } = reconnected({ status: 'complete', paid: true });
+
+  await rejectsWith(getOrCreatePublicLinkCheckout(TOKEN, deps), 'failed-precondition');
+
+  // Before: a fresh checkout, and the tenant paid the link twice.
+  assert.equal(stripe.createCalls.length, 0);
+  // Not marked paid from here: that account is not the facility's now, and
+  // the webhook's refusal record is where a super admin settles it.
+  assert.equal(fake.read(LINK_PATH)!.status, 'pending');
+});
+
+test('an expired session on the old account is simply replaced', async () => {
+  const { stripe, deps } = reconnected({ status: 'expired' });
+
+  const result = checkoutOf(await getOrCreatePublicLinkCheckout(TOKEN, deps));
+
+  assert.deepEqual(stripe.expireCalls, []);
+  assert.deepEqual(stripe.payable(), [result.sessionId]);
+});

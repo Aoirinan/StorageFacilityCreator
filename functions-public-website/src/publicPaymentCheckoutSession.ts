@@ -3,6 +3,7 @@ import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
 import {
   buildPublicLinkPaymentIntentMetadata,
+  checkDisputeForPayment,
   completePublicLinkPayment,
   PUBLIC_LINK_PAYMENT_TYPE,
   PUBLIC_PAYMENT_LINKS_COLLECTION,
@@ -25,6 +26,12 @@ import {
  *   same attempt get the same session back from Stripe.
  * - A completed session found on the way marks the link paid (the same code
  *   the webhook runs) and no new checkout is offered.
+ * - A facility that reconnected a different Stripe account has the link's
+ *   session looked up on its previous account too: one still open there is
+ *   expired, and one paid there stops a second payment.
+ * - A link sent to collect a card dispute is checked against the dispute
+ *   again before any session is handed out: once the dispute is won, voided
+ *   or paid another way, the link is no longer due.
  */
 
 /** Stripe's minimum is 30 minutes; the margin absorbs clock skew. */
@@ -183,7 +190,7 @@ async function loadFacilityAccount(
   db: admin.firestore.Firestore,
   facilityId: string,
   options: { requireOnboarded: boolean },
-): Promise<{ connectAccountId: string; facilityName: string }> {
+): Promise<{ connectAccountId: string; previousAccountId: string | null; facilityName: string }> {
   const facilityDoc = await db.collection('facilities').doc(facilityId).get();
   if (!facilityDoc.exists) {
     throw new functions.https.HttpsError('not-found', 'Facility not found');
@@ -200,8 +207,10 @@ async function loadFacilityAccount(
       'Facility owner must complete Stripe Connect onboarding before accepting payments',
     );
   }
+  const previous = facility.stripeConnectPreviousAccountId;
   return {
     connectAccountId,
+    previousAccountId: typeof previous === 'string' && previous && previous !== connectAccountId ? previous : null,
     facilityName: typeof facility.name === 'string' ? facility.name : 'Facility',
   };
 }
@@ -213,27 +222,37 @@ function isStripeResourceMissing(error: unknown): boolean {
 }
 
 /**
- * The link's stored session, or null when Stripe no longer has it on this
- * account (the facility reconnected a different Stripe account): that session
- * cannot be paid here, so a new attempt is the right answer.
+ * The link's stored session and the account it is on: the facility's
+ * account, else the one it was connected to before (a link started before a
+ * reconnect has its session there). Null when neither has it: nothing can
+ * pay it, so a new attempt is the right answer.
+ *
+ * Looked up only on the current account, a session on the old one read as
+ * missing: a new checkout was opened while the old one could still be paid,
+ * or had been paid with the link not yet marked, and the tenant paid twice.
  */
-async function retrieveUnlessMissing(
+async function findLinkSession(
   sessions: CheckoutSessionsApi,
   sessionId: string,
-  requestOptions: Stripe.RequestOptions,
-): Promise<Stripe.Checkout.Session | null> {
-  try {
-    return await sessions.retrieve(sessionId, {}, requestOptions);
-  } catch (error) {
-    if (isStripeResourceMissing(error)) {
-      functions.logger.warn('Payment-link session is gone from the connected account; starting a new one', {
-        sessionId,
-      });
-      return null;
+  accounts: { current: string; previous: string | null },
+): Promise<{ session: Stripe.Checkout.Session; account: string } | null> {
+  for (const account of [accounts.current, accounts.previous]) {
+    if (!account) continue;
+    try {
+      return { session: await sessions.retrieve(sessionId, {}, { stripeAccount: account }), account };
+    } catch (error) {
+      if (!isStripeResourceMissing(error)) throw error;
     }
-    throw error;
   }
+  functions.logger.warn("Payment-link session is on none of the facility's Stripe accounts; starting a new one", {
+    sessionId,
+  });
+  return null;
 }
+
+/** What the tenant is told when a dispute link is no longer due. */
+export const DISPUTE_LINK_NOT_DUE_MESSAGE =
+  'This payment is no longer due. Please contact the facility if you have questions.';
 
 /**
  * Hand the tenant a checkout for [token]: the link's open session when there
@@ -257,7 +276,7 @@ export async function getOrCreatePublicLinkCheckout(
     if (link.status === 'paid') return { kind: 'paid' };
     assertPayable(link, clock());
 
-    const { connectAccountId, facilityName } = await loadFacilityAccount(db, link.facilityId, {
+    const { connectAccountId, previousAccountId, facilityName } = await loadFacilityAccount(db, link.facilityId, {
       requireOnboarded: true,
     });
     const requestOptions: Stripe.RequestOptions = { stripeAccount: connectAccountId };
@@ -273,44 +292,82 @@ export async function getOrCreatePublicLinkCheckout(
     const tenantEmail = (tenantDoc.data() as Record<string, unknown>).email;
 
     // 1. The link's current session, if it has one.
-    const current = link.checkoutSessionId
-      ? await retrieveUnlessMissing(sessions, link.checkoutSessionId, requestOptions)
+    const found = link.checkoutSessionId
+      ? await findLinkSession(sessions, link.checkoutSessionId, { current: connectAccountId, previous: previousAccountId })
       : null;
-    if (current) {
-      if (current.status === 'complete') {
-        const completion = await completePublicLinkPayment({
-          db,
-          session: current,
-          connectedAccountId: connectAccountId,
-          source: 'checkout',
-          now: clock(),
+    const current = found?.session ?? null;
+    const onCurrentAccount = found?.account === connectAccountId;
+    if (current?.status === 'complete') {
+      if (!onCurrentAccount) {
+        // Paid on the facility's old account: the webhook refuses it (a
+        // super admin reviews stripeWebhookRefusals), and it must not be
+        // paid again here meanwhile.
+        functions.logger.error("Payment-link session was completed on the facility's previous Stripe account", {
+          sessionId: current.id,
         });
-        if (completion.linkStatus === 'paid') return { kind: 'paid' };
-        // Paid but not applicable (e.g. amount mismatch, already flagged), or
-        // not yet settled: either way, do not offer another payment.
         throw new functions.https.HttpsError(
           'failed-precondition',
           'A payment on this link is already being processed.',
         );
       }
-      if (current.status === 'open') {
-        const remainingMs = (current.expires_at ?? 0) * 1000 - clock().getTime();
-        if (remainingMs > REUSE_MIN_REMAINING_MS && current.url) {
-          return { kind: 'checkout', checkoutUrl: current.url, sessionId: current.id, reused: true };
-        }
-        // About to lapse: close it first so it cannot be paid alongside its replacement.
-        try {
-          await sessions.expire(current.id, {}, requestOptions);
-        } catch (error) {
-          functions.logger.warn('Could not expire a lapsing payment-link session; re-checking', {
-            sessionId: current.id,
-            error: (error as Error)?.message,
-          });
-          continue;
-        }
-      }
-      // Expired (or just expired above): fall through to a new attempt.
+      const completion = await completePublicLinkPayment({
+        db,
+        session: current,
+        connectedAccountId: connectAccountId,
+        source: 'checkout',
+        now: clock(),
+      });
+      if (completion.linkStatus === 'paid') return { kind: 'paid' };
+      // Paid but not applicable (e.g. amount mismatch, already flagged), or
+      // not yet settled: either way, do not offer another payment.
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'A payment on this link is already being processed.',
+      );
     }
+
+    // A dispute link was checked when staff made it; the dispute may have
+    // been won, voided or paid another way since. Paid again after that, the
+    // tenant had paid it twice.
+    if (link.disputeId) {
+      const dispute = await checkDisputeForPayment(db, link.facilityId, link.tenantId, link.disputeId, link.amount);
+      if (!dispute.ok) {
+        if (found && found.session.status === 'open') {
+          try {
+            await sessions.expire(found.session.id, {}, { stripeAccount: found.account });
+          } catch (error) {
+            functions.logger.warn('Could not expire the session of a dispute link that is no longer due', {
+              sessionId: found.session.id,
+              error: (error as Error)?.message,
+            });
+          }
+        }
+        functions.logger.info('Dispute payment link is no longer due', { reason: dispute.reason });
+        throw new functions.https.HttpsError('failed-precondition', DISPUTE_LINK_NOT_DUE_MESSAGE);
+      }
+    }
+
+    if (found && found.session.status === 'open') {
+      const open = found.session;
+      const remainingMs = (open.expires_at ?? 0) * 1000 - clock().getTime();
+      // Only a session on the facility's own account is handed back: one on
+      // the old account would pay the old account.
+      if (onCurrentAccount && remainingMs > REUSE_MIN_REMAINING_MS && open.url) {
+        return { kind: 'checkout', checkoutUrl: open.url, sessionId: open.id, reused: true };
+      }
+      // About to lapse, or on the old account: close it first so it cannot be
+      // paid alongside its replacement.
+      try {
+        await sessions.expire(open.id, {}, { stripeAccount: found.account });
+      } catch (error) {
+        functions.logger.warn('Could not expire a lapsing or superseded payment-link session; re-checking', {
+          sessionId: open.id,
+          error: (error as Error)?.message,
+        });
+        continue;
+      }
+    }
+    // Expired (or just expired above), or none: fall through to a new attempt.
 
     // 2. Reserve the next attempt, or join one another request reserved.
     const now = clock();
