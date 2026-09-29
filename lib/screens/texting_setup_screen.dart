@@ -449,7 +449,8 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
                 'about a business day, and campaign review 1–5 business days. Plan '
                 'on roughly 1–2 weeks end to end. If carriers reject the campaign '
                 'you will see the exact reason here and can fix and resubmit, which '
-                'restarts the review. You cannot send texts until it is approved.',
+                'restarts the review. Until then your texts go out on the shared '
+                'Storage Facility Creator number, which works right away.',
           ),
           const SizedBox(height: 24),
           _SectionLabel('Business identity'),
