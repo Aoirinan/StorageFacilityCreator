@@ -769,6 +769,8 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
         facilityId: widget.tenant.facilityId,
         action: 'dnr.override',
         targetId: widget.tenant.id,
+        targetType: 'tenant',
+        tenantId: widget.tenant.id,
         details: {
           'tenantName': widget.tenant.name,
           'tenantEmail': widget.tenant.email,

@@ -785,6 +785,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
           facilityId: widget.facilityId,
           action: 'dnr.override',
           targetId: dnrMatches.first.id,
+          tenantId: tenant.id,
           details: {
             'unitNumber': _unit!.unitNumber,
             'unitId': widget.unitId,

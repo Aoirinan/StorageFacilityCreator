@@ -1883,6 +1883,8 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
                 facilityId: _selectedFacilityId!,
                 action: 'dnr.override.contract',
                 targetId: _selectedTenantId!,
+                targetType: 'tenant',
+                tenantId: _selectedTenantId,
                 details: {
                   'tenantName': _selectedTenantModel!.name,
                   'tenantEmail': _selectedTenantModel!.email,
@@ -2008,6 +2010,8 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
             facilityId: _selectedFacilityId!,
             action: 'dnr.override.contract',
             targetId: _selectedTenantId!,
+            targetType: 'tenant',
+            tenantId: _selectedTenantId,
             details: {
               'tenantName': _selectedTenantModel!.name,
               'tenantEmail': _selectedTenantModel!.email,
