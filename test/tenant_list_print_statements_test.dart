@@ -49,9 +49,9 @@ final _tenants = [
 ];
 
 final _units = [
-  _unit('A1', 'ann', 'Complex 3'),
-  _unit('A2', 'bo', 'Complex 3'),
-  _unit('A10', 'di', 'Complex 3'),
+  _unit('A1', 'ann', 'Building A'),
+  _unit('A2', 'bo', 'Building A'),
+  _unit('A10', 'di', 'Building A'),
   _unit('B1', 'cy', 'Outdoor'),
 ];
 
@@ -164,7 +164,7 @@ void main() {
 
     // An Area filter hides Cy: the count follows what the list shows, as
     // Paid through and SMS consent do.
-    container.read(tenantAreaFilterProvider.notifier).state = 'Complex 3';
+    container.read(tenantAreaFilterProvider.notifier).state = 'Building A';
     await tester.pumpAndSettle();
     expect(find.text('Cy'), findsNothing);
     expect(find.text('Print statements (3)'), findsOneWidget);
