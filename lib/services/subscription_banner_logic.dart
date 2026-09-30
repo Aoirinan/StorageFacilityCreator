@@ -65,6 +65,10 @@ class AccountSubscriptionState {
   /// and is in the free month. Paid for, like `active`: while it counts, its
   /// trial does not "expire" here.
   final bool cardBackedTrial;
+  /// Set by a super admin. Paying does not lift it, so the banner, whose
+  /// button is Subscribe Now, has nothing to offer; the lock overlay and the
+  /// subscription page point the owner at support.
+  final bool suspended;
 
   const AccountSubscriptionState({
     this.status,
@@ -72,6 +76,7 @@ class AccountSubscriptionState {
     this.currentPeriodEnd,
     this.billingExempt = false,
     this.cardBackedTrial = false,
+    this.suspended = false,
   });
 
   bool get hasTrial => status == 'trialing';
@@ -118,6 +123,9 @@ SubscriptionBannerDecision decideSubscriptionBanner({
   if (account == null) return const SubscriptionBannerDecision.none();
   if (supportSession) return const SubscriptionBannerDecision.none();
   if (account.billingExempt) return const SubscriptionBannerDecision.none();
+  // Suspending also cancels the account, which read as "Your subscription
+  // has been cancelled" beside a Subscribe Now button the server refuses.
+  if (account.suspended) return const SubscriptionBannerDecision.none();
 
   final perFacility = facilities.where((f) => f.perFacility).toList();
   if (perFacility.isNotEmpty) {

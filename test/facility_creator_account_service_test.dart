@@ -190,6 +190,24 @@ void main() {
       expect(ties(owns: true).newSignup, isFalse);
       expect(ties(invite: true).newSignup, isFalse);
     });
+
+    test('an invite too old to accept without its link is not a pending tie', () {
+      // Nothing accepts it on its own, so a failure to accept it is never
+      // waited on; but no owner account is made for them either, and the
+      // dashboard shows them its link.
+      const stale =
+          AccountTies(activeRole: false, ownsFacility: false, pendingInvite: false, staleInvite: true);
+      expect(stale.invitedStaffOnly, isFalse);
+      expect(stale.newSignup, isFalse);
+      expect(stale.awaitsInviteLink, isTrue);
+      for (final other in const [
+        AccountTies(activeRole: true, ownsFacility: false, pendingInvite: false, staleInvite: true),
+        AccountTies(activeRole: false, ownsFacility: true, pendingInvite: false, staleInvite: true),
+        AccountTies(activeRole: false, ownsFacility: false, pendingInvite: true, staleInvite: true),
+      ]) {
+        expect(other.awaitsInviteLink, isFalse);
+      }
+    });
   });
 
   group('ensureAccountFor', () {
@@ -452,12 +470,16 @@ void main() {
     });
     tearDown(() => FacilityCreatorAccountService.overrideForTesting());
 
-    FakeDoc invite(String id, String emailLower, {String status = 'pending'}) => FakeDoc(id, {
+    FakeDoc invite(String id, String emailLower,
+            {String status = 'pending', int sentDaysAgo = 2}) =>
+        FakeDoc(id, {
           'facilityId': 'f7',
           'email': emailLower,
           'emailLower': emailLower,
           'roleType': 'employee',
           'status': status,
+          'invitedAt':
+              Timestamp.fromDate(DateTime.now().subtract(Duration(days: sentDaysAgo))),
         });
 
     /// Serves the ties reads from fakes. [fulfil] replaces invite acceptance;
@@ -467,6 +489,7 @@ void main() {
       required bool activeRole,
       required bool ownsFacility,
       bool pendingInvite = false,
+      bool staleInvite = false,
       Future<bool> Function(User user, String emailLower)? fulfil,
     }) {
       final roles = [
@@ -476,6 +499,7 @@ void main() {
       ];
       final invites = [
         if (pendingInvite) invite('inv_1', 'owner@example.com'),
+        if (staleInvite) invite('inv_stale', 'owner@example.com', sentDaysAgo: 31),
         invite('inv_old', 'owner@example.com', status: 'accepted'),
         invite('inv_other', 'someone@example.com'),
       ];
@@ -613,6 +637,43 @@ void main() {
         expect(creates, 0);
       });
 
+      test('an invitee whose only invite is too old settles with no account, not a failure',
+          () async {
+        // Counted as pending, it kept them from an account and from the
+        // screens' answer alike, with nothing that would ever accept it.
+        serve(
+          activeRole: false,
+          ownsFacility: false,
+          staleInvite: true,
+          fulfil: (_, __) async => true,
+        );
+        expect(await ensure(newSignupsOnly: true), isNull);
+        expect(await ensure(), isNull, reason: 'the screens make no account either');
+        // Even when the acceptance pass failed: there was nothing it would
+        // have accepted, so retrying every minute waits on nothing.
+        serve(
+          activeRole: false,
+          ownsFacility: false,
+          staleInvite: true,
+          fulfil: (_, __) async => false,
+        );
+        expect(await ensure(newSignupsOnly: true), isNull);
+        expect(creates, 0);
+      });
+
+      test('a fresh invite beside a stale one is still a pending tie', () async {
+        // The ties read took limit(1): whichever came back decided.
+        serve(
+          activeRole: false,
+          ownsFacility: false,
+          pendingInvite: true,
+          staleInvite: true,
+          fulfil: (_, __) async => false,
+        );
+        await expectLater(ensure(newSignupsOnly: true), throwsA(anything));
+        expect(invitesLog.limits, [20]);
+      });
+
       test('nor is a team member', () async {
         serve(activeRole: true, ownsFacility: false);
         expect(await ensure(newSignupsOnly: true), isNull);
@@ -732,6 +793,7 @@ void main() {
       PermissionService.overrideForTesting(
         collection: store.collection,
         collectionGroup: store.collectionGroup,
+        batch: store.batch,
         currentUser: () => user,
       );
     });
@@ -740,7 +802,7 @@ void main() {
       PermissionService.overrideForTesting();
     });
 
-    void pendingInvite(String facilityId) =>
+    void pendingInvite(String facilityId, {int sentDaysAgo = 1}) =>
         store.put('facilities/$facilityId/invites/inv_$facilityId', {
           'facilityId': facilityId,
           'email': 'staff@example.com',
@@ -748,7 +810,7 @@ void main() {
           'roleType': 'employee',
           'status': 'pending',
           'invitedBy': '$facilityId-owner',
-          'invitedAt': Timestamp.fromDate(DateTime.now().subtract(const Duration(days: 1))),
+          'invitedAt': Timestamp.fromDate(DateTime.now().subtract(Duration(days: sentDaysAgo))),
         });
     String? inviteStatus(String facilityId) =>
         store.data('facilities/$facilityId/invites/inv_$facilityId')?['status'] as String?;
@@ -760,6 +822,85 @@ void main() {
         isTrue,
       );
       expect(inviteStatus('keepsake'), 'accepted');
+      expect(store.idsIn('facilityCreatorAccounts'), isEmpty);
+    });
+
+    test('a new invitee whose only invite is too old gets no account, and its link is shown',
+        () async {
+      // Guard settled, screens returned nothing, no role: stranded with no
+      // way in but the old email.
+      pendingInvite('fac-maple', sentDaysAgo: 45);
+      expect(
+        await FacilityCreatorAccountService.ensureAccountOnce(user, createOnlyForNewSignups: true),
+        isTrue,
+      );
+      expect(inviteStatus('fac-maple'), 'pending');
+      expect(store.idsIn('user_roles'), isEmpty);
+      expect(store.idsIn('facilityCreatorAccounts'), isEmpty);
+      expect(await FacilityCreatorAccountService.ensureAccountFor(user), isNull);
+      await expectLater(FacilityCreatorAccountService.getOrCreateAccountForCurrentUser(),
+          throwsA(isA<InvitedStaffAccountException>()));
+
+      final invites = await PermissionService.pendingInvitesFor(user);
+      expect(invites.map((i) => (i.facilityId, i.id, i.autoAcceptable)),
+          [('fac-maple', 'inv_fac-maple', false)]);
+      // The link accepts it.
+      expect(
+        await PermissionService.fulfillSpecificInvite(
+            facilityId: 'fac-maple', inviteId: 'inv_fac-maple', userId: 'u1', email: user.email),
+        isTrue,
+      );
+      expect(inviteStatus('fac-maple'), 'accepted');
+    });
+
+    test('an acceptance refused part-way writes nothing and is tried again, not settled',
+        () async {
+      pendingInvite('fac-maple');
+      store.put('facilities/fac-maple', {'ownerUid': 'fac-maple-owner', 'roles': {}});
+      store.refuseWrite = (path) => path == 'facilities/fac-maple';
+      expect(
+        await FacilityCreatorAccountService.ensureAccountOnce(user, createOnlyForNewSignups: true),
+        isFalse,
+      );
+      expect(inviteStatus('fac-maple'), 'pending');
+      expect(store.idsIn('user_roles'), isEmpty, reason: 'no half-written role row');
+
+      store.refuseWrite = null;
+      FacilityCreatorAccountService.resetEnsuredForTesting();
+      expect(
+        await FacilityCreatorAccountService.ensureAccountOnce(user, createOnlyForNewSignups: true),
+        isTrue,
+      );
+      expect(inviteStatus('fac-maple'), 'accepted');
+      expect((store.data('facilities/fac-maple')!['roles'] as Map)['u1'], 'employee');
+    });
+
+    test('a role row left by an acceptance that stopped part-way is finished on the next load',
+        () async {
+      pendingInvite('fac-maple');
+      store.put('facilities/fac-maple', {'ownerUid': 'fac-maple-owner', 'roles': {}});
+      // As in production: someone not on the team cannot read the facility.
+      store.refuseRead = (path) => path == 'facilities/fac-maple';
+      final half = {
+        'userId': 'u1',
+        'facilityId': 'fac-maple',
+        'roleType': 'employee',
+        'assignedBy': 'fac-maple-owner',
+        'assignedAt': Timestamp.fromDate(DateTime.now()),
+        'isActive': true,
+        'inviteId': 'inv_fac-maple',
+      };
+      store.put('user_roles/half', half);
+      expect(
+        await FacilityCreatorAccountService.ensureAccountOnce(user, createOnlyForNewSignups: true),
+        isTrue,
+      );
+      expect(inviteStatus('fac-maple'), 'accepted');
+      expect((store.data('facilities/fac-maple')!['roles'] as Map)['u1'], 'employee');
+      // The acceptance writes the invite's own row, the only one the rules let
+      // an invitee write; the row left part-way stays as it was.
+      expect(store.idsIn('user_roles'), unorderedEquals(['half', 'fac-maple_inv_fac-maple']));
+      expect(store.data('user_roles/half'), half);
       expect(store.idsIn('facilityCreatorAccounts'), isEmpty);
     });
 
@@ -957,6 +1098,8 @@ void main() {
           'facilityId': 'keepsake',
           'emailLower': 'new@example.com',
           'status': 'pending',
+          // Recent: only an invite the guard may accept is waited on.
+          'invitedAt': Timestamp.fromDate(DateTime.now()),
         }),
       ];
       final roles = <FakeDoc>[];

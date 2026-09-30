@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { moveOutInstant } from '../moveOutDate';
+import { moveOutFutureDateRefusal, moveOutInstant } from '../moveOutDate';
 
 /**
  * The move-out screen used to send local midnight with no offset
@@ -41,4 +41,24 @@ test('what is not a date is null', () => {
   assert.equal(moveOutInstant(1758628800000), null);
   assert.equal(moveOutInstant(null), null);
   assert.equal(moveOutInstant(undefined), null);
+});
+
+test('a move-out dated after today (UTC) is refused; today and earlier are not', () => {
+  // The screen's date picker ends at today; a direct call or an old page
+  // could send a later day, prorating days that have not happened.
+  const now = new Date('2026-09-30T15:00:00Z');
+  const day = (text: string) => moveOutInstant(text)!;
+  assert.equal(moveOutFutureDateRefusal(day('2026-09-30'), now), null);
+  assert.equal(moveOutFutureDateRefusal(day('2026-09-29'), now), null);
+  assert.equal(moveOutFutureDateRefusal(day('2025-12-31'), now), null);
+  assert.match(moveOutFutureDateRefusal(day('2026-10-01'), now) ?? '', /^The move-out date is after today, so nothing was moved out\./);
+  assert.match(moveOutFutureDateRefusal(day('2027-01-01'), now) ?? '', /after today/);
+  // Just after midnight UTC, which is still yesterday evening in the US:
+  // today in UTC is allowed, the next day is not.
+  const early = new Date('2026-10-01T00:30:00Z');
+  assert.equal(moveOutFutureDateRefusal(day('2026-10-01'), early), null);
+  assert.notEqual(moveOutFutureDateRefusal(day('2026-10-02'), early), null);
+  // An instant with a zone is judged by its UTC day.
+  assert.equal(moveOutFutureDateRefusal(day('2026-09-30T23:30:00Z'), now), null);
+  assert.notEqual(moveOutFutureDateRefusal(day('2026-09-30T23:30:00-05:00'), now), null);
 });

@@ -76,7 +76,7 @@ class SelectableCharge {
   ///
   /// A charge is a positive amount of a type that bills the tenant. Refund
   /// and credit rows can be stored positive (move-out refunds since #39, and
-  /// the transfer credit's sign bug); they raise the balance but are not
+  /// transfer credits written before #45); they raise the balance but are not
   /// something to bill, so they never become invoice lines. The balance still
   /// counts them, so real charges fill the amount instead.
   factory SelectableCharge.fromLedgerEntry(LedgerEntry entry) {

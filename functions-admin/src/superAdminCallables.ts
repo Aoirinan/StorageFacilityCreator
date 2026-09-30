@@ -9,7 +9,7 @@ import { resolveReferralPendingItemForSuperAdmin } from '@sfc/functions-shared/r
 import { getStripeClient } from '@sfc/functions-shared/stripe/client';
 import { getOrCreateAddOnPriceId, getOrCreateBasePriceId } from '@sfc/functions-shared/stripe/subscriptionPricing';
 import { FacilityBillingNotStoppedError, purgeFacility, stripeFacilityPurgeDeps } from './facilityPurge';
-import { cancelSubscriptions, summarizeCancelOutcomes } from '@sfc/functions-shared/stripe/subscriptionCleanup';
+import { summarizeCancelOutcomes } from '@sfc/functions-shared/stripe/subscriptionCleanup';
 import { disableUserHandler } from './disableUser';
 import {
   superAdminDeleteFacilityCreatorAccountHandler,
@@ -162,15 +162,21 @@ export const superAdminRepairFacilityPermissionOrphans = functions.https.onCall(
  */
 export const superAdminDeleteFacilityCreatorAccount = functions
   .runWith({ secrets: STRIPE_SECRETS })
-  .https.onCall((data: SuperAdminDeleteFacilityCreatorAccountData, context) =>
-    superAdminDeleteFacilityCreatorAccountHandler(data, context, {
+  .https.onCall((data: SuperAdminDeleteFacilityCreatorAccountData, context) => {
+    // Stripe as purgeFacility has it: the facilities' and the account's
+    // subscriptions, and their tenants' legacy AutoPay subscriptions, which
+    // are on the platform account and went on charging tenants of deleted
+    // facilities (stopAccountBilling, in the handler).
+    const purge = stripeFacilityPurgeDeps();
+    return superAdminDeleteFacilityCreatorAccountHandler(data, context, {
       db: admin.firestore(),
-      cancelSubscriptions: (subscriptions) => cancelSubscriptions(getStripeClient(), subscriptions),
+      cancelSubscriptions: purge.cancelSubscriptions,
+      legacyAutopayStripe: purge.legacyAutopayStripe,
       deleteAuthUser: async (uid) => {
         await admin.auth().deleteUser(uid);
       },
-    }),
-  );
+    });
+  });
 
 interface SuperAdminDeleteFacilityData {
   facilityId: string;

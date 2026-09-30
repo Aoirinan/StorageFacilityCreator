@@ -953,6 +953,38 @@ void main() {
     });
   });
 
+  test('staff of a suspended owner are not told to ask for a renewal, which lifts nothing', () {
+    FacilityModel team(String id, OwnerAccountStanding standing) => FacilityModel(
+          id: id,
+          name: 'Owner Storage',
+          ownerUid: 'owner_$id',
+          createdAt: DateTime(2026),
+          ownerAccountStanding: standing,
+          currentUserOwnsFacility: false,
+        );
+    const suspended = OwnerAccountStanding(
+      accountId: 'acct_s',
+      subscriptionStatus: SubscriptionStatus.cancelled,
+      suspended: true,
+    );
+    const lapsed = OwnerAccountStanding(
+      accountId: 'acct_l',
+      subscriptionStatus: SubscriptionStatus.cancelled,
+    );
+
+    final onlySuspended = SubscriptionGuardService.accessWithoutAccount([team('a', suspended)]);
+    expect(onlySuspended.canAccess, isFalse);
+    expect(onlySuspended.redirectRoute, '/subscription');
+    expect(onlySuspended.message, contains("owner's account is suspended"));
+    expect(onlySuspended.message, isNot(contains('renew')));
+
+    // One owner could renew: that is still worth asking for.
+    final mixed =
+        SubscriptionGuardService.accessWithoutAccount([team('a', suspended), team('b', lapsed)]);
+    expect(mixed.canAccess, isFalse);
+    expect(mixed.message, contains('Ask the owner to renew it'));
+  });
+
   group('SubscriptionAccessCache', () {
     const allowed = SubscriptionAccessResult(canAccess: true);
 

@@ -1,6 +1,12 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
+import {
+  cancelLegacyAutopaySubscription,
+  getStripeClient,
+  type LegacySubscriptionStripe,
+} from '@sfc/functions-shared';
 import { firstAutopayRun } from './stripe/tenant_billing';
+import { legacyNotCancelledMessage } from './legacyAutopaySubscription';
 
 /**
  * The single place that decides whether a tenant's card is armed for the
@@ -27,6 +33,9 @@ export async function setTenantAutopayArming(
   facilityId: string,
   tenantId: string,
   enable: boolean,
+  // The platform Stripe client, only created when there is a legacy
+  // subscription to cancel. Tests pass a fake.
+  stripe: () => LegacySubscriptionStripe = getStripeClient,
 ): Promise<void> {
   const tenantRef = admin
     .firestore()
@@ -42,11 +51,23 @@ export async function setTenantAutopayArming(
   // The staff billing panel's AutoPay switch reads billing/default, a fourth
   // copy of the same intent. Keep it in step here so the tenant screen's
   // "Autopay: ON" chip and the panel's switch can never disagree again.
-  const mirrorBillingFlag = () =>
-    tenantRef.collection('billing').doc('default').set(
-      { autopayEnabled: enable, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+  const billingRef = tenantRef.collection('billing').doc('default');
+  const billing = (await billingRef.get()).data();
+  // A legacy subscription is cancelled on either switch, as the panel's
+  // switch does: this one never did, so Disable autopay (which the facility
+  // delete refusal sends owners to) left it charging and its id in place,
+  // and the delete stayed refused with no control that could clear it. The
+  // id goes only once it is not billing.
+  const mirrorBillingFlag = (legacyGone: boolean) =>
+    billingRef.set(
+      {
+        autopayEnabled: enable,
+        ...(legacyGone ? { stripeSubscriptionId: admin.firestore.FieldValue.delete() } : {}),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
       { merge: true },
     );
+  const where = { facilityId, tenantId };
 
   if (!enable) {
     for (const doc of methods.docs) {
@@ -57,7 +78,11 @@ export async function setTenantAutopayArming(
         });
       }
     }
-    await mirrorBillingFlag();
+    const legacy = await cancelLegacyAutopaySubscription(stripe, where, billing);
+    await mirrorBillingFlag(legacy !== 'failed');
+    if (legacy === 'failed') {
+      throw new functions.https.HttpsError('unavailable', legacyNotCancelledMessage(false));
+    }
     return;
   }
 
@@ -66,6 +91,10 @@ export async function setTenantAutopayArming(
       'failed-precondition',
       'Add a payment method first, then turn on autopay.',
     );
+  }
+  // Before arming: both running would charge them twice.
+  if ((await cancelLegacyAutopaySubscription(stripe, where, billing)) === 'failed') {
+    throw new functions.https.HttpsError('unavailable', legacyNotCancelledMessage(true));
   }
 
   const target = methods.docs.find((d) => d.get('isDefault') === true) ?? methods.docs[0];
@@ -98,5 +127,5 @@ export async function setTenantAutopayArming(
       await doc.ref.update({ autopayEnabled: false });
     }
   }
-  await mirrorBillingFlag();
+  await mirrorBillingFlag(true);
 }

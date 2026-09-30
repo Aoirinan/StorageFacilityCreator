@@ -252,6 +252,66 @@ class CurrentFacilityRoleSummary {
   });
 }
 
+/// What the signed-in user may do on the team screen at one facility, as the
+/// Firestore rules allow it. The screen offered every action to everyone, and
+/// the rules refuse a manager's role change, invitation or resend.
+class TeamPowers {
+  /// The facility's owner (its ownerUid), or a super admin working in it.
+  final bool isOwner;
+
+  /// A co-owner: someone the owner added with the owner role.
+  final bool isCoOwner;
+
+  /// A manager, who may take team members off the team and cancel a pending
+  /// invitation, and nothing else here.
+  final bool isManager;
+
+  const TeamPowers({this.isOwner = false, this.isCoOwner = false, this.isManager = false});
+
+  /// The powers of [userId], whose role at the facility is [role] (null for
+  /// none), where [facilityOwnerUid] is its owner.
+  factory TeamPowers.of({
+    required String? userId,
+    required bool isSuperAdmin,
+    required String? facilityOwnerUid,
+    required RoleType? role,
+  }) {
+    final owner =
+        isSuperAdmin || (userId != null && userId.isNotEmpty && userId == facilityOwnerUid);
+    return TeamPowers(
+      isOwner: owner,
+      isCoOwner: !owner && role == RoleType.owner,
+      isManager: !owner && role == RoleType.manager,
+    );
+  }
+
+  /// Change Role: the owner's alone. The rules take no one else's change to
+  /// a role row or the roles map, other than a removal.
+  bool get canChangeRoles => isOwner;
+
+  /// Add User, and Resend on a pending invitation.
+  bool get canInvite => isOwner || isCoOwner;
+
+  /// Cancel on a pending invitation.
+  bool get canCancelInvites => canInvite || isManager;
+
+  /// Whether they may take anyone off the team at all.
+  bool get canRemoveAnyone => isOwner || isCoOwner || isManager;
+
+  /// Remove Access on a member whose role is [memberRole]: never the
+  /// facility's owner or yourself, and an owner (a co-owner) only by the
+  /// facility's owner.
+  bool canRemove({
+    required RoleType memberRole,
+    required bool memberIsFacilityOwner,
+    required bool memberIsYou,
+  }) {
+    if (memberIsFacilityOwner || memberIsYou) return false;
+    if (isOwner) return true;
+    return canRemoveAnyone && memberRole != RoleType.owner;
+  }
+}
+
 // Extensions for display names
 extension PermissionTypeExtension on PermissionType {
   String get displayName {

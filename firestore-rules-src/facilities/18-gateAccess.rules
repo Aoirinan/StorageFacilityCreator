@@ -1,5 +1,9 @@
       match /gateAccess/{accessId} {
-        allow read: if isFacilityStaff(facilityId);
+        // Super admins read them too, as for the tenant and unit docs:
+        // Unassign Tenant, archive and switching a tenant off turn their gate
+        // codes off in the same transaction, which failed permission-denied
+        // for a super admin with no role at the facility.
+        allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
         allow create: if isFacilityStaff(facilityId) &&
           request.resource.data.facilityId == facilityId &&
           request.resource.data.keys().hasAll([
@@ -23,7 +27,13 @@
           (!('allowedEndTime' in request.resource.data) ||
             request.resource.data.allowedEndTime == null ||
             stringMatchesTime(request.resource.data.allowedEndTime));
-        allow update: if isFacilityStaff(facilityId) &&
+        // A super admin with no role only switches a code off (the fields
+        // TenantService's gate-off writes): not on again, and no code,
+        // hours or tenant changed.
+        allow update: if (isFacilityStaff(facilityId) ||
+            (isSuperAdmin() &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isActive', 'updatedAt', 'updatedBy']) &&
+              request.resource.data.isActive == false)) &&
           (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
           (!('accessCode' in request.resource.data) ||
             (request.resource.data.accessCode is string && request.resource.data.accessCode.size() > 0)) &&

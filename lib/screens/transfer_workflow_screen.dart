@@ -185,16 +185,20 @@ class _TransferWorkflowScreenState extends ConsumerState<TransferWorkflowScreen>
     });
 
     try {
-      await TransferService.completeTransfer(
+      // The tenant's new rent, or a request to check it.
+      final notice = await TransferService.completeTransfer(
         facilityId: widget.facilityId,
         transferId: _calculatedTransfer!.id,
       );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Transfer completed successfully'),
+          SnackBar(
+            content: Text(notice == null
+                ? 'Transfer completed successfully'
+                : 'Transfer completed. $notice'),
             backgroundColor: AppTheme.success,
+            duration: Duration(seconds: notice == null ? 4 : 10),
           ),
         );
         Navigator.pop(context);

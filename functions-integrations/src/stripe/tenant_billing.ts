@@ -5,6 +5,8 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
+import { cancelLegacyAutopaySubscription } from '@sfc/functions-shared';
+import { legacyNotCancelledMessage } from '../legacyAutopaySubscription';
 
 const BILLING_DOC_ID = 'default';
 
@@ -107,10 +109,17 @@ export async function toggleAutopay(
   //
   // Cancel any leftover subscription on either transition. Leaving it running
   // alongside the nightly job would double-bill the tenant, which is worse than
-  // ending a subscription that should not have existed.
-  await cancelLegacyPlatformSubscription(stripe, facilityId, tenantId, billingData);
+  // ending a subscription that should not have existed. Its id is deleted
+  // below only once it is not billing: it used to be deleted even when the
+  // cancel failed, hiding a live subscription from the facility-delete check.
+  const legacy = await cancelLegacyAutopaySubscription(() => stripe, { facilityId, tenantId }, billingData);
+  const legacyIdUpdate =
+    legacy === 'failed' ? {} : { stripeSubscriptionId: admin.firestore.FieldValue.delete() };
 
   if (enable) {
+    if (legacy === 'failed') {
+      throw new functions.https.HttpsError('unavailable', legacyNotCancelledMessage(true));
+    }
     const monthlyRate = (tenantData?.monthlyRate ?? 0) as number;
     if (monthlyRate <= 0) {
       throw new functions.https.HttpsError(
@@ -176,7 +185,7 @@ export async function toggleAutopay(
         tenantId,
         autopayEnabled: true,
         autopayPaymentMethodDocId: target.id,
-        stripeSubscriptionId: admin.firestore.FieldValue.delete(),
+        ...legacyIdUpdate,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true },
@@ -205,11 +214,14 @@ export async function toggleAutopay(
   await billingRef(facilityId, tenantId).set(
     {
       autopayEnabled: false,
-      stripeSubscriptionId: admin.firestore.FieldValue.delete(),
+      ...legacyIdUpdate,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     },
     { merge: true },
   );
+  if (legacy === 'failed') {
+    throw new functions.https.HttpsError('unavailable', legacyNotCancelledMessage(false));
+  }
 
   return { autopayEnabled: false };
 }
@@ -224,30 +236,6 @@ export async function toggleAutopay(
 export function firstAutopayRun(now: Date, dayOfMonth: number): Date {
   const day = Number.isFinite(dayOfMonth) && dayOfMonth >= 1 && dayOfMonth <= 28 ? dayOfMonth : 1;
   return new Date(now.getFullYear(), now.getMonth() + 1, day);
-}
-
-/** Cancel a leftover platform-account AutoPay subscription, if one exists. */
-async function cancelLegacyPlatformSubscription(
-  stripe: Stripe,
-  facilityId: string,
-  tenantId: string,
-  billingData: Record<string, any>,
-): Promise<void> {
-  const subId = billingData.stripeSubscriptionId as string | undefined;
-  if (!subId) return;
-
-  try {
-    await stripe.subscriptions.cancel(subId);
-    functions.logger.warn(
-      `Cancelled legacy platform-account AutoPay subscription ${subId} for facility ${facilityId} tenant ${tenantId}`,
-    );
-  } catch (error: any) {
-    // Already gone is fine; anything else must not block the switch, but should
-    // be visible because it means a subscription may still be billing.
-    functions.logger.error(
-      `Failed to cancel legacy AutoPay subscription ${subId} for facility ${facilityId} tenant ${tenantId}: ${error?.message}`,
-    );
-  }
 }
 
 /**

@@ -1,14 +1,11 @@
 import * as functions from 'firebase-functions/v1';
 import type * as admin from 'firebase-admin';
 import { isSuperAdmin } from '@sfc/functions-shared/auth/superAdmin';
-import {
-  anyCancelFailed,
-  collectSubscriptionsToCancel,
-  summarizeCancelOutcomes,
-} from '@sfc/functions-shared/stripe/subscriptionCleanup';
+import { anyCancelFailed, summarizeCancelOutcomes } from '@sfc/functions-shared/stripe/subscriptionCleanup';
 import type { CancelOutcome, CancellableSubscription } from '@sfc/functions-shared/stripe/subscriptionCleanup';
+import type { LegacySubscriptionStripe } from '@sfc/functions-shared/stripe/legacyTenantAutopay';
 import { adminDeleteDocumentTree } from './admin_delete_document_tree';
-import { deleteFacilityKeyedRecords } from './facilityPurge';
+import { deleteFacilityKeyedRecords, stopAccountBilling } from './facilityPurge';
 
 export interface SuperAdminDeleteFacilityCreatorAccountData {
   accountId: string;
@@ -19,6 +16,8 @@ export interface SuperAdminDeleteFacilityCreatorAccountData {
 export type DeleteFacilityCreatorAccountDeps = {
   db: admin.firestore.Firestore;
   cancelSubscriptions: (subscriptions: CancellableSubscription[]) => Promise<CancelOutcome[]>;
+  /** The platform Stripe client the tenants' legacy AutoPay subscriptions are cancelled with (stopAccountBilling). */
+  legacyAutopayStripe: () => LegacySubscriptionStripe;
   deleteAuthUser: (uid: string) => Promise<void>;
 };
 
@@ -88,17 +87,11 @@ export async function superAdminDeleteFacilityCreatorAccountHandler(
     .get();
 
   // Every subscription this owner has, across every facility plus the legacy
-  // account plan, cancelled before any of it is deleted. Collected in one
-  // pass so a subscription shared by two facilities is cancelled once.
-  const allSubscriptions = [
-    ...facilitiesSnap.docs.flatMap((f) =>
-      collectSubscriptionsToCancel(f.data() as Record<string, unknown>, null),
-    ),
-    ...collectSubscriptionsToCancel(null, accountData),
-  ].filter(
-    (sub, i, list) => list.findIndex((other) => other.id === sub.id) === i,
-  );
-  const accountCancelOutcomes = await deps.cancelSubscriptions(allSubscriptions);
+  // account plan, cancelled before any of it is deleted, a subscription
+  // shared by two facilities once. Their tenants' legacy AutoPay
+  // subscriptions too: on the platform account, they went on charging
+  // tenants of deleted facilities (stopAccountBilling).
+  const accountCancelOutcomes = await stopAccountBilling(db, facilitiesSnap.docs, accountData, deps);
   if (anyCancelFailed(accountCancelOutcomes)) {
     throw new functions.https.HttpsError(
       'failed-precondition',

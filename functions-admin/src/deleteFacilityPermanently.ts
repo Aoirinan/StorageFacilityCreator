@@ -7,8 +7,10 @@ import { findOwnerAccountDoc } from '@sfc/functions-shared/platform/ownerAccount
 import {
   FacilityBillingNotStoppedError,
   FacilityPurgeDeps,
+  TenantCollection,
   purgeFacility,
   stripeFacilityPurgeDeps,
+  tenantBillingDocs,
 } from './facilityPurge';
 import { DELETE_FACILITY_OTP_PURPOSE, consumeRecentTwoFactor } from './recentTwoFactor';
 import { STRIPE_SECRETS } from './secrets';
@@ -44,50 +46,69 @@ export function facilityHasActiveTenantsMessage(count: number): string {
   );
 }
 
-/** The refusal while tenants still have autopay set up, naming a few of them. */
-export function facilityHasAutopayTenantsMessage(names: string[]): string {
+/** "A, B, C, D, E and 2 more". */
+function namedFew(names: string[]): string {
   const shown = names.slice(0, 5);
   const more = names.length - shown.length;
-  const who = more > 0 ? `${shown.join(', ')} and ${more} more` : shown.join(', ');
-  const tenants = names.length === 1 ? '1 tenant' : `${names.length} tenants`;
+  return more > 0 ? `${shown.join(', ')} and ${more} more` : shown.join(', ');
+}
+
+/**
+ * The refusal while tenants still have autopay set up, naming a few of
+ * them. [tenants] are on the tenants collection: each has a page whose
+ * Disable autopay turns it off, a legacy subscription included (it shows
+ * whenever billing/default has autopay). [oldTenants] are legacy records
+ * with no page in the app: they used to be named with the rest and sent to
+ * a Disable autopay button that doesn't exist for them, so they go to
+ * support. It said deleting the facility wouldn't stop autopay; the purge
+ * now cancels a legacy subscription itself, and a deleted card can't be
+ * charged, so it no longer claims that.
+ */
+export function facilityHasAutopayTenantsMessage(tenants: string[], oldTenants: string[] = []): string {
+  const holders = [
+    ...(tenants.length > 0
+      ? [`${tenants.length === 1 ? '1 tenant' : `${tenants.length} tenants`} (${namedFew(tenants)})`]
+      : []),
+    ...(oldTenants.length > 0
+      ? [
+          `${oldTenants.length === 1 ? '1 older tenant record' : `${oldTenants.length} older tenant records`} ` +
+            `(${namedFew(oldTenants)})`,
+        ]
+      : []),
+  ];
+  const steps = [
+    ...(tenants.length > 0 ? ['Open each tenant and press Disable autopay.'] : []),
+    ...(oldTenants.length > 0
+      ? [
+          'Older tenant records have no page in the app, so contact support to switch ' +
+            `${oldTenants.length === 1 ? 'it' : 'them'} off.`,
+        ]
+      : []),
+  ];
   return (
-    `Nothing was deleted: autopay is still set up for ${tenants} (${who}), ` +
-    "and deleting the facility wouldn't stop it. Open each tenant and press " +
-    'Disable autopay, then delete the facility.'
+    `Nothing was deleted: autopay is still set up for ${holders.join(' and ')}. ` +
+    `${steps.join(' ')} Then delete the facility.`
   );
 }
 
-/** Tenant collections a facility may have; oldTenants is the legacy one. */
-const TENANT_COLLECTIONS = ['tenants', 'oldTenants'] as const;
-
-/** billing/default docs read per getAll. */
-const BILLING_READ_BATCH = 300;
-
 /**
  * Names of the facility's tenants, active or not, whose autopay is still
- * set up: a Stripe subscription id or autopayEnabled on billing/default.
- * The purge cancels the facility's own subscriptions only, so a tenant's
- * (an archived tenant's, say) went on charging them after the facility and
- * every record of it were gone.
+ * set up: a Stripe subscription id or autopayEnabled on billing/default,
+ * by collection. The owner switches it off first, so no tenant finds their
+ * autopay gone with no word; a legacy subscription is also cancelled by
+ * the purge itself (cancelTenantLegacySubscriptions).
  */
 export async function tenantsWithAutopay(
   db: admin.firestore.Firestore,
   facilityRef: admin.firestore.DocumentReference,
-): Promise<string[]> {
-  const names: string[] = [];
-  for (const collection of TENANT_COLLECTIONS) {
-    const tenants = (await facilityRef.collection(collection).select('name').get()).docs;
-    for (let i = 0; i < tenants.length; i += BILLING_READ_BATCH) {
-      const batch = tenants.slice(i, i + BILLING_READ_BATCH);
-      const billing = await db.getAll(...batch.map((t) => t.ref.collection('billing').doc('default')));
-      billing.forEach((snap, j) => {
-        if (snap.exists && hasAutopaySubscription(snap.data())) {
-          names.push(tenantDisplayName(batch[j].data(), batch[j].id));
-        }
-      });
+): Promise<Record<TenantCollection, string[]>> {
+  const found: Record<TenantCollection, string[]> = { tenants: [], oldTenants: [] };
+  for (const doc of await tenantBillingDocs(db, facilityRef)) {
+    if (hasAutopaySubscription(doc.billing)) {
+      found[doc.collection].push(tenantDisplayName(doc.tenant, doc.tenantId));
     }
   }
-  return names;
+  return found;
 }
 
 export function parseDeleteFacilityRequest(data: unknown): { facilityId: string } {
@@ -156,11 +177,13 @@ export async function deleteFacilityPermanentlyHandler(
       });
     }
     const autopay = await tenantsWithAutopay(db, facilityRef);
-    if (autopay.length > 0) {
-      throw new functions.https.HttpsError('failed-precondition', facilityHasAutopayTenantsMessage(autopay), {
-        reason: 'tenant-autopay',
-        tenants: autopay.length,
-      });
+    const withAutopay = autopay.tenants.length + autopay.oldTenants.length;
+    if (withAutopay > 0) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        facilityHasAutopayTenantsMessage(autopay.tenants, autopay.oldTenants),
+        { reason: 'tenant-autopay', tenants: withAutopay },
+      );
     }
   }
 

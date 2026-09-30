@@ -25,6 +25,20 @@ class TransferRefusedException implements UserFacingException {
   String toString() => message;
 }
 
+/// One ledger entry a completed transfer posts. [amount] is signed the way
+/// the ledger stores it: negative for the credit, positive for the charge.
+/// [kind] is the entry's `metadata.type` ('transfer_refund' for the credit,
+/// 'transfer_charge' for the charge; scripts/audit-transfer-credit-signs.mjs
+/// finds the credits by it).
+typedef TransferLedgerLine = ({
+  LedgerEntryType type,
+  double amount,
+  String description,
+  String unitId,
+  String unitNumber,
+  String kind,
+});
+
 /// Service for managing unit transfers
 class TransferService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -117,35 +131,54 @@ class TransferService {
 
   /// The tenant's rent and unit number once [transfer] completes
   /// ([unitNumber] null: left as it is). With no [otherUnits], the to-unit's
-  /// rate and number, as before. With others, the from-unit's rate comes off
-  /// their rent and the to-unit's goes on (never below zero), and their
-  /// unit number moves to the new unit only if it named the unit they left:
-  /// setting both to the new unit billed a tenant with units A and B who
-  /// moved B to C for C alone, and labelled them C. [unitId] is the unit
-  /// [unitNumber] names (the to-unit), null with it: updateTenant links it
-  /// by id and makes it their primary unit (`unitId`, `unitArea`).
+  /// rate and number, as before. With others, the rent is [rentAfterTransfer]
+  /// (the from-unit's rate off and the to-unit's on when their rent is the
+  /// sum of their units' rates, else [monthlyRate] null and [notice] asks
+  /// the owner to check it: subtracting blindly took a tenant billed one
+  /// discounted rate for two units to $0), and their unit number moves to
+  /// the new unit only if it named the unit they left: setting both to the
+  /// new unit billed a tenant with units A and B who moved B to C for C
+  /// alone, and labelled them C. [unitId] is the unit [unitNumber] names
+  /// (the to-unit), null with it: updateTenant links it by id and makes it
+  /// their primary unit (`unitId`, `unitArea`). [tenantName] is for the
+  /// notice.
   ///
   /// Whether the label named the unit they left is decided by id when the
   /// tenant has a primary unit ([currentUnitId], their `unitId`): the
   /// transfer's from-number is a copy taken when it was created, and with
   /// numbers repeated across areas "12" can be a unit they keep. By number
   /// only for a tenant with no `unitId`.
-  static ({double monthlyRate, String? unitNumber, String? unitId})
-      tenantAfterTransfer({
+  static ({
+    double? monthlyRate,
+    String? notice,
+    String? unitNumber,
+    String? unitId,
+  }) tenantAfterTransfer({
     required TransferModel transfer,
     required double currentRate,
     required String currentUnitNumber,
     String? currentUnitId,
     required List<UnitModel> otherUnits,
+    String tenantName = 'this tenant',
   }) {
+    final rent = rentAfterTransfer(
+      tenantName: tenantName,
+      current: currentRate,
+      kept: [for (final u in otherUnits) TenantService.unitRent(u)],
+      from: (
+        unitNumber: transfer.fromUnitNumber.trim(),
+        rate: transfer.fromUnitRate,
+      ),
+      to: (unitNumber: transfer.toUnitNumber.trim(), rate: transfer.toUnitRate),
+    );
     if (otherUnits.isEmpty) {
       return (
-        monthlyRate: transfer.toUnitRate,
+        monthlyRate: rent.monthlyRate,
+        notice: rent.notice,
         unitNumber: transfer.toUnitNumber,
         unitId: transfer.toUnitId,
       );
     }
-    final rate = currentRate - transfer.fromUnitRate + transfer.toUnitRate;
     final label = currentUnitNumber.trim();
     final primary = currentUnitId?.trim() ?? '';
     final bool movesLabel;
@@ -159,7 +192,8 @@ class TransferService {
       movesLabel = !namesKept && sameUnitNumber(label, transfer.fromUnitNumber);
     }
     return (
-      monthlyRate: rate <= 0 ? 0 : (rate * 100).round() / 100,
+      monthlyRate: rent.monthlyRate,
+      notice: rent.notice,
       unitNumber: movesLabel ? transfer.toUnitNumber : null,
       unitId: movesLabel ? transfer.toUnitId : null,
     );
@@ -251,8 +285,68 @@ class TransferService {
     }
   }
 
-  /// Complete a transfer
-  static Future<void> completeTransfer({
+  /// The ledger rows a completed transfer posts: the old unit's unused days
+  /// (transfer day to month end) as a credit, negative, then the new unit's
+  /// as a charge. Either is left out when its amount is zero.
+  ///
+  /// A tenant's balance is the signed sum of their posted amounts
+  /// (LedgerService.getLedgerBalance, sumPostedLedgerEntries; what autopay
+  /// collects): charges are stored positive, payments and credits negative.
+  /// The credit used to be posted positive, so a transfer charged the old
+  /// unit's unused days on top of the new unit's instead of netting them,
+  /// and the two entries summed to fromUnit + toUnit rather than
+  /// [TransferModel.netAmount], the net the screen showed.
+  @visibleForTesting
+  static List<TransferLedgerLine> transferLedgerRows(TransferModel transfer) => [
+        if (transfer.fromUnitProratedRent > 0)
+          (
+            type: LedgerEntryType.credit,
+            amount: -transfer.fromUnitProratedRent,
+            description:
+                'Transfer credit: ${transfer.fromUnitNumber} (prorated)',
+            unitId: transfer.fromUnitId,
+            unitNumber: transfer.fromUnitNumber,
+            kind: 'transfer_refund',
+          ),
+        if (transfer.toUnitProratedRent > 0)
+          (
+            type: LedgerEntryType.rentCharge,
+            amount: transfer.toUnitProratedRent,
+            description:
+                'Transfer charge: ${transfer.toUnitNumber} (prorated)',
+            unitId: transfer.toUnitId,
+            unitNumber: transfer.toUnitNumber,
+            kind: 'transfer_charge',
+          ),
+      ];
+
+  /// The tenant's rent after a transfer from [from] to [to], [kept] being
+  /// the other units they hold. Their only unit: the new unit's rate, as
+  /// before. Holding others, the rent rule of
+  /// [TenantService.rentAfterUnitChange]: the old unit's rate comes off
+  /// and the new one's goes on, or the owner is asked to check it. It was
+  /// set to the new unit's rate alone, dropping the rent of every unit they
+  /// kept. [monthlyRate] null leaves their rate as it is.
+  static ({double? monthlyRate, String? notice}) rentAfterTransfer({
+    required String tenantName,
+    required double current,
+    required List<UnitRent> kept,
+    required UnitRent from,
+    required UnitRent to,
+  }) {
+    if (kept.isEmpty) return (monthlyRate: to.rate, notice: null);
+    return TenantService.rentAfterUnitChange(
+      tenantName: tenantName,
+      current: current,
+      heldBefore: [...kept, from],
+      released: [from],
+      added: to,
+    );
+  }
+
+  /// Complete a transfer. Returns the tenant's new rent, or a request to
+  /// check it, for the screen; null when there is nothing to say.
+  static Future<String?> completeTransfer({
     required String facilityId,
     required String transferId,
   }) async {
@@ -302,48 +396,28 @@ class TransferService {
 
       // Create ledger entries
       final ledgerEntryIds = <String>[];
-
-      // Refund from old unit (if positive)
-      if (transfer.fromUnitProratedRent > 0) {
-        final refundEntry = await LedgerService.createLedgerEntry(
+      for (final row in transferLedgerRows(transfer)) {
+        final entry = await LedgerService.createLedgerEntry(
           tenantId: transfer.tenantId,
           facilityId: facilityId,
-          type: LedgerEntryType.credit,
-          amount: transfer.fromUnitProratedRent,
-          description: 'Transfer refund: ${transfer.fromUnitNumber} (prorated)',
+          type: row.type,
+          amount: row.amount,
+          description: row.description,
           entryDate: transfer.transferDate,
           dueDate: transfer.transferDate,
           status: LedgerEntryStatus.posted,
           metadata: {
             'transferId': transferId,
-            'unitId': transfer.fromUnitId,
-            'unitNumber': transfer.fromUnitNumber,
-            'type': 'transfer_refund',
+            'unitId': row.unitId,
+            'unitNumber': row.unitNumber,
+            'type': row.kind,
           },
         );
-        ledgerEntryIds.add(refundEntry.id);
+        ledgerEntryIds.add(entry.id);
       }
 
-      // Charge for new unit
-      if (transfer.toUnitProratedRent > 0) {
-        final chargeEntry = await LedgerService.createLedgerEntry(
-          tenantId: transfer.tenantId,
-          facilityId: facilityId,
-          type: LedgerEntryType.rentCharge,
-          amount: transfer.toUnitProratedRent,
-          description: 'Transfer charge: ${transfer.toUnitNumber} (prorated)',
-          entryDate: transfer.transferDate,
-          dueDate: transfer.transferDate,
-          status: LedgerEntryStatus.posted,
-          metadata: {
-            'transferId': transferId,
-            'unitId': transfer.toUnitId,
-            'unitNumber': transfer.toUnitNumber,
-            'type': 'transfer_charge',
-          },
-        );
-        ledgerEntryIds.add(chargeEntry.id);
-      }
+      // Read before either unit is written, as [otherUnits] is.
+      final tenant = await TenantService.getTenantById(facilityId, transfer.tenantId);
 
       // Update units
       // Free up old unit
@@ -362,9 +436,7 @@ class TransferService {
         tenantId: transfer.tenantId,
       );
 
-      // Update tenant's unit number
-      final tenant = await TenantService.getTenantById(facilityId, transfer.tenantId);
-      
+      String? notice;
       if (tenant != null) {
         final after = tenantAfterTransfer(
           transfer: transfer,
@@ -372,7 +444,10 @@ class TransferService {
           currentUnitNumber: tenant.unitNumber,
           currentUnitId: tenant.unitId,
           otherUnits: otherUnits,
+          tenantName:
+              tenant.name.trim().isEmpty ? tenant.id : tenant.name.trim(),
         );
+        notice = after.notice;
         await TenantService.updateTenant(
           facilityId: facilityId,
           tenantId: transfer.tenantId,
@@ -402,6 +477,7 @@ class TransferService {
       if (kDebugMode) {
         print('✅ [Transfer] Completed transfer: $transferId');
       }
+      return notice;
     } catch (e) {
       if (kDebugMode) {
         print('❌ [Transfer] Error completing transfer: $e');

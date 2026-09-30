@@ -1,0 +1,26 @@
+{
+  "_about": "Whether a tenant moving out of unit u1 keeps another unit (u2), and so which rate the move-out prorates: the vacated unit's while they keep one, else the tenant's. processMoveOut refuses a net that differs from the screen's, so both sides must decide it alike. Run by functions-tenant-lifecycle/src/test/moveOutTenantFields.test.ts (tenantFieldsAfterMoveOut over the units the transaction's where('tenantId', '==', 't1') returns, then moveOutProrationRate) and test/move_out_keeps_other_units_test.dart (UnitService.readFacilityUnits, MoveOutService.moveOutUnitChoices, keepsOtherUnits and prorationRate). u2 is written without the fields its case leaves out; 'data' replaces u2's defaults.",
+  "tenant": { "name": "Ada Park", "isActive": true, "unitNumber": "1", "unitId": "u1", "monthlyRate": 250 },
+  "vacated": { "id": "u1", "data": { "unitNumber": "1", "status": "occupied", "tenantId": "t1", "monthlyRate": 100 } },
+  "otherDefaults": { "unitNumber": "2", "tenantId": "t1", "monthlyRate": 150 },
+  "cases": [
+    { "name": "occupied", "data": { "status": "occupied" }, "keepsOtherUnits": true, "rate": 100 },
+    { "name": "reserved", "data": { "status": "reserved" }, "keepsOtherUnits": true, "rate": 100 },
+    { "name": "maintenance", "data": { "status": "maintenance" }, "keepsOtherUnits": true, "rate": 100 },
+    { "name": "outOfOrder", "data": { "status": "outOfOrder" }, "keepsOtherUnits": true, "rate": 100 },
+    { "name": "overlocked", "data": { "status": "overlocked" }, "keepsOtherUnits": true, "rate": 100 },
+    { "name": "lockout", "data": { "status": "lockout" }, "keepsOtherUnits": true, "rate": 100 },
+    { "name": "auction", "data": { "status": "auction" }, "keepsOtherUnits": true, "rate": 100 },
+    { "name": "archived false is live", "data": { "status": "occupied", "archived": false }, "keepsOtherUnits": true, "rate": 100 },
+    { "name": "available with a stale link", "data": { "status": "available" }, "keepsOtherUnits": false, "rate": 250 },
+    { "name": "no status (UnitModel reads it as available)", "data": {}, "keepsOtherUnits": false, "rate": 250 },
+    { "name": "status null", "data": { "status": null }, "keepsOtherUnits": false, "rate": 250 },
+    { "name": "status 'Occupied' (not a UnitStatus name: read as available)", "data": { "status": "Occupied" }, "keepsOtherUnits": false, "rate": 250 },
+    { "name": "status 'rented' (no such UnitStatus)", "data": { "status": "rented" }, "keepsOtherUnits": false, "rate": 250 },
+    { "name": "status not a string", "data": { "status": 5 }, "keepsOtherUnits": false, "rate": 250 },
+    { "name": "archived", "data": { "status": "occupied", "archived": true }, "keepsOtherUnits": false, "rate": 250 },
+    { "name": "archived 'true' (not false: the unit lists drop it)", "data": { "status": "occupied", "archived": "true" }, "keepsOtherUnits": false, "rate": 250 },
+    { "name": "another tenant's unit", "data": { "status": "occupied", "tenantId": "t2" }, "keepsOtherUnits": false, "rate": 250 },
+    { "name": "a link with spaces round the id (the transaction's query matches it exactly)", "data": { "status": "occupied", "tenantId": " t1 " }, "keepsOtherUnits": false, "rate": 250 }
+  ]
+}

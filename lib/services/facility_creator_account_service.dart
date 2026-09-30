@@ -14,14 +14,16 @@ import 'referral_program_service.dart';
 
 /// Thrown by [FacilityCreatorAccountService.getOrCreateAccountForCurrentUser]
 /// for invited staff, who work in the owner's account and have none of their
-/// own.
+/// own, and for someone whose only invitation waits on its link.
 class InvitedStaffAccountException implements Exception {
   const InvitedStaffAccountException();
 
   @override
   String toString() =>
-      "This login is a team member at another owner's facility, so it has no "
-      'owner account of its own.';
+      "This login is a team member at another owner's facility, or has been "
+      'invited to join one, so it has no owner account of its own. An '
+      'invitation is accepted from its link (in the email, or on the '
+      'dashboard); if it no longer works, ask the owner to send a new one.';
 }
 
 /// What decides whether a user with no account is given one: their ties to
@@ -32,6 +34,7 @@ class AccountTies {
     required this.activeRole,
     required this.ownsFacility,
     required this.pendingInvite,
+    this.staleInvite = false,
   });
 
   /// An active `user_roles` row at any facility (owners have one too).
@@ -40,15 +43,28 @@ class AccountTies {
   /// A facility whose ownerUid is theirs.
   final bool ownsFacility;
 
-  /// A pending invite addressed to their email.
+  /// A pending invite addressed to their email that the guard may accept
+  /// without its link ([PermissionService.inviteAutoAcceptable]).
   final bool pendingInvite;
+
+  /// A pending invite addressed to their email that only its link accepts:
+  /// last sent more than [PermissionService.inviteAutoAcceptWindow] ago.
+  /// Not a pending tie: nothing will accept it on its own, so a failure to
+  /// accept is never waited on for it.
+  final bool staleInvite;
 
   /// Works at someone else's facility, or is invited to, and owns none. They
   /// work in the owner's account and must not be given one of their own.
   bool get invitedStaffOnly => (activeRole || pendingInvite) && !ownsFacility;
 
+  /// No role, no facility, and invited only through stale invites: they may
+  /// well be staff, so no owner account is made for them (it would hold them
+  /// on /pending-approval once they joined), and the dashboard shows them
+  /// the invitation's link instead ([PermissionService.pendingInvitesFor]).
+  bool get awaitsInviteLink => staleInvite && !activeRole && !ownsFacility && !pendingInvite;
+
   /// A genuinely new signup: no role, no facility and no invite anywhere.
-  bool get newSignup => !activeRole && !ownsFacility && !pendingInvite;
+  bool get newSignup => !activeRole && !ownsFacility && !pendingInvite && !staleInvite;
 }
 
 /// When [FacilityCreatorAccountService.ensureAccountFor] may create an
@@ -762,7 +778,8 @@ class FacilityCreatorAccountService {
       case _Creates.always:
         break;
       case _Creates.unlessInvitedStaff:
-        if ((await (readTies ?? _readTies)(user)).invitedStaffOnly) return null;
+        final ties = await (readTies ?? _readTies)(user);
+        if (ties.invitedStaffOnly || ties.awaitsInviteLink) return null;
       case _Creates.newSignupsOnly:
         // Invites first, so an invited signup is on their facility's team,
         // not mistaken for a new owner, before anything is decided. Only a
@@ -824,17 +841,26 @@ class FacilityCreatorAccountService {
           .where('ownerUid', isEqualTo: user.uid)
           .limit(1)
           .get(),
+      // Not limit(1): which invite came back decided whether a stale one hid
+      // a fresh one. Bounded all the same.
       if (emailLower != null)
         _collectionGroup('invites')
             .where('emailLower', isEqualTo: emailLower)
             .where('status', isEqualTo: 'pending')
-            .limit(1)
+            .limit(20)
             .get(),
     ]);
+    final now = DateTime.now();
+    final invites = results.length > 2
+        ? results[2].docs
+        : const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+    bool acceptable(QueryDocumentSnapshot<Map<String, dynamic>> doc) =>
+        PermissionService.inviteAutoAcceptable(doc.data(), now);
     return AccountTies(
       activeRole: results[0].docs.isNotEmpty,
       ownsFacility: results[1].docs.isNotEmpty,
-      pendingInvite: results.length > 2 && results[2].docs.isNotEmpty,
+      pendingInvite: invites.any(acceptable),
+      staleInvite: invites.any((doc) => !acceptable(doc)),
     );
   }
 

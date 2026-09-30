@@ -1,0 +1,239 @@
+{
+  "_about": "The move-out rent line (moveOutRentLine in functions-tenant-lifecycle/src/moveOutRent.ts, MoveOutRent.line in lib/services/move_out_rent.dart). Both test suites run every case. Rows are ledger entries; entryDate is the stored instant. contractId is c1 throughout.",
+  "cases": [
+    {
+      "name": "moved out on 24 Sep before a tenancy starting 1 Oct, October prorated and paid online at move-in (the test move-out that raised this rule)",
+      "monthlyRate": 1,
+      "moveOutDate": "2026-09-24",
+      "unitMoveInDate": "2026-10-01T00:00:00Z",
+      "rows": [
+        { "type": "proratedRent", "status": "posted", "referenceId": "c1", "amount": 1, "entryDate": "2026-10-01T00:00:00Z", "metadata": { "lineItemId": null, "isProrated": true } },
+        { "type": "payment", "status": "posted", "referenceId": "pi_1", "amount": -1, "entryDate": "2026-09-23T18:12:00Z", "metadata": {} }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 31, "creditAmount": 1, "moveInDate": "2026-10-01"
+    },
+    {
+      "name": "moved out on 24 Sep before a tenancy starting 1 Oct, October prorated in the app's move-in",
+      "monthlyRate": 1,
+      "moveOutDate": "2026-09-24",
+      "unitMoveInDate": null,
+      "rows": [
+        { "type": "rentCharge", "status": "posted", "referenceId": "c1", "amount": 1, "entryDate": "2026-10-01T05:00:00Z", "metadata": { "lineItemType": "proratedRent", "isProrated": true, "moveInDate": "2026-10-01T00:00:00.000" } }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 31, "creditAmount": 1, "moveInDate": "2026-10-01"
+    },
+    {
+      "name": "mid-month move-in on 10 Sep, moved out on 20 Sep: the move-in's prorated rent covers the days used, the rest comes back",
+      "monthlyRate": 300,
+      "moveOutDate": "2026-09-20",
+      "unitMoveInDate": "2026-09-10T05:00:00Z",
+      "rows": [
+        { "type": "rentCharge", "status": "posted", "referenceId": "c1", "amount": 210, "entryDate": "2026-09-10T05:00:00Z", "metadata": { "lineItemType": "proratedRent", "isProrated": true, "moveInDate": "2026-09-10T00:00:00.000" } }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 10, "creditAmount": 100, "moveInDate": "2026-09-10"
+    },
+    {
+      "name": "mid-month move-in with no rent posted: only days from the move-in date are charged",
+      "monthlyRate": 300,
+      "moveOutDate": "2026-09-20",
+      "unitMoveInDate": "2026-09-10T05:00:00Z",
+      "rows": [],
+      "chargeDays": 11, "chargeAmount": 110, "creditDays": 0, "creditAmount": 0, "moveInDate": "2026-09-10"
+    },
+    {
+      "name": "moved out on the move-in day",
+      "monthlyRate": 300,
+      "moveOutDate": "2026-09-10",
+      "unitMoveInDate": null,
+      "rows": [
+        { "type": "proratedRent", "status": "posted", "referenceId": "c1", "amount": 210, "entryDate": "2026-09-10T00:00:00Z", "metadata": { "isProrated": true } }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 20, "creditAmount": 200, "moveInDate": "2026-09-10"
+    },
+    {
+      "name": "moved out on 10 Jun after June's rent posted: nothing charged, the 20 unused days credited",
+      "monthlyRate": 150,
+      "moveOutDate": "2026-06-10",
+      "unitMoveInDate": "2025-03-15T05:00:00Z",
+      "rows": [
+        { "type": "rentCharge", "status": "posted", "referenceId": "c1", "amount": 82.26, "entryDate": "2025-03-15T05:00:00Z", "metadata": { "lineItemType": "proratedRent", "isProrated": true, "moveInDate": "2025-03-15T00:00:00.000" } },
+        { "type": "rentCharge", "status": "posted", "amount": 150, "entryDate": "2026-05-01T00:00:00Z", "metadata": { "recurringCharge": true, "chargeType": "monthlyRent", "month": 5, "year": 2026 } },
+        { "type": "rentCharge", "status": "posted", "amount": 150, "entryDate": "2026-06-01T00:00:00Z", "metadata": { "recurringCharge": true, "chargeType": "monthlyRent", "month": 6, "year": 2026 } }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 20, "creditAmount": 100, "moveInDate": "2025-03-15"
+    },
+    {
+      "name": "the month's rent not posted: the days used are charged",
+      "monthlyRate": 150,
+      "moveOutDate": "2026-06-10",
+      "unitMoveInDate": null,
+      "rows": [
+        { "type": "rentCharge", "status": "posted", "amount": 150, "entryDate": "2026-05-01T00:00:00Z", "metadata": { "recurringCharge": true, "chargeType": "monthlyRent", "month": 5, "year": 2026 } }
+      ],
+      "chargeDays": 10, "chargeAmount": 50, "creditDays": 0, "creditAmount": 0, "moveInDate": null
+    },
+    {
+      "name": "a rent charge that is not posted does not count",
+      "monthlyRate": 150,
+      "moveOutDate": "2026-06-10",
+      "unitMoveInDate": null,
+      "rows": [
+        { "type": "rentCharge", "status": "void", "amount": 150, "entryDate": "2026-06-01T00:00:00Z", "metadata": { "chargeType": "monthlyRent", "month": 6, "year": 2026 } }
+      ],
+      "chargeDays": 10, "chargeAmount": 50, "creditDays": 0, "creditAmount": 0, "moveInDate": null
+    },
+    {
+      "name": "leaving on the last day of a posted month",
+      "monthlyRate": 150,
+      "moveOutDate": "2026-06-30",
+      "unitMoveInDate": null,
+      "rows": [
+        { "type": "rentCharge", "status": "posted", "amount": 150, "entryDate": "2026-06-01T00:00:00Z", "metadata": { "chargeType": "monthlyRent", "month": 6, "year": 2026 } }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 0, "creditAmount": 0, "moveInDate": null
+    },
+    {
+      "name": "leaving on the 1st of a posted month credits all but that day",
+      "monthlyRate": 310,
+      "moveOutDate": "2026-01-01",
+      "unitMoveInDate": null,
+      "rows": [
+        { "type": "rentCharge", "status": "posted", "amount": 310, "entryDate": "2026-01-01T00:00:00Z", "metadata": { "chargeType": "monthlyRent", "month": 1, "year": 2026 } }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 30, "creditAmount": 300, "moveInDate": null
+    },
+    {
+      "name": "dated back to 28 Sep after October's rent posted: September's last two days and all of October come back",
+      "monthlyRate": 300,
+      "moveOutDate": "2026-09-28",
+      "unitMoveInDate": null,
+      "rows": [
+        { "type": "rentCharge", "status": "posted", "amount": 300, "entryDate": "2026-09-01T00:00:00Z", "metadata": { "chargeType": "monthlyRent", "month": 9, "year": 2026 } },
+        { "type": "rentCharge", "status": "posted", "amount": 300, "entryDate": "2026-10-01T00:00:00Z", "metadata": { "chargeType": "monthlyRent", "month": 10, "year": 2026 } }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 33, "creditAmount": 320, "moveInDate": null
+    },
+    {
+      "name": "another contract's move-in rent is another unit's",
+      "monthlyRate": 100,
+      "moveOutDate": "2026-09-20",
+      "unitMoveInDate": null,
+      "rows": [
+        { "type": "rentCharge", "status": "posted", "referenceId": "c2", "amount": 70, "entryDate": "2026-09-10T05:00:00Z", "metadata": { "lineItemType": "proratedRent", "isProrated": true, "moveInDate": "2026-09-10T00:00:00.000" } }
+      ],
+      "chargeDays": 20, "chargeAmount": 66.67, "creditDays": 0, "creditAmount": 0, "moveInDate": null
+    },
+    {
+      "name": "the online move-in's Next Month Rent covers the month after the move-in",
+      "monthlyRate": 310,
+      "moveOutDate": "2026-10-05",
+      "unitMoveInDate": "2026-09-20T00:00:00Z",
+      "rows": [
+        { "type": "proratedRent", "status": "posted", "referenceId": "c1", "amount": 113.67, "entryDate": "2026-09-20T00:00:00Z", "metadata": { "isProrated": true } },
+        { "type": "rent", "status": "posted", "referenceId": "c1", "amount": 310, "entryDate": "2026-09-20T00:00:00Z", "metadata": { "isProrated": false } }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 26, "creditAmount": 260, "moveInDate": "2026-09-20"
+    },
+    {
+      "name": "a full month charged at the app's move-in covers the move-in month",
+      "monthlyRate": 300,
+      "moveOutDate": "2026-09-20",
+      "unitMoveInDate": null,
+      "rows": [
+        { "type": "rentCharge", "status": "posted", "referenceId": "c1", "amount": 300, "entryDate": "2026-09-10T05:00:00Z", "metadata": { "lineItemType": "rent", "isProrated": false, "moveInDate": "2026-09-10T00:00:00.000" } }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 10, "creditAmount": 100, "moveInDate": "2026-09-10"
+    },
+    {
+      "name": "days charged twice (move-in rent and the monthly job) are credited once",
+      "monthlyRate": 31,
+      "moveOutDate": "2026-10-05",
+      "unitMoveInDate": "2026-10-01T00:00:00Z",
+      "rows": [
+        { "type": "proratedRent", "status": "posted", "referenceId": "c1", "amount": 31, "entryDate": "2026-10-01T00:00:00Z", "metadata": { "isProrated": true } },
+        { "type": "rentCharge", "status": "posted", "amount": 31, "entryDate": "2026-10-01T00:00:00Z", "metadata": { "chargeType": "monthlyRent", "month": 10, "year": 2026 } }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 26, "creditAmount": 26, "moveInDate": "2026-10-01"
+    },
+    {
+      "name": "February in a leap year is measured on its own length",
+      "monthlyRate": 290,
+      "moveOutDate": "2028-02-29",
+      "unitMoveInDate": null,
+      "rows": [],
+      "chargeDays": 29, "chargeAmount": 290, "creditDays": 0, "creditAmount": 0, "moveInDate": null
+    },
+    {
+      "name": "no rate, no money either way",
+      "monthlyRate": 0,
+      "moveOutDate": "2026-06-10",
+      "unitMoveInDate": null,
+      "rows": [
+        { "type": "rentCharge", "status": "posted", "amount": 150, "entryDate": "2026-06-01T00:00:00Z", "metadata": { "chargeType": "monthlyRent", "month": 6, "year": 2026 } }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 20, "creditAmount": 0, "moveInDate": null
+    },
+    {
+      "name": "a free-month coupon at the app's move-in: the free days are not charged, and nothing comes back",
+      "monthlyRate": 300,
+      "moveOutDate": "2026-09-10",
+      "unitMoveInDate": null,
+      "rows": [
+        { "type": "rentCharge", "status": "posted", "referenceId": "c1", "amount": 300, "entryDate": "2026-09-01T05:00:00Z", "metadata": { "lineItemType": "proratedRent", "isProrated": true, "moveInDate": "2026-09-01T00:00:00.000" } },
+        { "type": "otherCharge", "status": "posted", "referenceId": "c1", "amount": -300, "entryDate": "2026-09-01T05:00:00Z", "metadata": { "lineItemType": "discount", "isProrated": false, "moveInDate": "2026-09-01T00:00:00.000" } }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 20, "creditAmount": 0, "moveInDate": "2026-09-01"
+    },
+    {
+      "name": "a half-off coupon at the app's move-in: the unused days come back at what was paid",
+      "monthlyRate": 300,
+      "moveOutDate": "2026-09-10",
+      "unitMoveInDate": null,
+      "rows": [
+        { "type": "rentCharge", "status": "posted", "referenceId": "c1", "amount": 300, "entryDate": "2026-09-01T05:00:00Z", "metadata": { "lineItemType": "proratedRent", "isProrated": true, "moveInDate": "2026-09-01T00:00:00.000" } },
+        { "type": "otherCharge", "status": "posted", "referenceId": "c1", "amount": -150, "entryDate": "2026-09-01T05:00:00Z", "metadata": { "lineItemType": "discount", "isProrated": false, "moveInDate": "2026-09-01T00:00:00.000" } }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 20, "creditAmount": 100, "moveInDate": "2026-09-01"
+    },
+    {
+      "name": "rent posted before a rate rise comes back at what was posted, not the new rate",
+      "monthlyRate": 150,
+      "moveOutDate": "2026-09-10",
+      "unitMoveInDate": null,
+      "rows": [
+        { "type": "rentCharge", "status": "posted", "amount": 100, "entryDate": "2026-09-01T00:00:00Z", "metadata": { "chargeType": "monthlyRent", "month": 9, "year": 2026 } }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 20, "creditAmount": 66.67, "moveInDate": null
+    },
+    {
+      "name": "leaving one of two units: the vacated unit's share of the month's rent comes back, not the whole of it",
+      "monthlyRate": 100,
+      "moveOutDate": "2026-09-10",
+      "unitMoveInDate": null,
+      "rows": [
+        { "type": "rentCharge", "status": "posted", "amount": 250, "entryDate": "2026-09-01T00:00:00Z", "metadata": { "chargeType": "monthlyRent", "month": 9, "year": 2026 } }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 20, "creditAmount": 66.67, "moveInDate": null
+    },
+    {
+      "name": "an evening move-in in the app on 30 Sep is 30 Sep, not the whole of October",
+      "monthlyRate": 300,
+      "moveOutDate": "2026-09-30",
+      "unitMoveInDate": "2026-10-01T00:30:00Z",
+      "rows": [
+        { "type": "rentCharge", "status": "posted", "referenceId": "c1", "amount": 10, "entryDate": "2026-10-01T00:30:00Z", "metadata": { "lineItemType": "proratedRent", "isProrated": true, "moveInDate": "2026-09-30T19:30:00.000" } }
+      ],
+      "chargeDays": 0, "chargeAmount": 0, "creditDays": 0, "creditAmount": 0, "moveInDate": "2026-09-30"
+    }
+  ],
+  "wallDates": [
+    ["2026-09-24", "2026-09-24"],
+    ["2026-09-24T00:00:00.000", "2026-09-24"],
+    ["2026-09-24T23:30:00.000", "2026-09-24"],
+    ["2028-02-29", "2028-02-29"],
+    ["2026-02-30", null],
+    ["2026-13-01", null],
+    ["24/09/2026", null],
+    ["", null]
+  ]
+}

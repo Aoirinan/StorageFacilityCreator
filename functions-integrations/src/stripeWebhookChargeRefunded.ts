@@ -7,6 +7,35 @@ import { isAlreadyExistsError } from './firestoreErrors';
 import { isMoveInPaymentIntent, resolveMoveInTenantOrRecord } from './moveInPaymentTenant';
 
 /**
+ * Who a refund row belongs to once this event is merged into it: the
+ * tenant and reference the event names, else what the row already holds.
+ *
+ * processRefund (the app's card refund, the move-out screen's included)
+ * writes `refund_<id>` first, with the tenant it refunded. An online
+ * move-in's PaymentIntent carries no tenantId, so this merge wrote
+ * tenantId null over it: the refund dropped off the tenant's ledger while
+ * the credit it paid out stayed, and the tenant looked owed money already
+ * handed back, which invites a second refund. Its createdBy (the staff
+ * member who refunded) and referenceId (the PaymentIntent) are kept too.
+ */
+export function refundRowOwner(
+  existing: Record<string, unknown> | undefined,
+  fromEvent: { tenantId: string | null | undefined; referenceId: string | null },
+): { tenantId: string | null; referenceId: string | null; createdBy: string } {
+  const text = (value: unknown): string | null =>
+    typeof value === 'string' && value.trim().length > 0 ? value : null;
+  return {
+    tenantId: text(fromEvent.tenantId) ?? text(existing?.tenantId),
+    referenceId: fromEvent.referenceId ?? text(existing?.referenceId),
+    createdBy: text(existing?.createdBy) ?? 'system@stripe-webhook',
+  };
+}
+
+function hasText(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+/**
  * Record a refund against the tenant's ledger.
  *
  * Two things this has to get right, both of which it previously did not:
@@ -126,6 +155,7 @@ export async function handleChargeRefunded(
       });
     }
 
+    const referenceId = existingPayments.empty ? null : existingPayments.docs[0].id;
     for (const { refund, tenantId: refundTenantId } of refundsToPost) {
       // Deterministic id per refund: redelivery of the same event, or a later
       // event listing this refund again, updates one entry instead of adding
@@ -148,7 +178,7 @@ export async function handleChargeRefunded(
           // back up. Payments are stored negative, charges positive.
           amount: refund.amount / 100,
           description: `Refund for charge ${charge.id}`,
-          referenceId: existingPayments.empty ? null : existingPayments.docs[0].id,
+          referenceId,
           entryDate: admin.firestore.FieldValue.serverTimestamp(),
           status: 'posted',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -157,15 +187,25 @@ export async function handleChargeRefunded(
         });
       } catch (error) {
         if (!isAlreadyExistsError(error)) throw error;
-        // processRefund (the app's card refund) or an earlier delivery wrote
-        // it. A merge over the whole row replaced processRefund's createdBy
-        // (the staff member who refunded) with this webhook, and its date and
-        // description too; only the metadata this event adds is filled in.
+        // processRefund (the app's card refund, the move-out screen's
+        // included) or an earlier delivery wrote it. A merge over the whole
+        // row replaced processRefund's createdBy (the staff member who
+        // refunded) with this webhook, and its date and description too, and
+        // for a PaymentIntent that names no tenant wrote tenantId null over
+        // the tenant processRefund refunded. Only what the row lacks is filled
+        // in: the metadata this event adds, and its tenant, reference and
+        // author (refundRowOwner) when it has none. An existing tenantId is
+        // never replaced or nulled.
         const existing = await ledgerRef.get();
-        const existingMetadata = (existing.get('metadata') as Record<string, unknown> | undefined) ?? {};
+        const existingData = (existing.data() ?? {}) as Record<string, unknown>;
+        const existingMetadata = (existingData.metadata as Record<string, unknown> | undefined) ?? {};
         const update: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(metadata)) {
           if (value !== null && existingMetadata[key] === undefined) update[`metadata.${key}`] = value;
+        }
+        const owner = refundRowOwner(existingData, { tenantId: refundTenantId, referenceId });
+        for (const key of ['tenantId', 'referenceId', 'createdBy'] as const) {
+          if (!hasText(existingData[key]) && owner[key] !== null) update[key] = owner[key];
         }
         if (Object.keys(update).length > 0) await ledgerRef.update(update);
       }

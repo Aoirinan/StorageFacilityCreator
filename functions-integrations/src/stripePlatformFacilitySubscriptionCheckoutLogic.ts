@@ -13,6 +13,7 @@ import {
   resolvePlatformCheckoutDeps,
   type PlatformCheckoutDeps,
 } from './platformCheckoutOfferContext';
+import { refuseBillingForSuspendedAccount } from './stripePlatformSuspendedAccount';
 
 export type FacilitySubscriptionCheckoutInput = {
   accountId: string;
@@ -79,6 +80,7 @@ export async function executeCreateFacilitySubscriptionCheckout(
     if (accountData.ownerUid !== context.auth!.uid || facilityData.ownerUid !== context.auth!.uid) {
       throw new functions.https.HttpsError('permission-denied', 'Access denied');
     }
+    refuseBillingForSuspendedAccount(accountData);
     if ((facilityData.facilityCreatorAccountId as string) !== accountId) {
       throw new functions.https.HttpsError('failed-precondition', 'Facility must be linked to this account first');
     }

@@ -1660,7 +1660,8 @@ test('an invitee can list the pending invites addressed to their own verified em
 
 const INVITEE_UID = 'invitee-user';
 
-async function seedPendingInvite(facilityDoc) {
+/** [facilityDoc] as the facility, with a pending employee invite 'inv-1'. */
+async function seedPendingInviteOn(facilityDoc) {
   await testEnv.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
     await db.collection('facilities').doc(FACILITY_ID).set(facilityDoc);
@@ -1676,27 +1677,41 @@ async function seedPendingInvite(facilityDoc) {
   });
 }
 
-function inviteeFacilityRef() {
+function inviteeAcceptDb() {
   return testEnv
     .authenticatedContext(INVITEE_UID, { email: 'Invitee@Example.com', email_verified: true })
-    .firestore()
-    .collection('facilities')
-    .doc(FACILITY_ID);
+    .firestore();
 }
 
-// PermissionService.assignRole's facility write when accepting an invite.
-function acceptWrite(extra = {}, extraRoles = {}) {
-  return inviteeFacilityRef().set(
-    { roles: { [INVITEE_UID]: 'employee', ...extraRoles }, acceptingInviteId: 'inv-1', ...extra },
+// PermissionService.assignRole's facility write when accepting an invite,
+// in the batch that also marks the invite accepted by the invitee (the
+// rules take the roles entry only from the write that spends the invite;
+// see acceptanceBatch below for the role row too). [spend]: false sends the
+// facility write alone.
+function acceptWrite(extra = {}, extraRoles = {}, { role = 'employee', spend = true } = {}) {
+  const db = inviteeAcceptDb();
+  const facilityRef = db.collection('facilities').doc(FACILITY_ID);
+  const batch = db.batch();
+  batch.set(
+    facilityRef,
+    { roles: { [INVITEE_UID]: role, ...extraRoles }, acceptingInviteId: 'inv-1', ...extra },
     { merge: true },
   );
+  if (spend) {
+    batch.update(facilityRef.collection('invites').doc('inv-1'), {
+      status: 'accepted',
+      acceptedAt: new Date(),
+      acceptedBy: INVITEE_UID,
+    });
+  }
+  return batch.commit();
 }
 
 test('invite accept: the invitee adds their own role and the invite id, and nothing else', async () => {
   // The rule checked changed keys, which leave out keys that are added or
   // removed. Added fields the facility doc did not have yet, and other
   // users' roles, went through.
-  await seedPendingInvite({
+  await seedPendingInviteOn({
     ownerUid: OWNER_UID,
     name: 'Test Storage',
     roles: { [OWNER_UID]: 'owner', [STAFF_UID]: 'employee' },
@@ -1719,12 +1734,9 @@ test('invite accept: the invitee adds their own role and the invite id, and noth
   await assertFails(acceptWrite({}, { [STAFF_UID]: 'manager' }));
   await assertFails(acceptWrite({}, { [STAFF_UID]: deleteField() }));
   // A role the invite does not grant (already refused).
-  await assertFails(
-    inviteeFacilityRef().set(
-      { roles: { [INVITEE_UID]: 'manager' }, acceptingInviteId: 'inv-1' },
-      { merge: true },
-    ),
-  );
+  await assertFails(acceptWrite({}, {}, { role: 'manager' }));
+  // The right write, but not in the batch that spends the invite.
+  await assertFails(acceptWrite({}, {}, { spend: false }));
 
   await assertSucceeds(acceptWrite());
   let after;
@@ -1740,7 +1752,7 @@ test('invite accept: the invitee adds their own role and the invite id, and noth
 });
 
 test('invite accept: with no roles map yet, the new one holds only the invitee', async () => {
-  await seedPendingInvite({ ownerUid: OWNER_UID, name: 'Test Storage' });
+  await seedPendingInviteOn({ ownerUid: OWNER_UID, name: 'Test Storage' });
 
   await assertFails(acceptWrite({}, { 'other-user': 'manager' }));
   await assertFails(acceptWrite({}, { [OWNER_UID]: 'owner' }));
@@ -1751,7 +1763,7 @@ test('invite accept: with no roles map yet, the new one holds only the invitee',
 test('invite accept: a later invitee overwrites acceptingInviteId and adds only their role', async () => {
   // acceptingInviteId is left on the facility by the previous accept, so a
   // second accept changes it rather than adding it.
-  await seedPendingInvite({
+  await seedPendingInviteOn({
     ownerUid: OWNER_UID,
     roles: { [OWNER_UID]: 'owner', [STAFF_UID]: 'employee' },
     acceptingInviteId: 'inv-earlier',
@@ -1824,4 +1836,1366 @@ test('facility notifications: staff may mark one read and change nothing else', 
   await assertFails(staff.doc('n1').update({ type: 'AUTOPAY_ENABLED' }));
   await assertFails(staff.doc('n1').delete());
   await assertFails(staff.doc('n2').set({ type: 'ONLINE_MOVE_IN_REVIEW', message: 'forged', readAt: null }));
+});
+
+test("gate codes: a super admin with no role can read a tenant's and switch it off, as Unassign Tenant does", async () => {
+  // Unassign Tenant of a tenant's only unit (and archive, and switching them
+  // off) turns their gate codes off in the same transaction. For a super
+  // admin with no role at the facility the gateAccess read and update were
+  // refused, so the whole unassign failed where it used to succeed.
+  await seedFacility();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilities').doc(FACILITY_ID).collection('gateAccess').doc('g1').set({
+      facilityId: FACILITY_ID,
+      tenantId: TENANT_ID,
+      accessCode: '1234',
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      createdBy: OWNER_UID,
+    });
+  });
+  const gates = (context) => context.firestore().collection('facilities').doc(FACILITY_ID).collection('gateAccess');
+  const off = (uid) => ({ isActive: false, updatedAt: serverTimestamp(), updatedBy: uid });
+
+  const outsider = gates(testEnv.authenticatedContext(OUTSIDER_UID));
+  await assertFails(outsider.where('tenantId', '==', TENANT_ID).get());
+  await assertFails(outsider.doc('g1').update(off(OUTSIDER_UID)));
+
+  const admin = gates(testEnv.authenticatedContext('admin-user', { superadmin: true }));
+  await assertSucceeds(admin.where('tenantId', '==', TENANT_ID).get());
+  // Still stamped with the caller, as for staff.
+  await assertFails(admin.doc('g1').update(off(OWNER_UID)));
+  await assertSucceeds(admin.doc('g1').update(off('admin-user')));
+  await assertSucceeds(gates(testEnv.authenticatedContext(STAFF_UID)).doc('g1').update(off(STAFF_UID)));
+});
+
+test('gate codes: a super admin with no role can only switch one off, nothing else', async () => {
+  // Least privilege: Unassign Tenant needs isActive false stamped with the
+  // caller, no more. Staff keep their wider update.
+  await seedFacility();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilities').doc(FACILITY_ID).collection('gateAccess').doc('g2').set({
+      facilityId: FACILITY_ID,
+      tenantId: TENANT_ID,
+      accessCode: '5678',
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      createdBy: OWNER_UID,
+    });
+  });
+  const gates = (context) => context.firestore().collection('facilities').doc(FACILITY_ID).collection('gateAccess');
+  const admin = gates(testEnv.authenticatedContext('admin-user', { superadmin: true }));
+  const stamp = { updatedAt: serverTimestamp(), updatedBy: 'admin-user' };
+
+  // Not on, not a new code, hours or tenant, even alongside switching it off.
+  await assertFails(admin.doc('g2').update({ ...stamp, isActive: true }));
+  await assertFails(admin.doc('g2').update({ ...stamp, isActive: false, accessCode: '0000' }));
+  await assertFails(admin.doc('g2').update({ ...stamp, isActive: false, tenantId: 'someone-else' }));
+  await assertFails(admin.doc('g2').update({ ...stamp, isActive: false, allowedDays: ['Mon'] }));
+  await assertFails(admin.doc('g2').update({ ...stamp, accessCode: '0000' }));
+  // Off, stamped with the caller: allowed; again once off (the same write) too.
+  await assertSucceeds(admin.doc('g2').update({ ...stamp, isActive: false }));
+  await assertSucceeds(admin.doc('g2').update({ ...stamp, isActive: false }));
+  // Switched off, a super admin cannot switch it back on; staff can.
+  await assertFails(admin.doc('g2').update({ ...stamp, isActive: true }));
+  const staff = gates(testEnv.authenticatedContext(STAFF_UID));
+  await assertSucceeds(staff.doc('g2').update({ isActive: true, accessCode: '9999', updatedAt: serverTimestamp(), updatedBy: STAFF_UID }));
+  // A super admin still cannot create or delete one.
+  await assertFails(admin.doc('g3').set({
+    facilityId: FACILITY_ID,
+    accessCode: '1111',
+    isActive: true,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    createdBy: 'admin-user',
+  }));
+  await assertFails(admin.doc('g2').delete());
+});
+
+// ---- Invite acceptance, team removal and invite records (PermissionService) ----
+
+// INVITEE_UID is declared with the invite-accept tests above.
+const INVITEE_EMAIL = 'invitee@example.com';
+const MANAGER_UID = 'manager-user';
+const COOWNER_UID = 'coowner-user';
+const ADMIN_UID = 'admin-user';
+
+function inviteeDb(uid = INVITEE_UID, email = INVITEE_EMAIL) {
+  return testEnv.authenticatedContext(uid, { email, email_verified: true }).firestore();
+}
+
+/** A facility with its owner, and a pending invite for INVITEE_EMAIL. */
+async function seedPendingInvite({ status = 'pending', facility = {} } = {}) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('facilities').doc(FACILITY_ID).set({
+      ownerUid: OWNER_UID,
+      name: 'Maple Storage',
+      roles: { [OWNER_UID]: 'owner' },
+      ...facility,
+    });
+    await db.collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-1').set({
+      facilityId: FACILITY_ID,
+      email: INVITEE_EMAIL,
+      emailLower: INVITEE_EMAIL,
+      roleType: 'employee',
+      status,
+      invitedBy: OWNER_UID,
+      invitedByEmail: 'owner@example.com',
+      invitedAt: new Date('2026-09-20T12:00:00Z'),
+    });
+  });
+}
+
+/** The role row id an acceptance of [inviteId] writes (PermissionService.inviteRoleDocId). */
+function inviteRoleDocId(inviteId, facilityId = FACILITY_ID) {
+  return `${facilityId}_${inviteId}`;
+}
+
+/**
+ * PermissionService.assignRole's acceptance batch, as the invitee sends it,
+ * for invite [inviteId]: the role row at the invite's own id (a plain set,
+ * so it creates the row or, for an invite the owner reopened, rewrites it),
+ * the roles-map entry, and the invite marked accepted. [roleDocId] writes the
+ * row at another id. [writeRow], [writeRoles] and [markAccepted]: false
+ * leaves out the role row, the roles-map entry or marking the invite accepted.
+ */
+function acceptanceBatch(
+  db,
+  {
+    inviteId = 'inv-1',
+    roleDocId = inviteRoleDocId(inviteId),
+    roles,
+    roleType = 'employee',
+    facilityExtra = {},
+    inviteExtra = {},
+    writeRow = true,
+    writeRoles = true,
+    markAccepted = true,
+  } = {},
+) {
+  const batch = db.batch();
+  const roleRef = db.collection('user_roles').doc(roleDocId);
+  const row = {
+    userId: INVITEE_UID,
+    facilityId: FACILITY_ID,
+    roleType,
+    assignedBy: OWNER_UID,
+    assignedAt: new Date(),
+    expiresAt: null,
+    isActive: true,
+    updatedAt: new Date(),
+    userEmail: INVITEE_EMAIL,
+    inviteId,
+  };
+  if (writeRow) {
+    batch.set(roleRef, { ...row, createdAt: new Date() });
+  }
+  if (writeRoles) {
+    batch.set(
+      db.collection('facilities').doc(FACILITY_ID),
+      { roles: roles ?? { [INVITEE_UID]: roleType }, acceptingInviteId: inviteId, ...facilityExtra },
+      { merge: true },
+    );
+  }
+  if (markAccepted) {
+    batch.update(db.collection('facilities').doc(FACILITY_ID).collection('invites').doc(inviteId), {
+      status: 'accepted',
+      acceptedAt: new Date(),
+      acceptedBy: INVITEE_UID,
+      ...inviteExtra,
+    });
+  }
+  return batch;
+}
+
+test('an invitee accepts a pending invite in one batch: role row, roles map and invite', async () => {
+  // Written one after another, an acceptance that failed after the role row
+  // left an active row the rules ignore and the invite pending. As one batch
+  // each write is checked against the invite as it was before the batch, so
+  // marking it accepted in the same commit still lets the other two through.
+  await seedPendingInvite();
+  await assertSucceeds(acceptanceBatch(inviteeDb()).commit());
+
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    const facility = (await db.collection('facilities').doc(FACILITY_ID).get()).data();
+    assert.equal(facility.roles[INVITEE_UID], 'employee');
+    const invite = (await db.collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-1').get()).data();
+    assert.equal(invite.status, 'accepted');
+    assert.equal(invite.acceptedBy, INVITEE_UID);
+    assert.equal((await db.collection('user_roles').doc(inviteRoleDocId('inv-1')).get()).data().isActive, true);
+  });
+
+  // Their facility is readable now, and the invite, once accepted, is spent.
+  await assertSucceeds(inviteeDb().collection('facilities').doc(FACILITY_ID).get());
+  await assertFails(acceptanceBatch(inviteeDb()).commit());
+  await assertFails(acceptanceBatch(inviteeDb(), { roleDocId: 'role-again' }).commit());
+});
+
+test('an acceptance that stopped part-way is finished by the same batch, beside the row it left', async () => {
+  // What the old two-write acceptance left: an active row for the invite (at
+  // an id of any shape), no roles-map entry, the invite still pending. The
+  // invitee may not write that row now (it is not the invite's own id); the
+  // batch writes the invite's row, and the old one stays as it was.
+  await seedPendingInvite();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('user_roles').doc('role-half').set({
+      userId: INVITEE_UID,
+      facilityId: FACILITY_ID,
+      roleType: 'employee',
+      assignedBy: OWNER_UID,
+      assignedAt: new Date('2026-09-21T12:00:00Z'),
+      isActive: true,
+      inviteId: 'inv-1',
+    });
+  });
+  // Their own rows are readable for PermissionService._isNewInvitee.
+  await assertSucceeds(inviteeDb().collection('user_roles').where('userId', '==', INVITEE_UID).limit(20).get());
+  await assertFails(acceptanceBatch(inviteeDb(), { roleDocId: 'role-half' }).commit());
+  await assertSucceeds(acceptanceBatch(inviteeDb()).commit());
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const rows = await context.firestore().collection('user_roles').where('userId', '==', INVITEE_UID).get();
+    assert.deepEqual(rows.docs.map((d) => d.id).sort(), [inviteRoleDocId('inv-1'), 'role-half'].sort());
+  });
+});
+
+test("one acceptance writes one role row: the invite's own", async () => {
+  // Every write in the batch sees the invite pending before it and spent
+  // after it, so with any id allowed one acceptance could write several
+  // active rows for the one invite, and the callables that charge cards take
+  // any one active row as access.
+  const row = (inviteId = 'inv-1') => ({
+    userId: INVITEE_UID,
+    facilityId: FACILITY_ID,
+    roleType: 'employee',
+    assignedBy: OWNER_UID,
+    assignedAt: new Date(),
+    isActive: true,
+    userEmail: INVITEE_EMAIL,
+    inviteId,
+  });
+  const attempts = {
+    'a second row at another id': (db, batch) => batch.set(db.collection('user_roles').doc('role-extra'), row()),
+    'a second row at a made-up id': (db, batch) =>
+      batch.set(db.collection('user_roles').doc(`${FACILITY_ID}_inv-1_2`), row()),
+    'their old row switched back on for the same invite': (db, batch) =>
+      batch.set(db.collection('user_roles').doc('role-old'), row()),
+    "the row at another facility's id for it": (db, batch) =>
+      batch.set(db.collection('user_roles').doc(inviteRoleDocId('inv-1', 'fac-other')), row()),
+  };
+  for (const [label, addRow] of Object.entries(attempts)) {
+    await testEnv.clearFirestore();
+    await seedPendingInvite();
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      // A row of theirs from before, taken out of use by a removal.
+      await context.firestore().collection('user_roles').doc('role-old').set({ ...row('inv-0'), isActive: false });
+    });
+    const db = inviteeDb();
+    const batch = acceptanceBatch(db);
+    addRow(db, batch);
+    await assertFails(batch.commit()).catch((e) => {
+      throw new Error(`${label}: ${e.message}`);
+    });
+  }
+  // Nor the one row alone at any other id.
+  await testEnv.clearFirestore();
+  await seedPendingInvite();
+  await assertFails(acceptanceBatch(inviteeDb(), { roleDocId: 'role-new' }).commit());
+  await assertFails(acceptanceBatch(inviteeDb(), { roleDocId: 'inv-1' }).commit());
+
+  // The app's batch passes, and writes that one row.
+  await assertSucceeds(acceptanceBatch(inviteeDb()).commit());
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const rows = await context.firestore().collection('user_roles').get();
+    assert.deepEqual(rows.docs.map((d) => d.id), [inviteRoleDocId('inv-1')]);
+  });
+});
+
+test('an invite the owner reopened is accepted again into its own row, and only that row', async () => {
+  // The only way the invite's row is there already while the invite is pending.
+  await seedPendingInvite();
+  await assertSucceeds(acceptanceBatch(inviteeDb()).commit());
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const rows = context.firestore().collection('user_roles');
+    await rows.doc(inviteRoleDocId('inv-1')).update({ isActive: false });
+    await rows.doc('role-other').set({
+      userId: INVITEE_UID,
+      facilityId: FACILITY_ID,
+      roleType: 'employee',
+      assignedBy: OWNER_UID,
+      isActive: false,
+      inviteId: 'inv-0',
+    });
+  });
+  const owner = testEnv
+    .authenticatedContext(OWNER_UID, { email: 'owner@example.com', email_verified: true })
+    .firestore();
+  await assertSucceeds(
+    owner.collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-1').update({ status: 'pending' }),
+  );
+  await assertFails(acceptanceBatch(inviteeDb(), { roleDocId: 'role-other' }).commit());
+  await assertSucceeds(acceptanceBatch(inviteeDb()).commit());
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const rows = context.firestore().collection('user_roles');
+    assert.equal((await rows.doc(inviteRoleDocId('inv-1')).get()).data().isActive, true);
+    assert.equal((await rows.doc('role-other').get()).data().isActive, false);
+  });
+});
+
+test('role rows written before invites fixed their ids keep working', async () => {
+  // The rows in production are owners' rows, with ids of any shape
+  // (owner-<facility> from the app, generated ones from the create-for-owner
+  // callable).
+  await seedPendingInvite();
+  const legacyIds = [`owner-${FACILITY_ID}`, 'Xy7Qk2mZ9aB4cD6eF8gH'];
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    for (const id of legacyIds) {
+      await context.firestore().collection('user_roles').doc(id).set({
+        userId: OWNER_UID,
+        facilityId: FACILITY_ID,
+        roleType: 'owner',
+        assignedBy: OWNER_UID,
+        isActive: true,
+      });
+    }
+  });
+  const owner = testEnv.authenticatedContext(OWNER_UID).firestore();
+  const mine = await assertSucceeds(
+    owner.collection('user_roles').where('userId', '==', OWNER_UID).where('isActive', '==', true).get(),
+  );
+  assert.deepEqual(mine.docs.map((d) => d.id).sort(), [...legacyIds].sort());
+  await assertSucceeds(
+    owner.collection('user_roles').where('facilityId', '==', FACILITY_ID).where('isActive', '==', true).get(),
+  );
+  for (const id of legacyIds) {
+    await assertSucceeds(owner.collection('user_roles').doc(id).get());
+    await assertSucceeds(owner.collection('user_roles').doc(id).set({ updatedAt: new Date() }, { merge: true }));
+  }
+  // The owner still writes a row for someone at an id of any shape (Change
+  // Role for someone with none), and support its own manager row.
+  await assertSucceeds(
+    owner.collection('user_roles').doc('role-direct').set({
+      userId: STAFF_UID,
+      facilityId: FACILITY_ID,
+      roleType: 'employee',
+      assignedBy: OWNER_UID,
+      isActive: true,
+    }),
+  );
+  const support = testEnv
+    .authenticatedContext('support-user', { email: 'support@example.com', email_verified: true, superadmin: true })
+    .firestore();
+  await assertSucceeds(
+    support.collection('user_roles').doc('role-support').set({
+      userId: 'support-user',
+      facilityId: FACILITY_ID,
+      roleType: 'manager',
+      assignedBy: 'support-user',
+      isActive: true,
+    }),
+  );
+});
+
+test('an invitee writes only their own roles entry: no one else, no other field', async () => {
+  // The merge rule used changedKeys, which leaves out added keys: an
+  // invitee could add another user as 'owner', a legacy managers map naming
+  // themselves, or billing fields the facility did not have yet.
+  const attempts = {
+    'another user as owner': { roles: { [INVITEE_UID]: 'employee', [OUTSIDER_UID]: 'owner' } },
+    'a higher role for themselves': { roles: { [INVITEE_UID]: 'manager' } },
+    'a legacy managers map': { facilityExtra: { managers: { [INVITEE_UID]: true } } },
+    'a billing field': { facilityExtra: { platformSubscriptionStatus: 'active' } },
+    'a new field': { facilityExtra: { name2: 'mine' } },
+  };
+  for (const [label, attempt] of Object.entries(attempts)) {
+    await testEnv.clearFirestore();
+    await seedPendingInvite();
+    await assertFails(acceptanceBatch(inviteeDb(), attempt).commit()).catch((e) => {
+      throw new Error(`${label}: ${e.message}`);
+    });
+  }
+
+  // Nor on a facility with no roles map yet.
+  await testEnv.clearFirestore();
+  await seedPendingInvite({ facility: { roles: null } });
+  await assertFails(
+    acceptanceBatch(inviteeDb(), { roles: { [INVITEE_UID]: 'employee', [OUTSIDER_UID]: 'owner' } }).commit(),
+  );
+  await assertSucceeds(acceptanceBatch(inviteeDb()).commit());
+});
+
+test('an invite gives a role once: its role row and roles entry only in the batch that accepts it', async () => {
+  // Left pending, the invite could be used again. An invitee who joined
+  // with a role row carrying no address of theirs (userEmail is theirs to
+  // write), or with a roles-map entry alone, gave removeRole nothing to find
+  // the invite by: it stayed pending and let them back in after every
+  // removal. A row written while the invite said manager also stayed active
+  // after the owner changed it to viewer, and the callables that charge
+  // cards take an active manager row as access.
+  const unspent = {
+    'a role row and roles entry': {},
+    'a roles entry alone': { writeRow: false },
+    'a role row alone': { writeRoles: false },
+    'finishing a part-way acceptance': { roleDocId: 'role-half' },
+  };
+  for (const [label, options] of Object.entries(unspent)) {
+    await testEnv.clearFirestore();
+    await seedPendingInvite();
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection('user_roles').doc('role-half').set({
+        userId: INVITEE_UID,
+        facilityId: FACILITY_ID,
+        roleType: 'employee',
+        assignedBy: OWNER_UID,
+        isActive: true,
+        inviteId: 'inv-1',
+      });
+    });
+    await assertFails(acceptanceBatch(inviteeDb(), { ...options, markAccepted: false }).commit()).catch((e) => {
+      throw new Error(`${label}: ${e.message}`);
+    });
+  }
+
+  // Nor a row planted while the invite was a manager's, before the owner
+  // lowered it: the acceptance that follows gives the lower role only.
+  await testEnv.clearFirestore();
+  await seedPendingInvite();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-1').update({
+      roleType: 'manager',
+    });
+  });
+  await assertFails(
+    acceptanceBatch(inviteeDb(), { roleDocId: 'role-plant', roleType: 'manager', writeRoles: false, markAccepted: false })
+      .commit(),
+  );
+  await assertSucceeds(
+    testEnv
+      .authenticatedContext(OWNER_UID)
+      .firestore()
+      .collection('facilities')
+      .doc(FACILITY_ID)
+      .collection('invites')
+      .doc('inv-1')
+      .update({ roleType: 'employee' }),
+  );
+  await assertSucceeds(acceptanceBatch(inviteeDb()).commit());
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const rows = await context.firestore().collection('user_roles').where('userId', '==', INVITEE_UID).get();
+    assert.deepEqual(rows.docs.map((d) => [d.id, d.data().roleType]), [[inviteRoleDocId('inv-1'), 'employee']]);
+  });
+
+  // Spent, it gives nothing more: not its row again, not another row, not the roles entry again.
+  await assertFails(acceptanceBatch(inviteeDb(), { markAccepted: false }).commit());
+  await assertFails(acceptanceBatch(inviteeDb(), { roleDocId: 'role-again', markAccepted: false }).commit());
+  await assertFails(acceptanceBatch(inviteeDb(), { writeRow: false, markAccepted: false }).commit());
+});
+
+test('a removed team member cannot mark their cancelled invite accepted', async () => {
+  // It gave no access back, but it overwrote the record of the cancellation.
+  await seedPendingInvite({ status: 'cancelled' });
+  const invite = inviteeDb().collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-1');
+  await assertSucceeds(invite.get());
+  await assertFails(invite.update({ status: 'accepted', acceptedAt: new Date(), acceptedBy: INVITEE_UID }));
+  await assertFails(acceptanceBatch(inviteeDb()).commit());
+
+  // A pending one they may still accept.
+  await testEnv.clearFirestore();
+  await seedPendingInvite();
+  await assertSucceeds(
+    inviteeDb()
+      .collection('facilities')
+      .doc(FACILITY_ID)
+      .collection('invites')
+      .doc('inv-1')
+      .update({ status: 'accepted', acceptedAt: new Date(), acceptedBy: INVITEE_UID }),
+  );
+});
+
+/** A team: the owner, a manager who joined by invite, and an employee. */
+async function seedTeam({ facility = {} } = {}) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('facilities').doc(FACILITY_ID).set({
+      ownerUid: OWNER_UID,
+      name: 'Maple Storage',
+      roles: { [OWNER_UID]: 'owner', [MANAGER_UID]: 'manager', [STAFF_UID]: 'employee' },
+      ...facility,
+    });
+    await db.collection('user_roles').doc('role-staff').set({
+      userId: STAFF_UID,
+      facilityId: FACILITY_ID,
+      roleType: 'employee',
+      assignedBy: OWNER_UID,
+      isActive: true,
+      userEmail: 'staff@example.com',
+    });
+    await db.collection('user_roles').doc('role-owner').set({
+      userId: OWNER_UID,
+      facilityId: FACILITY_ID,
+      roleType: 'owner',
+      assignedBy: 'system',
+      isActive: true,
+    });
+    const invites = db.collection('facilities').doc(FACILITY_ID).collection('invites');
+    await invites.doc('inv-staff-old').set({
+      facilityId: FACILITY_ID,
+      email: 'staff@example.com',
+      emailLower: 'staff@example.com',
+      roleType: 'employee',
+      status: 'accepted',
+      acceptedBy: STAFF_UID,
+      invitedBy: OWNER_UID,
+      invitedAt: new Date('2026-09-01T12:00:00Z'),
+    });
+    await invites.doc('inv-staff-new').set({
+      facilityId: FACILITY_ID,
+      email: 'staff@example.com',
+      emailLower: 'staff@example.com',
+      roleType: 'manager',
+      status: 'pending',
+      invitedBy: OWNER_UID,
+      invitedAt: new Date('2026-09-20T12:00:00Z'),
+    });
+  });
+}
+
+/**
+ * PermissionService.removeRole, as [actorUid] runs it for [uid] (known here
+ * by [emailLower], an address the app takes as theirs: an invite they
+ * accepted, say), with its reads: the facility, the user's active rows, the
+ * invites they accepted, and the facility's pending invites (listed, never
+ * read by id; those to [emailLower], to the address on an invite a row names,
+ * or sent by [uid] are cancelled). The same batch logs the removal in the
+ * facility's auditLogs, as the app writes it (AuditLogEntry). [healFacilityId]:
+ * false leaves out the facilityId the app writes on each cancelled invite.
+ */
+async function removeMember(actorUid, uid, emailLower, { healFacilityId = true } = {}) {
+  const actorEmail = `${actorUid}@example.com`;
+  const db = testEnv.authenticatedContext(actorUid, { email: actorEmail, email_verified: true }).firestore();
+  const facilityData = (await db.collection('facilities').doc(FACILITY_ID).get()).data();
+  const roles = await db
+    .collection('user_roles')
+    .where('userId', '==', uid)
+    .where('facilityId', '==', FACILITY_ID)
+    .where('isActive', '==', true)
+    .get();
+  const invites = db.collection('facilities').doc(FACILITY_ID).collection('invites');
+  await invites.where('acceptedBy', '==', uid).get();
+  const rowInviteIds = new Set(roles.docs.map((doc) => doc.data().inviteId));
+  const listed = (await invites.where('status', '==', 'pending').get()).docs;
+  const emails = new Set([
+    emailLower,
+    ...listed.filter((doc) => rowInviteIds.has(doc.id)).map((doc) => doc.data().emailLower),
+  ]);
+  const pending = listed.filter((doc) => emails.has(doc.data().emailLower) || doc.data().invitedBy === uid);
+  const batch = db.batch();
+  const actorRole = facilityData.ownerUid === actorUid ? 'owner' : facilityData.roles?.[actorUid] ?? 'manager';
+  const removedRole = facilityData.roles?.[uid] ?? (facilityData.managers?.[uid] === true ? 'manager' : null);
+  const now = new Date();
+  batch.set(db.collection('facilities').doc(FACILITY_ID).collection('auditLogs').doc(), {
+    eventType: 'team.memberRemoved',
+    actorUid,
+    actorEmail,
+    actorRole,
+    targetType: 'user',
+    targetId: uid,
+    facilityId: FACILITY_ID,
+    before: { role: removedRole },
+    after: { role: null },
+    timestamp: now,
+    metadata: { removedUserId: uid, removedRole, invitesCancelled: pending.length, actorRole },
+    action: 'team.memberRemoved',
+    entityType: 'user',
+    entityId: uid,
+    userId: actorUid,
+    userEmail: actorEmail,
+    changes: { before: { role: removedRole }, after: { role: null } },
+  });
+  for (const doc of pending) {
+    batch.update(doc.ref, {
+      status: 'cancelled',
+      cancelledAt: new Date(),
+      cancelledReason: 'access_removed',
+      ...(healFacilityId ? { facilityId: FACILITY_ID } : {}),
+    });
+  }
+  for (const doc of roles.docs) {
+    batch.set(doc.ref, { isActive: false, updatedAt: new Date() }, { merge: true });
+  }
+  batch.set(
+    db.collection('facilities').doc(FACILITY_ID),
+    { roles: { [uid]: deleteField() }, managers: { [uid]: deleteField() } },
+    { merge: true },
+  );
+  await batch.commit();
+}
+
+const removeStaff = (actorUid) => removeMember(actorUid, STAFF_UID, 'staff@example.com');
+
+test('a manager who joined by invite can remove a team member, in one batch', async () => {
+  // The user_roles read rule knew only the owner and the legacy managers map,
+  // and only the owner could write the facility: a manager's removal was
+  // refused at its first read.
+  await seedTeam();
+  const manager = testEnv.authenticatedContext(MANAGER_UID).firestore();
+  await assertSucceeds(
+    manager.collection('user_roles').where('facilityId', '==', FACILITY_ID).where('isActive', '==', true).get(),
+  );
+  await assertSucceeds(removeStaff(MANAGER_UID));
+
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    const facility = (await db.collection('facilities').doc(FACILITY_ID).get()).data();
+    assert.deepEqual(Object.keys(facility.roles).sort(), [MANAGER_UID, OWNER_UID].sort());
+    assert.equal((await db.collection('user_roles').doc('role-staff').get()).data().isActive, false);
+    const invites = db.collection('facilities').doc(FACILITY_ID).collection('invites');
+    assert.equal((await invites.doc('inv-staff-new').get()).data().status, 'cancelled');
+    assert.equal((await invites.doc('inv-staff-old').get()).data().status, 'accepted');
+    // Logged in the same batch, so the owner sees which manager removed whom.
+    const logs = (await db.collection('facilities').doc(FACILITY_ID).collection('auditLogs').get()).docs;
+    assert.deepEqual(
+      logs.map((d) => [d.data().eventType, d.data().actorUid, d.data().targetId]),
+      [['team.memberRemoved', MANAGER_UID, STAFF_UID]],
+    );
+  });
+});
+
+test('a removal also cancels the invites the removed member sent', async () => {
+  // A manager could invite a second login of their own as manager; once the
+  // owner removed them, that login accepted and they were back. Managers no
+  // longer invite, but one sent before that is still pending.
+  await seedTeam();
+  const altInvite = {
+    facilityId: FACILITY_ID,
+    email: 'mgr-alt@example.com',
+    emailLower: 'mgr-alt@example.com',
+    roleType: 'manager',
+    status: 'pending',
+    invitedBy: MANAGER_UID,
+    invitedAt: new Date(),
+  };
+  await assertFails(invitesAs(MANAGER_UID, 'manager@example.com').doc('inv-alt').set(altInvite));
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-alt').set(altInvite);
+  });
+  await assertSucceeds(removeMember(OWNER_UID, MANAGER_UID, 'manager@example.com'));
+
+  const alt = testEnv.authenticatedContext('mgr-alt-user', { email: 'mgr-alt@example.com', email_verified: true }).firestore();
+  const altAcceptance = alt.batch();
+  altAcceptance.set(alt.collection('user_roles').doc(inviteRoleDocId('inv-alt')), {
+    userId: 'mgr-alt-user',
+    facilityId: FACILITY_ID,
+    roleType: 'manager',
+    assignedBy: MANAGER_UID,
+    isActive: true,
+    inviteId: 'inv-alt',
+  });
+  altAcceptance.set(
+    alt.collection('facilities').doc(FACILITY_ID),
+    { roles: { 'mgr-alt-user': 'manager' }, acceptingInviteId: 'inv-alt' },
+    { merge: true },
+  );
+  altAcceptance.update(alt.collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-alt'), {
+    status: 'accepted',
+    acceptedAt: new Date(),
+    acceptedBy: 'mgr-alt-user',
+  });
+  await assertFails(altAcceptance.commit());
+
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const invites = context.firestore().collection('facilities').doc(FACILITY_ID).collection('invites');
+    assert.equal((await invites.doc('inv-alt').get()).data().status, 'cancelled');
+    // Not the owner's invite to someone else.
+    assert.equal((await invites.doc('inv-staff-new').get()).data().status, 'pending');
+  });
+});
+
+test("a row naming a cancelled invite does not stop its user's removal", async () => {
+  // Cancel Invite deletes the invite, and a get of an invite that is not
+  // there is refused even to the owner, so removeRole lists the facility's
+  // pending invites rather than reading each row's invite by id: that one
+  // refused read failed the whole removal.
+  await seedTeam();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('user_roles').doc('role-staff').set({ inviteId: 'inv-deleted' }, { merge: true });
+  });
+  const owner = testEnv.authenticatedContext(OWNER_UID).firestore();
+  const manager = testEnv.authenticatedContext(MANAGER_UID).firestore();
+  const deleted = (db) => db.collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-deleted');
+  await assertFails(deleted(owner).get());
+  await assertFails(deleted(manager).get());
+
+  await assertSucceeds(removeStaff(MANAGER_UID));
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    assert.equal((await db.collection('user_roles').doc('role-staff').get()).data().isActive, false);
+    const facility = (await db.collection('facilities').doc(FACILITY_ID).get()).data();
+    assert.equal(facility.roles[STAFF_UID], undefined);
+    const invite = await db.collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-staff-new').get();
+    assert.equal(invite.data().status, 'cancelled');
+  });
+});
+
+test('the owner removes a legacy manager from both maps', async () => {
+  // removeRole left managers.<uid>, which isFacilityOwnerOrManager still
+  // reads, so a removed legacy manager kept their access.
+  await seedTeam({ facility: { managers: { [STAFF_UID]: true } } });
+  const owner = testEnv.authenticatedContext(OWNER_UID).firestore();
+  await assertSucceeds(removeStaff(OWNER_UID));
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const facility = (await context.firestore().collection('facilities').doc(FACILITY_ID).get()).data();
+    assert.equal(facility.managers[STAFF_UID], undefined);
+    assert.equal(facility.roles[STAFF_UID], undefined);
+  });
+  await assertFails(
+    testEnv.authenticatedContext(STAFF_UID).firestore().collection('facilities').doc(FACILITY_ID).get(),
+  );
+});
+
+test("a manager's facility write may only take team members out", async () => {
+  await seedTeam({
+    facility: {
+      managers: { [OUTSIDER_UID]: true, [OWNER_UID]: true },
+      roles: {
+        [OWNER_UID]: 'owner',
+        [MANAGER_UID]: 'manager',
+        [STAFF_UID]: 'employee',
+        [COOWNER_UID]: 'owner',
+        [ADMIN_UID]: 'admin',
+      },
+    },
+  });
+  const facility = testEnv.authenticatedContext(MANAGER_UID).firestore().collection('facilities').doc(FACILITY_ID);
+  // Never the owner.
+  await assertFails(facility.set({ roles: { [OWNER_UID]: deleteField() } }, { merge: true }));
+  await assertFails(facility.set({ managers: { [OWNER_UID]: deleteField() } }, { merge: true }));
+  // Nor anyone the roles map names owner or admin, alone or with someone
+  // else: only ownerUid was protected, so a manager could take a co-owner off
+  // the team.
+  await assertFails(facility.set({ roles: { [COOWNER_UID]: deleteField() } }, { merge: true }));
+  await assertFails(facility.set({ roles: { [ADMIN_UID]: deleteField() } }, { merge: true }));
+  await assertFails(
+    facility.set({ roles: { [STAFF_UID]: deleteField(), [COOWNER_UID]: deleteField() } }, { merge: true }),
+  );
+  // Nobody added or promoted, in either map.
+  await assertFails(facility.set({ roles: { [OUTSIDER_UID]: 'owner' } }, { merge: true }));
+  await assertFails(facility.set({ roles: { [STAFF_UID]: 'manager' } }, { merge: true }));
+  await assertFails(facility.set({ managers: { [STAFF_UID]: true } }, { merge: true }));
+  // Nothing else on the facility, even alongside a removal.
+  await assertFails(facility.set({ roles: { [STAFF_UID]: deleteField() }, name: 'Mine now' }, { merge: true }));
+  await assertFails(facility.update({ name: 'Mine now' }));
+  // A removal from either map is fine.
+  await assertSucceeds(facility.set({ managers: { [OUTSIDER_UID]: deleteField() } }, { merge: true }));
+  await assertSucceeds(facility.set({ roles: { [STAFF_UID]: deleteField() } }, { merge: true }));
+  // The owner takes out a co-owner and an admin.
+  const asOwner = testEnv.authenticatedContext(OWNER_UID).firestore().collection('facilities').doc(FACILITY_ID);
+  await assertSucceeds(
+    asOwner.set({ roles: { [COOWNER_UID]: deleteField(), [ADMIN_UID]: deleteField() } }, { merge: true }),
+  );
+});
+
+test('an employee can neither read the team rows nor remove anyone', async () => {
+  await seedTeam();
+  const employee = testEnv.authenticatedContext(STAFF_UID).firestore();
+  await assertFails(
+    employee.collection('user_roles').where('facilityId', '==', FACILITY_ID).where('isActive', '==', true).get(),
+  );
+  await assertFails(
+    employee.collection('facilities').doc(FACILITY_ID).set({ roles: { [MANAGER_UID]: deleteField() } }, { merge: true }),
+  );
+  await assertFails(
+    employee.collection('user_roles').doc('role-owner').set({ isActive: false }, { merge: true }),
+  );
+});
+
+test("a manager may only take a team member's row out of use, never an owner's or admin's", async () => {
+  // The row is what the app reads for someone's role, and the callables that
+  // charge cards take an active one as access. A manager could make a removed
+  // team member an active manager again, or demote a co-owner.
+  const EX_MANAGER_UID = 'ex-manager-user';
+  await seedTeam();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const rows = context.firestore().collection('user_roles');
+    await rows.doc('role-removed').set({
+      userId: 'removed-user',
+      facilityId: FACILITY_ID,
+      roleType: 'employee',
+      assignedBy: EX_MANAGER_UID,
+      isActive: false,
+    });
+    await rows.doc('role-coowner').set({
+      userId: COOWNER_UID,
+      facilityId: FACILITY_ID,
+      roleType: 'owner',
+      assignedBy: OWNER_UID,
+      isActive: true,
+    });
+    await rows.doc('role-admin').set({
+      userId: ADMIN_UID,
+      facilityId: FACILITY_ID,
+      roleType: 'admin',
+      assignedBy: OWNER_UID,
+      isActive: true,
+    });
+  });
+  const rows = testEnv.authenticatedContext(MANAGER_UID).firestore().collection('user_roles');
+  const off = { isActive: false, updatedAt: new Date() };
+
+  await assertFails(rows.doc('role-removed').update({ isActive: true, roleType: 'manager' }));
+  await assertFails(rows.doc('role-removed').update({ isActive: true }));
+  await assertFails(rows.doc('role-staff').update({ roleType: 'owner' }));
+  await assertFails(rows.doc('role-staff').update({ roleType: 'viewer' }));
+  await assertFails(rows.doc('role-staff').update({ ...off, roleType: 'viewer' }));
+  await assertFails(rows.doc('role-owner').update(off));
+  await assertFails(rows.doc('role-owner').update({ roleType: 'viewer' }));
+  await assertFails(rows.doc('role-coowner').update(off));
+  await assertFails(rows.doc('role-admin').update(off));
+  await assertFails(rows.doc('role-staff').delete());
+  // removeRole's write.
+  await assertSucceeds(rows.doc('role-staff').set(off, { merge: true }));
+
+  // Whoever assigned a row, once off the team, has no say over it.
+  const exManager = testEnv.authenticatedContext(EX_MANAGER_UID).firestore().collection('user_roles');
+  await assertFails(exManager.doc('role-removed').update({ isActive: true, roleType: 'manager' }));
+  await assertFails(exManager.doc('role-removed').delete());
+
+  // A legacy manager may not assign a role directly or delete a row either;
+  // managers invite.
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilities').doc(FACILITY_ID).set({ managers: { legacy: true } }, { merge: true });
+  });
+  const legacy = testEnv.authenticatedContext('legacy').firestore().collection('user_roles');
+  await assertFails(
+    legacy.doc('role-new').set({
+      userId: OUTSIDER_UID,
+      facilityId: FACILITY_ID,
+      roleType: 'employee',
+      assignedBy: 'legacy',
+      isActive: true,
+    }),
+  );
+  await assertFails(legacy.doc('role-coowner').delete());
+
+  // The owner still may do all of it, as before.
+  const owner = testEnv.authenticatedContext(OWNER_UID).firestore().collection('user_roles');
+  await assertSucceeds(owner.doc('role-removed').update({ isActive: true, roleType: 'manager' }));
+  await assertSucceeds(owner.doc('role-coowner').update(off));
+  await assertSucceeds(
+    owner.doc('role-new').set({
+      userId: OUTSIDER_UID,
+      facilityId: FACILITY_ID,
+      roleType: 'employee',
+      assignedBy: OWNER_UID,
+      isActive: true,
+    }),
+  );
+  await assertSucceeds(owner.doc('role-admin').delete());
+});
+
+test('a manager cannot take a co-owner off the team through removeRole', async () => {
+  await seedTeam({ facility: { roles: { [OWNER_UID]: 'owner', [MANAGER_UID]: 'manager', [COOWNER_UID]: 'owner' } } });
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('user_roles').doc('role-coowner').set({
+      userId: COOWNER_UID,
+      facilityId: FACILITY_ID,
+      roleType: 'owner',
+      assignedBy: OWNER_UID,
+      isActive: true,
+      userEmail: 'coowner@example.com',
+    });
+  });
+  const manager = testEnv.authenticatedContext(MANAGER_UID).firestore();
+  await assertFails(removeMember(MANAGER_UID, COOWNER_UID, 'coowner@example.com'));
+  const owner = testEnv.authenticatedContext(OWNER_UID).firestore();
+  await assertSucceeds(removeMember(OWNER_UID, COOWNER_UID, 'coowner@example.com'));
+});
+
+test('a team member who joined by invite and was removed cannot come back through it', async () => {
+  // The whole round trip, through the app's own batches: accepted, then
+  // removed by a manager. Each piece is tested alone above; this checks they
+  // hold together, since a removal only sticks if every way back is shut.
+  await seedPendingInvite({ facility: { roles: { [OWNER_UID]: 'owner', [MANAGER_UID]: 'manager' } } });
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    // A second invite to them, sent before the removal.
+    await context.firestore().collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-2').set({
+      facilityId: FACILITY_ID,
+      email: INVITEE_EMAIL,
+      emailLower: INVITEE_EMAIL,
+      roleType: 'manager',
+      status: 'pending',
+      invitedBy: OWNER_UID,
+      invitedAt: new Date('2026-09-21T12:00:00Z'),
+    });
+  });
+  const invitee = inviteeDb();
+  const facility = invitee.collection('facilities').doc(FACILITY_ID);
+  await assertSucceeds(acceptanceBatch(invitee).commit());
+  await assertSucceeds(facility.get());
+
+  const manager = testEnv.authenticatedContext(MANAGER_UID).firestore();
+  await assertSucceeds(removeMember(MANAGER_UID, INVITEE_UID, INVITEE_EMAIL));
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    assert.equal((await db.collection('facilities').doc(FACILITY_ID).get()).data().roles[INVITEE_UID], undefined);
+    assert.equal((await db.collection('user_roles').doc(inviteRoleDocId('inv-1')).get()).data().isActive, false);
+    const invites = db.collection('facilities').doc(FACILITY_ID).collection('invites');
+    assert.equal((await invites.doc('inv-1').get()).data().status, 'accepted');
+    assert.equal((await invites.doc('inv-2').get()).data().status, 'cancelled');
+  });
+  await assertFails(facility.get());
+
+  const ways = {
+    'their old row switched back on': () =>
+      invitee.collection('user_roles').doc(inviteRoleDocId('inv-1')).set({ isActive: true, updatedAt: new Date() }, { merge: true }),
+    'the acceptance sent again': () => acceptanceBatch(invitee).commit(),
+    'a new row for the spent invite': () => acceptanceBatch(invitee, { roleDocId: 'role-again', markAccepted: false }).commit(),
+    'the roles entry alone': () => acceptanceBatch(invitee, { writeRow: false, markAccepted: false }).commit(),
+    'the spent invite reopened': () => facility.collection('invites').doc('inv-1').update({ status: 'pending' }),
+    'the second invite': () =>
+      acceptanceBatch(invitee, { inviteId: 'inv-2', roleType: 'manager' }).commit(),
+  };
+  for (const [label, attempt] of Object.entries(ways)) {
+    await assertFails(attempt()).catch((e) => {
+      throw new Error(`${label}: ${e.message}`);
+    });
+  }
+  await assertFails(facility.get());
+
+  // A fresh invite from the facility still brings them back.
+  const owner = testEnv.authenticatedContext(OWNER_UID).firestore();
+  await assertSucceeds(
+    owner.collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-3').set({
+      facilityId: FACILITY_ID,
+      email: INVITEE_EMAIL,
+      emailLower: INVITEE_EMAIL,
+      roleType: 'employee',
+      status: 'pending',
+      invitedBy: OWNER_UID,
+      invitedAt: new Date(),
+    }),
+  );
+  await assertSucceeds(acceptanceBatch(invitee, { inviteId: 'inv-3' }).commit());
+  await assertSucceeds(facility.get());
+});
+
+test('an invitee cannot move their invite to a facility of their own, reopen it and come back', async () => {
+  // Owners and managers were checked against the invite's own facilityId,
+  // which the invitee could change as they accepted: pointed at a facility
+  // they had just created, the invite was theirs to reopen at the real
+  // facility as a manager invite and accept again after every removal.
+  const OWN_FACILITY_ID = 'fac-invitee-own';
+  await seedPendingInvite();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilities').doc(OWN_FACILITY_ID).set({
+      ownerUid: INVITEE_UID,
+      name: 'Mine',
+      roles: { [INVITEE_UID]: 'owner' },
+    });
+  });
+  const invitee = inviteeDb();
+
+  // The acceptance may change nothing on the invite but its status and who
+  // accepted it, and when.
+  const extras = {
+    'moving it to their own facility': { facilityId: OWN_FACILITY_ID },
+    'another role': { roleType: 'manager' },
+    'another address': { emailLower: 'second-login@example.com', email: 'second-login@example.com' },
+    'the name shown': { facilityName: 'Hijacked' },
+    'the cancellation record': { cancelledReason: 'none' },
+    'when it was sent': { lastSentAt: new Date(0) },
+  };
+  for (const [label, inviteExtra] of Object.entries(extras)) {
+    await assertFails(acceptanceBatch(invitee, { inviteExtra }).commit()).catch((e) => {
+      throw new Error(`${label}: ${e.message}`);
+    });
+  }
+  await assertSucceeds(acceptanceBatch(invitee).commit());
+
+  // Owning a facility gives no say over another facility's invites, even one
+  // whose facilityId names theirs (one moved before this rule).
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-1').update({
+      facilityId: OWN_FACILITY_ID,
+      status: 'accepted',
+    });
+  });
+  const invite = invitee.collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-1');
+  await assertFails(invite.update({ status: 'pending', roleType: 'manager', facilityId: FACILITY_ID }));
+  await assertFails(invite.update({ status: 'pending' }));
+  await assertFails(invite.delete());
+});
+
+test("an invite moved to another facility is still the real owner's to cancel with a removal, or delete", async () => {
+  // Left pending with another facility's id, the owner's removeRole batch
+  // (which cancels it) was refused as a whole: the team member could not be
+  // removed, and the owner could not delete the invite either.
+  const OWN_FACILITY_ID = 'fac-invitee-own';
+  await seedPendingInvite({ facility: { roles: { [OWNER_UID]: 'owner', [INVITEE_UID]: 'employee' } } });
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('facilities').doc(OWN_FACILITY_ID).set({ ownerUid: INVITEE_UID, name: 'Mine' });
+    await db.collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-1').update({
+      facilityId: OWN_FACILITY_ID,
+    });
+    await db.collection('user_roles').doc('role-invitee').set({
+      userId: INVITEE_UID,
+      facilityId: FACILITY_ID,
+      roleType: 'employee',
+      assignedBy: OWNER_UID,
+      isActive: true,
+      userEmail: INVITEE_EMAIL,
+    });
+  });
+  const owner = testEnv.authenticatedContext(OWNER_UID).firestore();
+  // The cancel must name this facility again (removeRole writes it).
+  await assertFails(removeMember(OWNER_UID, INVITEE_UID, INVITEE_EMAIL, { healFacilityId: false }));
+  await assertSucceeds(removeMember(OWNER_UID, INVITEE_UID, INVITEE_EMAIL));
+
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    const invite = (await db.collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-1').get()).data();
+    assert.equal(invite.status, 'cancelled');
+    assert.equal(invite.facilityId, FACILITY_ID);
+    const facility = (await db.collection('facilities').doc(FACILITY_ID).get()).data();
+    assert.equal(facility.roles[INVITEE_UID], undefined);
+    await db.collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-1').update({
+      facilityId: OWN_FACILITY_ID,
+    });
+  });
+  // Nor can they keep it for themselves: the removed member cannot accept it,
+  // and the owner can delete it.
+  await assertFails(acceptanceBatch(inviteeDb()).commit());
+  await assertSucceeds(owner.collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-1').delete());
+});
+
+/** [uid]'s view of the facility's invites, signed in with a verified [email]. */
+function invitesAs(uid, email = `${uid}@example.com`, claims = {}) {
+  return testEnv
+    .authenticatedContext(uid, { email, email_verified: true, ...claims })
+    .firestore()
+    .collection('facilities')
+    .doc(FACILITY_ID)
+    .collection('invites');
+}
+
+/** An invite from [uid] for [roleType], as createFacilityInvite writes it. */
+function newInviteFrom(uid, roleType, email = 'alt@example.com') {
+  return {
+    facilityId: FACILITY_ID,
+    email,
+    emailLower: email,
+    roleType,
+    status: 'pending',
+    invitedBy: uid,
+    invitedAt: new Date(),
+    lastSentAt: new Date(),
+  };
+}
+
+test('only the owner or a co-owner invites; only the owner invites someone as owner or admin', async () => {
+  // The app lets only those who may manage the team (the owner, and a
+  // co-owner the owner invited as owner) invite. A manager could invite a
+  // second login of their own as manager, or, before that, as owner.
+  await seedTeam({
+    facility: {
+      roles: {
+        [OWNER_UID]: 'owner',
+        [MANAGER_UID]: 'manager',
+        [STAFF_UID]: 'employee',
+        [COOWNER_UID]: 'owner',
+        [ADMIN_UID]: 'admin',
+      },
+      managers: { 'legacy-manager': true },
+    },
+  });
+  const refused = {
+    'a manager, as employee': [MANAGER_UID, 'employee'],
+    'a manager, as manager': [MANAGER_UID, 'manager'],
+    'a manager, as owner': [MANAGER_UID, 'owner'],
+    'an admin': [ADMIN_UID, 'employee'],
+    'a legacy manager': ['legacy-manager', 'viewer'],
+    'an employee': [STAFF_UID, 'viewer'],
+    'an outsider': [OUTSIDER_UID, 'viewer'],
+    'a co-owner, as owner': [COOWNER_UID, 'owner'],
+    'a co-owner, as admin': [COOWNER_UID, 'admin'],
+  };
+  for (const [label, [uid, roleType]] of Object.entries(refused)) {
+    await assertFails(invitesAs(uid).doc(`inv-${uid}-${roleType}`).set(newInviteFrom(uid, roleType))).catch((e) => {
+      throw new Error(`${label}: ${e.message}`);
+    });
+  }
+  await assertSucceeds(invitesAs(OWNER_UID).doc('inv-o').set(newInviteFrom(OWNER_UID, 'owner')));
+  await assertSucceeds(invitesAs(OWNER_UID).doc('inv-e').set(newInviteFrom(OWNER_UID, 'employee', 'e@example.com')));
+  await assertSucceeds(invitesAs(COOWNER_UID).doc('inv-c').set(newInviteFrom(COOWNER_UID, 'manager', 'c@example.com')));
+  const support = invitesAs('support-user', 'support@example.com', { superadmin: true });
+  await assertSucceeds(support.doc('inv-s').set(newInviteFrom('support-user', 'viewer', 's@example.com')));
+});
+
+test('a manager may only cancel a pending invite; resending and changing one is the owner\'s', async () => {
+  await seedTeam({
+    facility: { roles: { [OWNER_UID]: 'owner', [MANAGER_UID]: 'manager', [COOWNER_UID]: 'owner' } },
+  });
+  const manager = invitesAs(MANAGER_UID);
+  const coOwner = invitesAs(COOWNER_UID);
+  const owner = invitesAs(OWNER_UID);
+
+  // inv-staff-new is the owner's pending manager invite; inv-staff-old an accepted one.
+  const managerRefused = {
+    'resend': { lastSentAt: new Date() },
+    'resend, as createFacilityInvite does for an address already invited': {
+      roleType: 'manager',
+      updatedAt: new Date(),
+      lastSentAt: new Date(),
+      facilityId: FACILITY_ID,
+    },
+    'a lower role': { roleType: 'viewer' },
+    'a higher role': { roleType: 'owner' },
+    'the name shown': { facilityName: 'Renamed' },
+    'a cancel that also resends': { status: 'cancelled', cancelledAt: new Date(), lastSentAt: new Date() },
+    'a cancel that also changes the role': { status: 'cancelled', cancelledAt: new Date(), roleType: 'viewer' },
+    'marking it accepted': { status: 'accepted', acceptedAt: new Date(), acceptedBy: MANAGER_UID },
+  };
+  for (const [label, change] of Object.entries(managerRefused)) {
+    await assertFails(manager.doc('inv-staff-new').update(change)).catch((e) => {
+      throw new Error(`${label}: ${e.message}`);
+    });
+  }
+  // Nor cancel one that is not pending, or delete an accepted one: it is
+  // what ties a team member's address to them.
+  await assertFails(manager.doc('inv-staff-old').update({ status: 'cancelled', cancelledAt: new Date() }));
+  await assertFails(manager.doc('inv-staff-old').delete());
+  // Nor does the owner readdress one or change who sent it.
+  await assertFails(owner.doc('inv-staff-new').update({ email: 'alt@example.com', emailLower: 'alt@example.com' }));
+  await assertFails(coOwner.doc('inv-staff-new').update({ emailLower: 'alt@example.com' }));
+  await assertFails(coOwner.doc('inv-staff-new').update({ invitedBy: COOWNER_UID }));
+
+  // The owner and a co-owner resend and change the role.
+  await assertSucceeds(owner.doc('inv-staff-new').update({ lastSentAt: new Date() }));
+  await assertSucceeds(coOwner.doc('inv-staff-new').update({ lastSentAt: new Date() }));
+  await assertSucceeds(
+    coOwner.doc('inv-staff-new').update({
+      roleType: 'viewer',
+      updatedAt: new Date(),
+      lastSentAt: new Date(),
+      facilityId: FACILITY_ID,
+    }),
+  );
+  await assertFails(coOwner.doc('inv-staff-new').update({ roleType: 'owner' }));
+  await assertSucceeds(owner.doc('inv-staff-new').update({ roleType: 'owner' }));
+  await assertSucceeds(owner.doc('inv-staff-new').update({ roleType: 'manager' }));
+
+  // A manager cancels a pending invite with removeRole's fields, including
+  // one it puts back under this facility.
+  await assertSucceeds(
+    manager.doc('inv-staff-new').update({
+      status: 'cancelled',
+      cancelledAt: new Date(),
+      cancelledReason: 'access_removed',
+      facilityId: FACILITY_ID,
+    }),
+  );
+  // And deletes a pending one (Cancel Invite).
+  await assertSucceeds(invitesAs(OWNER_UID).doc('inv-pending-2').set(newInviteFrom(OWNER_UID, 'viewer', 'p2@example.com')));
+  await assertSucceeds(manager.doc('inv-pending-2').delete());
+  // The owner deletes any.
+  await assertSucceeds(owner.doc('inv-staff-old').delete());
+});
+
+test('only the invitee records an acceptance, not the owner or a manager', async () => {
+  // Who accepted an invite is what removeRole and the "already on the team"
+  // check tie an address to a user by. The owner could mark an invite
+  // accepted by anyone.
+  await seedTeam({
+    facility: { roles: { [OWNER_UID]: 'owner', [MANAGER_UID]: 'manager', [COOWNER_UID]: 'owner' } },
+  });
+  const accept = (by) => ({ status: 'accepted', acceptedAt: new Date(), acceptedBy: by });
+  for (const [label, invites] of Object.entries({
+    owner: invitesAs(OWNER_UID),
+    'co-owner': invitesAs(COOWNER_UID),
+    manager: invitesAs(MANAGER_UID),
+  })) {
+    const attempts = {
+      'marked accepted by the staff member': accept(STAFF_UID),
+      'marked accepted by an outsider': accept(OUTSIDER_UID),
+      'acceptedBy alone': { acceptedBy: STAFF_UID },
+      'acceptedAt alone': { acceptedAt: new Date() },
+    };
+    for (const [what, change] of Object.entries(attempts)) {
+      await assertFails(invites.doc('inv-staff-new').update(change)).catch((e) => {
+        throw new Error(`${label}, ${what}: ${e.message}`);
+      });
+    }
+    // Nor rewrite who accepted a spent one.
+    await assertFails(invites.doc('inv-staff-old').update({ acceptedBy: OUTSIDER_UID })).catch((e) => {
+      throw new Error(`${label}, rewriting acceptedBy: ${e.message}`);
+    });
+  }
+  // The invitee's own acceptance still records it.
+  await assertSucceeds(invitesAs(STAFF_UID, 'staff@example.com').doc('inv-staff-new').update(accept(STAFF_UID)));
+});
+
+test('only the owner sets a spent or cancelled invite back to pending', async () => {
+  // A manager could reopen a co-owner's accepted owner invite, and a
+  // co-owner the owner had demoted to manager could reopen their own and
+  // accept it again, as owner, where the other managers could not remove
+  // them. The app never reopens an invite.
+  await seedTeam({
+    facility: { roles: { [OWNER_UID]: 'owner', [MANAGER_UID]: 'manager', [COOWNER_UID]: 'manager' } },
+  });
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const invites = context.firestore().collection('facilities').doc(FACILITY_ID).collection('invites');
+    await invites.doc('inv-co').set({
+      facilityId: FACILITY_ID,
+      email: 'coowner@example.com',
+      emailLower: 'coowner@example.com',
+      roleType: 'owner',
+      status: 'accepted',
+      acceptedBy: COOWNER_UID,
+      acceptedAt: new Date('2026-09-02T12:00:00Z'),
+      invitedBy: OWNER_UID,
+      invitedAt: new Date('2026-09-01T12:00:00Z'),
+    });
+    await invites.doc('inv-cancelled').set({
+      facilityId: FACILITY_ID,
+      email: 'gone@example.com',
+      emailLower: 'gone@example.com',
+      roleType: 'employee',
+      status: 'cancelled',
+      cancelledReason: 'access_removed',
+      invitedBy: MANAGER_UID,
+      invitedAt: new Date('2026-09-01T12:00:00Z'),
+    });
+  });
+  const manager = invitesAs(MANAGER_UID, 'manager@example.com');
+  const demoted = invitesAs(COOWNER_UID, 'coowner@example.com');
+
+  const reopenings = {
+    "a manager, a co-owner's accepted owner invite": () => manager.doc('inv-co').update({ status: 'pending' }),
+    'a manager, with a merge': () => manager.doc('inv-co').set({ status: 'pending', lastSentAt: new Date() }, { merge: true }),
+    'the demoted co-owner, their own': () => demoted.doc('inv-co').update({ status: 'pending' }),
+    'a manager, an accepted employee invite': () => manager.doc('inv-staff-old').update({ status: 'pending' }),
+    'a manager, a cancelled invite they sent': () => manager.doc('inv-cancelled').update({ status: 'pending' }),
+  };
+  for (const [label, attempt] of Object.entries(reopenings)) {
+    await assertFails(attempt()).catch((e) => {
+      throw new Error(`${label}: ${e.message}`);
+    });
+  }
+  // A manager still cancels a pending one (removeRole), and nothing else.
+  await assertFails(manager.doc('inv-co').update({ status: 'cancelled' }));
+  await assertSucceeds(manager.doc('inv-staff-new').update({ status: 'cancelled', cancelledAt: new Date() }));
+  // Nor does a co-owner reopen one; the owner may.
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilities').doc(FACILITY_ID).set(
+      { roles: { [COOWNER_UID]: 'owner' } },
+      { merge: true },
+    );
+  });
+  await assertFails(demoted.doc('inv-staff-old').update({ status: 'pending' }));
+  await assertSucceeds(invitesAs(OWNER_UID, 'owner@example.com').doc('inv-staff-old').update({ status: 'pending' }));
+});
+
+test('an invite is accepted only by a verified address', async () => {
+  // An unverified account can carry anyone's address: with the link, it
+  // could accept an invite it never received.
+  await seedPendingInvite();
+  const unverified = testEnv
+    .authenticatedContext(INVITEE_UID, { email: INVITEE_EMAIL, email_verified: false })
+    .firestore();
+  const invite = (db) => db.collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-1');
+  // Pending, it can still be read (the link opens it before sign-in).
+  await assertSucceeds(invite(unverified).get());
+  await assertFails(acceptanceBatch(unverified).commit());
+  await assertFails(invite(unverified).update({ status: 'accepted', acceptedAt: new Date(), acceptedBy: INVITEE_UID }));
+  await assertSucceeds(acceptanceBatch(inviteeDb()).commit());
+});
+
+test("a manager's own invite gives them a row only when it records them as accepting it", async () => {
+  // A manager may edit the facility's invites, so one addressed to their own
+  // address they could mark accepted (by anyone) and write their row off it
+  // in the same batch. The row's invite must name them as its acceptor, and
+  // their address must be verified, as for any other invitee.
+  await seedTeam();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-m').set({
+      facilityId: FACILITY_ID,
+      email: 'manager@example.com',
+      emailLower: 'manager@example.com',
+      roleType: 'employee',
+      status: 'pending',
+      invitedBy: OWNER_UID,
+      invitedAt: new Date('2026-09-20T12:00:00Z'),
+    });
+  });
+  const managerAcceptance = (verified, acceptedBy) => {
+    const db = testEnv
+      .authenticatedContext(MANAGER_UID, { email: 'manager@example.com', email_verified: verified })
+      .firestore();
+    const batch = db.batch();
+    batch.update(db.collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-m'), {
+      status: 'accepted',
+      acceptedAt: new Date(),
+      acceptedBy,
+    });
+    batch.set(db.collection('user_roles').doc(inviteRoleDocId('inv-m')), {
+      userId: MANAGER_UID,
+      facilityId: FACILITY_ID,
+      roleType: 'employee',
+      assignedBy: OWNER_UID,
+      isActive: true,
+      inviteId: 'inv-m',
+    });
+    return batch.commit();
+  };
+  await assertFails(managerAcceptance(true, OUTSIDER_UID));
+  await assertFails(managerAcceptance(false, MANAGER_UID));
+  await assertSucceeds(managerAcceptance(true, MANAGER_UID));
+});
+
+test('an invite names its sender by their own verified address, or not at all', async () => {
+  // The invitee is shown who sent it. Anyone can create a facility and
+  // invite any address, and could sign the invite as the platform's support.
+  await seedTeam();
+  const invites = (claims) =>
+    testEnv
+      .authenticatedContext(OWNER_UID, claims)
+      .firestore()
+      .collection('facilities')
+      .doc(FACILITY_ID)
+      .collection('invites');
+  const invite = (invitedByEmail) => ({
+    facilityId: FACILITY_ID,
+    email: 'new@example.com',
+    emailLower: 'new@example.com',
+    roleType: 'employee',
+    status: 'pending',
+    invitedBy: OWNER_UID,
+    invitedAt: new Date(),
+    ...(invitedByEmail === undefined ? {} : { invitedByEmail }),
+  });
+  const verified = invites({ email: 'Owner@Example.com', email_verified: true });
+  const unverified = invites({ email: 'Owner@Example.com', email_verified: false });
+
+  await assertFails(verified.doc('inv-a').set(invite('support@storagefacilitycreator.com')));
+  await assertFails(unverified.doc('inv-a').set(invite('Owner@Example.com')));
+  await assertSucceeds(verified.doc('inv-a').set(invite('Owner@Example.com')));
+  await assertSucceeds(unverified.doc('inv-b').set(invite(null)));
+  await assertSucceeds(unverified.doc('inv-c').set(invite(undefined)));
+
+  // Nor can it be changed afterwards, by the owner or a manager.
+  await assertFails(verified.doc('inv-a').update({ invitedByEmail: 'support@storagefacilitycreator.com' }));
+  await assertFails(verified.doc('inv-b').update({ invitedByEmail: 'Owner@Example.com' }));
+  const manager = testEnv
+    .authenticatedContext(MANAGER_UID, { email: 'manager@example.com', email_verified: true })
+    .firestore()
+    .collection('facilities')
+    .doc(FACILITY_ID)
+    .collection('invites');
+  await assertFails(manager.doc('inv-a').update({ invitedByEmail: 'manager@example.com' }));
+  await assertFails(manager.doc('inv-a').update({ invitedBy: MANAGER_UID }));
+  await assertSucceeds(verified.doc('inv-a').update({ lastSentAt: new Date() }));
 });
