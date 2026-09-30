@@ -1,7 +1,7 @@
 /**
  * One payable Checkout Session per reservation.
  *
- * On 2026-09-24, in a live $1 move-in at Keepsake, the first press of the
+ * On 2026-09-24, in a live $1 move-in, the first press of the
  * move-in page's pay button opened no window, so the renter pressed again,
  * and createPublicMoveInCheckout made a second session for the same
  * reservation 14 seconds after the first. Both were open and payable. Paying

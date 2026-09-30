@@ -2,7 +2,7 @@
  * A second press of the move-in page's pay button gets the Checkout Session
  * the first press made, not another one.
  *
- * On 2026-09-24, in a live $1 move-in at Keepsake, the first press opened no
+ * On 2026-09-24, in a live $1 move-in, the first press opened no
  * window, the renter pressed again, and the reservation had two open, payable
  * sessions 14 seconds apart. Paying both takes the money twice:
  * completePublicMoveIn's one-payment-one-move-in record refuses the second
