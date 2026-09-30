@@ -5,6 +5,12 @@ import { STRIPE_SECRETS } from './secrets';
 import { createAutopayNotificationAndEvent } from './stripeAutopayEvents';
 import { setTenantAutopayArming } from './autopayArming';
 
+/** Whether a fraudulent card dispute paused this tenant's autopay and staff have not turned it back on. */
+export function portalAutopayPausedForDispute(tenantData: Record<string, any> | undefined): boolean {
+  const pausedFor = tenantData?.autopay?.pausedForDisputeId;
+  return typeof pausedFor === 'string' && pausedFor.length > 0;
+}
+
 /**
  * setTenantAutopayFromPortal — For tenant portal (no Firebase Auth). Uses email + accessCode to identify tenant.
  */
@@ -49,6 +55,15 @@ export const setTenantAutopayFromPortal = functions.runWith({ secrets: STRIPE_SE
     }
     if (!hasPm) {
       throw new functions.https.HttpsError('failed-precondition', 'Add a payment method first. Use "Add card" to save your card, then turn on autopay.');
+    }
+    // Switched off after a card payment was disputed as fraudulent
+    // (disputeFraudAutopayPause.ts): only staff, having spoken to the
+    // tenant, turn it back on (setTenantAutopay clears this).
+    if (portalAutopayPausedForDispute(tenantData)) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Autopay is paused because of a dispute on a card payment. Contact the facility to turn it back on.',
+      );
     }
     // Arm the card first: if this fails, the tenant must not be shown "ON".
     await setTenantAutopayArming(facilityId, tenantId, true);

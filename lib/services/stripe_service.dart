@@ -749,6 +749,8 @@ class StripeService {
   /// payment for this dispute") goes onto the PaymentIntent and the ledger
   /// row, so the charge nets against that card dispute instead of counting
   /// as rent; the callable checks it is the tenant's open dispute.
+  /// [tenantConsent] is staff's confirmation that the tenant agreed to the
+  /// charge: the callable refuses a dispute charge without it.
   static Map<String, dynamic> chargeTenantOffSessionPayload({
     required String facilityId,
     required String tenantId,
@@ -756,6 +758,7 @@ class StripeService {
     required double amount,
     String? description,
     String? disputeId,
+    bool tenantConsent = false,
   }) =>
       <String, dynamic>{
         'facilityId': facilityId,
@@ -764,6 +767,7 @@ class StripeService {
         'amount': amount,
         'description': description,
         if (disputeId != null && disputeId.isNotEmpty) 'disputeId': disputeId,
+        if (tenantConsent) 'tenantConsent': true,
       };
 
   /// Charge a tenant off-session using a stored payment method on a connected account
@@ -775,6 +779,7 @@ class StripeService {
     required double amount,
     String? description,
     String? disputeId,
+    bool tenantConsent = false,
   }) async {
     try {
       if (kDebugMode) {
@@ -789,6 +794,7 @@ class StripeService {
         amount: amount,
         description: description,
         disputeId: disputeId,
+        tenantConsent: tenantConsent,
       ));
 
       final data = Map<String, dynamic>.from(result.data as Map);

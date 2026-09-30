@@ -6,7 +6,8 @@ import { FakeFirestore } from '@sfc/functions-shared/testing/fakeFirestore';
 // Plain CommonJS outside src/, run by hand against production before deploying.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const check = require('../../scripts/stripe-predeploy-check.cjs') as {
-  runPredeployChecks: (db: admin.firestore.Firestore) => Promise<{
+  REQUIRED_DEPLOY_ORDER: string[];
+  runPredeployChecks: (db: admin.firestore.Firestore, options?: { afterDeploy?: boolean }) => Promise<{
     disputeLedgerRows: Array<Record<string, unknown>>;
     refusedAfterDeploy: Array<Record<string, unknown>>;
     accountsWithNoFacility: Array<Record<string, unknown>>;
@@ -97,5 +98,49 @@ test('an unresolved refusal alone needs a person; a resolved one does not', asyn
   const report = await check.runPredeployChecks(fake.firestore());
 
   assert.deepEqual(report.recordedRefusals.map((r) => r.id), ['acct_x__pi_2']);
+  assert.equal(report.needsAttention, true);
+});
+
+test('the report carries the required deploy order: consumers first, hosting last, the dispute switch after all', async () => {
+  const report = (await check.runPredeployChecks(new FakeFirestore().firestore())) as unknown as {
+    requiredDeployOrder: string[];
+  };
+  const order = report.requiredDeployOrder;
+  const step = (text: string) => order.findIndex((line) => line.includes(text));
+
+  assert.ok(step('functions:automation,functions:tenant-lifecycle,functions:messaging-twilio') === 0);
+  assert.ok(step('functions:integrations') > step('functions:automation'));
+  assert.ok(step('payment_intent.payment_failed') === step('functions:integrations'));
+  assert.ok(step('functions:public-website') > step('functions:integrations'));
+  assert.ok(step('functions:admin') > step('functions:public-website'));
+  assert.ok(step('Hosting') > step('functions:admin'));
+  assert.ok(step('disputeLedgerEnabled = true') > step('Hosting'));
+  assert.deepEqual(check.REQUIRED_DEPLOY_ORDER, order);
+});
+
+test('the dispute ledger switch on before the deploy needs a person; after it, it is expected', async () => {
+  const fake = new FakeFirestore();
+  fake.seed('facilities/f1', { stripeConnectAccountId: 'acct_1' });
+
+  let report = await check.runPredeployChecks(fake.firestore());
+  assert.equal((report as unknown as { disputeLedgerEnabled: boolean }).disputeLedgerEnabled, false);
+  assert.equal(report.needsAttention, false);
+
+  fake.seed('appConfig/payments', { disputeLedgerEnabled: true });
+  report = await check.runPredeployChecks(fake.firestore());
+  assert.equal((report as unknown as { disputeLedgerEnabled: boolean }).disputeLedgerEnabled, true);
+  assert.equal(report.needsAttention, true);
+  assert.equal((await check.runPredeployChecks(fake.firestore(), { afterDeploy: true })).needsAttention, false);
+  assert.deepEqual(fake.writes, []);
+});
+
+test('a dispute held while the switch was off is listed until it posts', async () => {
+  const fake = new FakeFirestore();
+  fake.seed('facilities/f1', { stripeConnectAccountId: 'acct_1' });
+  fake.seed('stripeWebhookRefusals/acct_1__du_1', { reason: 'dispute_ledger_off', facilityId: 'f1', tenantId: 't1', resolved: false });
+
+  const report = await check.runPredeployChecks(fake.firestore(), { afterDeploy: true });
+
+  assert.deepEqual(report.recordedRefusals.map((r) => [r.id, r.reason]), [['acct_1__du_1', 'dispute_ledger_off']]);
   assert.equal(report.needsAttention, true);
 });

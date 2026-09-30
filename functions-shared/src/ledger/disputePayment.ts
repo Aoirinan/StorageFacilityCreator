@@ -24,7 +24,9 @@ import { disputeCredit, DISPUTE_LEDGER_TYPE } from './disputeEntries';
  *
  * The app's "Record payment for this dispute" (lib/widgets/dispute_payment_dialog.dart,
  * with the amount from lib/providers/ledger_provider.dart openDisputeOutstanding)
- * applies the same limit to cash, check and the other methods it records itself.
+ * shows the same limit, and cash, check and the other by-hand methods are
+ * written here too ([recordDisputeHandPayment], through the
+ * recordDisputePaymentByHand callable), so the limit holds on the server.
  */
 
 /** Stripe dispute ids (`du_…`, older `dp_…`); nothing that could leave the ledgers collection. */
@@ -73,6 +75,12 @@ export function disputeOutstanding(
 /** The reason Stripe gives for a dispute where the cardholder says they never made the charge. */
 const FRAUDULENT_DISPUTE_REASON = 'fraudulent';
 
+/** How [checkDisputeWith] reads: directly, or inside a transaction. */
+type DisputeReads = {
+  doc: (ref: admin.firestore.DocumentReference) => Promise<admin.firestore.DocumentSnapshot>;
+  query: (query: admin.firestore.Query) => Promise<admin.firestore.QuerySnapshot>;
+};
+
 /**
  * Whether [raw] (a callable's optional `disputeId`) names a dispute this
  * tenant still owes, and [amount] is no more than it has out. Absent or
@@ -91,6 +99,53 @@ export async function checkDisputeForPayment(
   amount: number,
   options: { cardOnFile?: boolean } = {},
 ): Promise<DisputePaymentCheck> {
+  return checkDisputeWith(
+    { doc: (ref) => ref.get(), query: (query) => query.get() },
+    db,
+    facilityId,
+    tenantId,
+    raw,
+    amount,
+    options,
+  );
+}
+
+/**
+ * [checkDisputeForPayment] with every read inside [tx], so the payment it
+ * clears can be written in the same transaction. Two staff recording the
+ * same dispute by hand at once then cannot both take its full amount: the
+ * second transaction's reads (the tenant's ledger rows) change under it, it
+ * is retried, and it sees the first payment.
+ */
+export async function checkDisputeForPaymentInTransaction(
+  tx: admin.firestore.Transaction,
+  db: admin.firestore.Firestore,
+  facilityId: string,
+  tenantId: string,
+  raw: unknown,
+  amount: number,
+  options: { cardOnFile?: boolean } = {},
+): Promise<DisputePaymentCheck> {
+  return checkDisputeWith(
+    { doc: (ref) => tx.get(ref), query: (query) => tx.get(query) },
+    db,
+    facilityId,
+    tenantId,
+    raw,
+    amount,
+    options,
+  );
+}
+
+async function checkDisputeWith(
+  reads: DisputeReads,
+  db: admin.firestore.Firestore,
+  facilityId: string,
+  tenantId: string,
+  raw: unknown,
+  amount: number,
+  options: { cardOnFile?: boolean },
+): Promise<DisputePaymentCheck> {
   if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')) {
     return { ok: true, disputeId: null };
   }
@@ -99,7 +154,7 @@ export async function checkDisputeForPayment(
     return { ok: false, reason: 'invalid_dispute_id', message: 'That is not a card dispute id.' };
   }
   const ledgers = db.collection('facilities').doc(facilityId).collection('ledgers');
-  const row = await ledgers.doc(disputeLedgerEntryId(disputeId)).get();
+  const row = await reads.doc(ledgers.doc(disputeLedgerEntryId(disputeId)));
   const data = row.exists ? (row.data() as Record<string, unknown>) : null;
   if (!data || data.type !== DISPUTE_LEDGER_TYPE) {
     return { ok: false, reason: 'dispute_not_found', message: 'That card dispute is not on this facility\'s ledger.' };
@@ -122,7 +177,7 @@ export async function checkDisputeForPayment(
         'Take it by cash or check, or send a payment link the tenant pays themselves.',
     };
   }
-  const tenantRows = await ledgers.where('tenantId', '==', tenantId).get();
+  const tenantRows = await reads.query(ledgers.where('tenantId', '==', tenantId));
   const outstanding = disputeOutstanding(
     tenantRows.docs.map((doc) => doc.data()),
     disputeId,
@@ -138,6 +193,178 @@ export async function checkDisputeForPayment(
     };
   }
   return { ok: true, disputeId };
+}
+
+/**
+ * Methods staff can record by hand for a card dispute, with the label the
+ * app shows (PaymentMethod.displayName in lib/models/payment_model.dart,
+ * manualPaymentMethods).
+ */
+export const DISPUTE_HAND_PAYMENT_METHODS: Readonly<Record<string, string>> = {
+  cash: 'Cash',
+  check: 'Check',
+  venmo: 'Venmo',
+  zelle: 'Zelle',
+  bankTransfer: 'Bank Transfer',
+  other: 'Other',
+};
+
+const HAND_PAYMENT_REQUEST_ID = /^[A-Za-z0-9_-]{8,64}$/;
+const MAX_HAND_REFERENCE_LENGTH = 100;
+const MAX_HAND_NOTES_LENGTH = 500;
+
+/**
+ * "Card dispute payment - Cash #1234: note": the ledger line for money taken
+ * by hand for a card dispute. The app's disputePaymentDescription
+ * (lib/models/payment_model.dart) builds the same line.
+ */
+export function disputeHandPaymentDescription(method: string, reference?: string | null, notes?: string | null): string {
+  const label = DISPUTE_HAND_PAYMENT_METHODS[method] ?? method;
+  const ref = (reference ?? '').trim();
+  const note = (notes ?? '').trim();
+  return `Card dispute payment - ${label}${ref ? ` #${ref}` : ''}${note ? `: ${note}` : ''}`;
+}
+
+/** Ids of the three documents one by-hand dispute payment writes. */
+export function disputeHandPaymentDocId(requestId: string): string {
+  return `disputehand_${requestId}`;
+}
+
+export type DisputeHandPaymentResult =
+  | { outcome: 'recorded' | 'already_recorded'; paymentId: string; ledgerEntryId: string }
+  | { outcome: 'refused'; reason: DisputePaymentRefusal | 'invalid_request' | 'tenant_not_found'; message: string };
+
+/**
+ * Records money staff took by hand (cash, check, Venmo, Zelle, bank transfer,
+ * other) for card dispute [disputeId]: the facility payment, the tenant's
+ * Payment History copy and the ledger row (`metadata.disputeId`), all in one
+ * transaction with [checkDisputeForPaymentInTransaction].
+ *
+ * The app used to write these itself, capped only by the dialog, which
+ * reads the ledger it opened with. Two staff (or two tabs) recording the
+ * same dispute each saw its full amount out and both went through: the
+ * tenant was recorded as having paid it twice, and the excess sat as a
+ * credit against rent. Here the cap is checked against the rows as they are
+ * when the payment is written.
+ *
+ * [requestId] is the app's id for one press of "Record payment": a retry
+ * after a timeout, or a double press, finds its own payment and writes
+ * nothing more. Never moves paid-through: the disputed month counted as
+ * paid when the card payment was made, and the dispute never moved it back.
+ */
+export async function recordDisputeHandPayment(params: {
+  db: admin.firestore.Firestore;
+  facilityId: string;
+  tenantId: string;
+  disputeId: unknown;
+  amount: unknown;
+  method: unknown;
+  reference?: unknown;
+  notes?: unknown;
+  requestId: unknown;
+  actorUid: string;
+  now?: Date;
+}): Promise<DisputeHandPaymentResult> {
+  const { db, facilityId, tenantId, actorUid } = params;
+  const refuse = (message: string): DisputeHandPaymentResult => ({ outcome: 'refused', reason: 'invalid_request', message });
+  const requestId = typeof params.requestId === 'string' ? params.requestId : '';
+  if (!HAND_PAYMENT_REQUEST_ID.test(requestId)) return refuse('Missing or invalid request id.');
+  const method = typeof params.method === 'string' ? params.method : '';
+  if (!Object.prototype.hasOwnProperty.call(DISPUTE_HAND_PAYMENT_METHODS, method)) {
+    return refuse('Choose how the money was paid: cash, check, Venmo, Zelle, bank transfer or other.');
+  }
+  const amount = typeof params.amount === 'number' ? cents(params.amount) : NaN;
+  if (!Number.isFinite(amount) || amount < 0.01) return refuse('Enter the amount received.');
+  if (typeof params.disputeId !== 'string' || params.disputeId.trim() === '') {
+    return refuse('A card dispute id is required.');
+  }
+  const reference = typeof params.reference === 'string' ? params.reference.trim() : '';
+  const notes = typeof params.notes === 'string' ? params.notes.trim() : '';
+  if (reference.length > MAX_HAND_REFERENCE_LENGTH) return refuse('The check number or reference is too long.');
+  if (notes.length > MAX_HAND_NOTES_LENGTH) return refuse('The notes are too long.');
+
+  const facilityRef = db.collection('facilities').doc(facilityId);
+  const tenantRef = facilityRef.collection('tenants').doc(tenantId);
+  const docId = disputeHandPaymentDocId(requestId);
+  const ledgerRef = facilityRef.collection('ledgers').doc(docId);
+  const paymentRef = facilityRef.collection('payments').doc(docId);
+  const tenantPaymentRef = tenantRef.collection('payments').doc(docId);
+  const timestamp = admin.firestore.Timestamp.fromDate(params.now ?? new Date());
+
+  return db.runTransaction(async (tx): Promise<DisputeHandPaymentResult> => {
+    const existing = await tx.get(ledgerRef);
+    if (existing.exists) {
+      return { outcome: 'already_recorded', paymentId: paymentRef.id, ledgerEntryId: ledgerRef.id };
+    }
+    const check = await checkDisputeForPaymentInTransaction(tx, db, facilityId, tenantId, params.disputeId, amount);
+    if (!check.ok) return { outcome: 'refused', reason: check.reason, message: check.message };
+    const disputeId = check.disputeId as string;
+    const tenantSnap = await tx.get(tenantRef);
+    if (!tenantSnap.exists) {
+      return { outcome: 'refused', reason: 'tenant_not_found', message: 'Tenant not found.' };
+    }
+    const tenant = (tenantSnap.data() || {}) as Record<string, unknown>;
+    const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+    const description = disputeHandPaymentDescription(method, reference, notes);
+
+    tx.create(paymentRef, {
+      tenantId,
+      facilityId,
+      contractId: text(tenant.contractId),
+      ...(text(tenant.name) ? { tenantName: text(tenant.name) } : {}),
+      ...(text(tenant.unitNumber) ? { unitNumber: text(tenant.unitNumber) } : {}),
+      amount,
+      status: 'completed',
+      method,
+      paidAt: timestamp,
+      paidDate: timestamp,
+      dueDate: timestamp,
+      ...(notes ? { notes } : {}),
+      ...(reference ? { reference } : {}),
+      disputeId,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      createdBy: actorUid,
+      isActive: true,
+    });
+    tx.create(tenantPaymentRef, {
+      facilityId,
+      tenantId,
+      type: 'manual',
+      amountCents: Math.round(amount * 100),
+      currency: 'usd',
+      chargeType: `manual_${method}`,
+      status: 'succeeded',
+      description,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      createdBy: actorUid,
+      failureCode: null,
+      failureMessage: null,
+      facilityPaymentId: paymentRef.id,
+    });
+    tx.create(ledgerRef, {
+      tenantId,
+      facilityId,
+      type: 'payment',
+      amount: -amount,
+      description,
+      referenceId: paymentRef.id,
+      entryDate: timestamp,
+      status: 'posted',
+      createdAt: timestamp,
+      createdBy: actorUid,
+      // Nets the payment against the dispute (disputeEntries.ts) instead of
+      // counting it as rent.
+      metadata: {
+        paymentMethod: method,
+        paymentId: paymentRef.id,
+        ...(reference ? { reference } : {}),
+        disputeId,
+      },
+    });
+    return { outcome: 'recorded', paymentId: paymentRef.id, ledgerEntryId: ledgerRef.id };
+  });
 }
 
 /** Notifications/{id} for a dispute the tenant has paid twice. */

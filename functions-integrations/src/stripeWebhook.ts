@@ -29,13 +29,21 @@ import {
   handleSubscriptionUpdate,
 } from './stripeWebhookSubscriptionHandlers';
 
+/**
+ * What dispatching one event did. `held`: a card dispute event the handler
+ * did not post because `appConfig/payments.disputeLedgerEnabled` is off
+ * (disputeLedgerGate.ts). The webhook does not mark a held event processed,
+ * so resending it from the Stripe Dashboard once the switch is on posts it.
+ */
+export type StripeWebhookDispatchOutcome = { held: boolean };
+
 /** Exported for tests; the deployed entry point is `stripeWebhook` below. */
-export async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<void> {
+export async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<StripeWebhookDispatchOutcome> {
   // A connected account's test-mode event is not real money; in production it
   // must not reach a handler at all (see connectedAccountGuard.ts).
   const envelope = event as { id?: string; type?: string; account?: string; livemode?: boolean };
-  if (refuseTestModeConnectedEvent(envelope)) return;
-  if (refusePlatformOnlyEventFromConnectedAccount(envelope)) return;
+  if (refuseTestModeConnectedEvent(envelope)) return { held: false };
+  if (refusePlatformOnlyEventFromConnectedAccount(envelope)) return { held: false };
   switch (event.type) {
     case 'checkout.session.completed': {
       const session = event.data.object as Stripe.Checkout.Session;
@@ -98,8 +106,7 @@ export async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<v
       // Tenant charges live on the connected account, so the handler needs it.
       const dispute = event.data.object as Stripe.Dispute;
       const connectedAccountId = (event as any).account as string | undefined;
-      await handleDisputeCreated(dispute, connectedAccountId, event.type, event.created, event.id);
-      break;
+      return handleDisputeCreated(dispute, connectedAccountId, event.type, event.created, event.id);
     }
     case 'payment_intent.payment_failed': {
       const paymentIntent = event.data.object as Stripe.PaymentIntent;
@@ -126,6 +133,7 @@ export async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<v
     default:
       functions.logger.info(`Unhandled event type: ${event.type}`);
   }
+  return { held: false };
 }
 
 /**
@@ -193,7 +201,13 @@ export const stripeWebhook = functions.runWith({ secrets: STRIPE_WEBHOOK_SECRETS
       return;
     }
 
-    await dispatchStripeWebhookEvent(event);
+    const outcome = await dispatchStripeWebhookEvent(event);
+    if (outcome.held) {
+      // Acknowledged, so Stripe does not retry it for days, but not marked
+      // processed: a resend after the dispute ledger is switched on posts it.
+      res.json({ received: true, held: true });
+      return;
+    }
 
     const account = (event as any).account || null;
     let facilityId: string | undefined;

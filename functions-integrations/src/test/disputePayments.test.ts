@@ -80,7 +80,7 @@ test('charging the card on file for a dispute books it against the dispute, and 
   const created = stripeCharges();
 
   const result = await charge(
-    { facilityId: 'f1', tenantId: 't1', paymentMethodId: 'pm_1', amount: 100, description: 'Card dispute', disputeId: 'du_1' },
+    { facilityId: 'f1', tenantId: 't1', paymentMethodId: 'pm_1', amount: 100, description: 'Card dispute', disputeId: 'du_1', tenantConsent: true },
     staff,
   );
 
@@ -115,7 +115,7 @@ test('a card charge naming a dispute that is not this tenant\'s open one, or for
 
   for (const [tenantId, disputeId, amount] of [['t2', 'du_1', 100], ['t1', 'du_other', 100], ['t1', 'du_1', 150]] as const) {
     await assert.rejects(
-      charge({ facilityId: 'f1', tenantId, paymentMethodId: 'pm_1', amount, disputeId }, staff),
+      charge({ facilityId: 'f1', tenantId, paymentMethodId: 'pm_1', amount, disputeId, tenantConsent: true }, staff),
       (error: unknown) => (error as { code?: string }).code === 'failed-precondition',
     );
   }
@@ -145,7 +145,7 @@ test('refunding a dispute payment reopens the dispute and leaves rent alone', as
   const { fake, stripe } = lostDispute();
   const created = stripeCharges();
   await charge(
-    { facilityId: 'f1', tenantId: 't1', paymentMethodId: 'pm_1', amount: 100, disputeId: 'du_1' },
+    { facilityId: 'f1', tenantId: 't1', paymentMethodId: 'pm_1', amount: 100, disputeId: 'du_1', tenantConsent: true },
     staff,
   );
   // The PaymentIntent as Stripe keeps it, dispute id and all.
@@ -179,7 +179,7 @@ test('a card refund of a dispute payment made from the app is tagged too', async
   const { fake, stripe } = lostDispute();
   const created = stripeCharges();
   await charge(
-    { facilityId: 'f1', tenantId: 't1', paymentMethodId: 'pm_1', amount: 100, disputeId: 'du_1' },
+    { facilityId: 'f1', tenantId: 't1', paymentMethodId: 'pm_1', amount: 100, disputeId: 'du_1', tenantConsent: true },
     staff,
   );
   stripe.put(ACCOUNT, 'pi_hand_1', {
@@ -215,7 +215,7 @@ test('a fraud dispute is never charged to the card on file, and nothing is charg
   const created = stripeCharges();
 
   await assert.rejects(
-    charge({ facilityId: 'f1', tenantId: 't1', paymentMethodId: 'pm_1', amount: 100, disputeId: 'du_1' }, staff),
+    charge({ facilityId: 'f1', tenantId: 't1', paymentMethodId: 'pm_1', amount: 100, disputeId: 'du_1', tenantConsent: true }, staff),
     (error: unknown) =>
       (error as { code?: string }).code === 'failed-precondition' &&
       /did not make this charge/.test(String((error as Error).message)),
@@ -223,4 +223,52 @@ test('a fraud dispute is never charged to the card on file, and nothing is charg
   // Before: charged. The cardholder had told their bank the first charge was not theirs.
   assert.deepEqual(created, []);
   assert.deepEqual(split(fake), { total: 200, disputed: 100, collectible: 100 });
+});
+
+test('a dispute charged to the card on file without the tenant\'s consent confirmed is refused before anything is charged', async () => {
+  const { fake } = lostDispute();
+  const created = stripeCharges();
+
+  for (const tenantConsent of [undefined, false, 'true', 1]) {
+    await assert.rejects(
+      charge({ facilityId: 'f1', tenantId: 't1', paymentMethodId: 'pm_1', amount: 100, disputeId: 'du_1', tenantConsent }, staff),
+      (error: unknown) =>
+        (error as { code?: string }).code === 'failed-precondition' &&
+        /Confirm the tenant agreed/.test(String((error as Error).message)),
+    );
+  }
+  // Before: only the app's checkbox stood between staff and the charge.
+  assert.equal(created.length, 0);
+  assert.deepEqual(split(fake), { total: 200, disputed: 100, collectible: 100 });
+  // An ordinary charge is not a dispute charge and needs no confirmation.
+  await charge({ facilityId: 'f1', tenantId: 't1', paymentMethodId: 'pm_1', amount: 100 }, staff);
+  assert.equal(created.length, 1);
+  assert.equal('tenantConsent' in (created[0].params.metadata ?? {}), false);
+});
+
+test('the tenant\'s consent to a dispute card charge is kept on the PaymentIntent and in the audit log', async () => {
+  const { fake } = lostDispute();
+  const created = stripeCharges();
+
+  await charge(
+    { facilityId: 'f1', tenantId: 't1', paymentMethodId: 'pm_1', amount: 100, disputeId: 'du_1', tenantConsent: true },
+    staff,
+  );
+
+  const metadata = created[0].params.metadata as Record<string, string>;
+  assert.equal(metadata.tenantConsent, 'confirmed_by_staff');
+  assert.equal(metadata.tenantConsentBy, OWNER);
+  assert.ok(!Number.isNaN(Date.parse(metadata.tenantConsentAt)));
+  const audits = fake
+    .list('facilities/f1/auditLogs')
+    .map((id) => fake.read(`facilities/f1/auditLogs/${id}`)!)
+    .filter((row) => row.eventType === 'payment.dispute_card_charge');
+  assert.equal(audits.length, 1);
+  assert.equal(audits[0].actorUid, OWNER);
+  assert.equal(audits[0].tenantId, 't1');
+  assert.equal(audits[0].targetId, 'pi_hand_1');
+  const auditMetadata = audits[0].metadata as Record<string, unknown>;
+  assert.equal(auditMetadata.disputeId, 'du_1');
+  assert.equal(auditMetadata.tenantConsent, 'confirmed_by_staff');
+  assert.equal(auditMetadata.tenantConsentBy, OWNER);
 });

@@ -34,6 +34,9 @@ export const PURGE_ROOT_COLLECTIONS = [
   'commission_payout_periods',
   'superAdminNotes',
   'stripeWebhookEvents',
+  // Online move-in payments: tenant ids, amounts, and refunds or disputes
+  // recorded on ones that never completed a move-in.
+  'publicMoveInPayments',
   'quickbooks_oauth_states',
 ] as const;
 

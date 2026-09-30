@@ -163,9 +163,31 @@ DateTime? _paidThrough(FakeStore store) =>
 
 void main() {
   group("with the app's own payment and ledger services", () {
-    testWidgets('cash for a lost dispute, taken from its row, is booked against it and buys no month',
+    testWidgets('cash for a lost dispute, taken from its row, is recorded by the server against it and buys no month',
         (tester) async {
       final store = _useStore();
+      final sent = <Map<String, dynamic>>[];
+      PaymentService.disputeHandPaymentCallerForTesting = (payload) async {
+        sent.add(payload);
+        // What recordDisputePaymentByHand writes (functions-shared
+        // recordDisputeHandPayment), so the ledger below shows it.
+        store.put('facilities/f1/ledgers/disputehand_${payload['requestId']}', {
+          'tenantId': 't1',
+          'facilityId': 'f1',
+          'type': 'payment',
+          'amount': -(payload['amount'] as num),
+          'description': disputePaymentDescription(PaymentMethod.cash, reference: payload['reference'] as String?),
+          'status': 'posted',
+          'metadata': {
+            'paymentMethod': payload['method'],
+            'paymentId': 'disputehand_${payload['requestId']}',
+            'reference': payload['reference'],
+            'disputeId': payload['disputeId'],
+          },
+        });
+        return {'success': true, 'outcome': 'recorded', 'paymentId': 'disputehand_${payload['requestId']}'};
+      };
+      addTearDown(() => PaymentService.disputeHandPaymentCallerForTesting = null);
       tester.view.physicalSize = const Size(1200, 2400);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
@@ -188,16 +210,23 @@ void main() {
       await tester.tap(find.widgetWithText(ElevatedButton, 'Record payment'));
       await tester.pumpAndSettle();
 
+      // The server records it, and checks the amount as it writes: the app
+      // no longer writes a dispute payment itself.
+      expect(sent, hasLength(1));
+      expect(sent.single['disputeId'], 'du_1');
+      expect(sent.single['amount'], 100);
+      expect(sent.single['method'], 'cash');
+      expect(sent.single['reference'], '0042');
+      expect(sent.single['requestId'], matches(RegExp(r'^[A-Za-z0-9]{24}$')));
+      expect(store.idsIn('facilities/f1/payments'), isEmpty);
+      expect(store.idsIn('facilities/f1/tenants/t1/payments'), isEmpty);
       final rows = _ledgerRows(store);
       expect(rows, hasLength(1));
       expect(rows.single['amount'], -100);
-      expect(rows.single['type'], 'payment');
       expect(rows.single['description'], 'Card dispute payment - ${PaymentMethod.cash.displayName} #0042');
       expect((rows.single['metadata'] as Map)['disputeId'], 'du_1');
-      expect((rows.single['metadata'] as Map)['reference'], '0042');
       // Before: an untagged payment that bought April as well.
       expect(_paidThrough(store), DateTime(2026, 3, 31));
-      expect(store.idsIn('facilities/f1/payments'), hasLength(1));
 
       // The row the store now holds, back on the ledger: the dispute is
       // settled and April's $100 is what is owed and collectible.
@@ -393,7 +422,67 @@ void main() {
       await tester.pumpAndSettle();
       expect(results.single?.way, DisputePaymentWay.cardOnFile);
       expect(results.single?.amount, 100);
+      // The confirmation goes to the server, which refuses the charge without it.
+      expect(results.single?.tenantConsent, isTrue);
     });
+
+    testWidgets('money taken by hand carries no card consent', (tester) async {
+      final results = await open(tester, reason: 'product_not_received');
+
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Record payment'));
+      await tester.pumpAndSettle();
+
+      expect(results.single?.way, DisputePaymentWay.byHand);
+      expect(results.single?.tenantConsent, isFalse);
+    });
+  });
+
+  test('a dispute payment by hand goes to the server with a request id, and the app writes nothing', () async {
+    final store = _useStore();
+    final sent = <Map<String, dynamic>>[];
+    PaymentService.disputeHandPaymentCallerForTesting = (payload) async {
+      sent.add(payload);
+      return {'success': true, 'outcome': 'recorded', 'paymentId': 'disputehand_x'};
+    };
+    addTearDown(() => PaymentService.disputeHandPaymentCallerForTesting = null);
+
+    final id = await PaymentService.recordManualPayment(
+      facilityId: 'f1',
+      tenantId: 't1',
+      amount: 60,
+      method: PaymentMethod.zelle,
+      reference: ' zr-9 ',
+      notes: ' paid by phone ',
+      disputeId: ' du_1 ',
+    );
+
+    expect(id, 'disputehand_x');
+    expect(sent.single, {
+      'facilityId': 'f1',
+      'tenantId': 't1',
+      'disputeId': 'du_1',
+      'amount': 60.0,
+      'method': 'zelle',
+      'requestId': sent.single['requestId'],
+      'reference': 'zr-9',
+      'notes': 'paid by phone',
+    });
+    expect(sent.single['requestId'], matches(RegExp(r'^[A-Za-z0-9]{24}$')));
+    expect(_ledgerRows(store), isEmpty);
+    expect(store.idsIn('facilities/f1/payments'), isEmpty);
+    // A refusal (more than the dispute has out) reaches the caller.
+    PaymentService.disputeHandPaymentCallerForTesting = (_) async => throw Exception('That card dispute has \$40.00 left to collect.');
+    await expectLater(
+      PaymentService.recordManualPayment(
+        facilityId: 'f1',
+        tenantId: 't1',
+        amount: 60,
+        method: PaymentMethod.cash,
+        disputeId: 'du_1',
+      ),
+      throwsA(isA<Exception>()),
+    );
+    expect(_ledgerRows(store), isEmpty);
   });
 
   test('a dispute payment by hand is tagged with the dispute and reads as a dispute row', () {
@@ -431,6 +520,19 @@ void main() {
       disputeId: 'du_1',
     );
     expect(charge['disputeId'], 'du_1');
+    // No consent confirmed: none sent, and the server refuses the charge.
+    expect(charge.containsKey('tenantConsent'), isFalse);
+    expect(
+      StripeService.chargeTenantOffSessionPayload(
+        facilityId: 'f1',
+        tenantId: 't1',
+        paymentMethodId: 'pm_1',
+        amount: 100,
+        disputeId: 'du_1',
+        tenantConsent: true,
+      )['tenantConsent'],
+      isTrue,
+    );
     final link = PublicPaymentLinkService.createPaymentLinkPayload(
       facilityId: 'f1',
       tenantId: 't1',

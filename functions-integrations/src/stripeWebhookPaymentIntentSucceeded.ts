@@ -6,6 +6,17 @@ import { isAlreadyExistsError } from './firestoreErrors';
 import { eventAccountMatchesFacility } from './connectedAccountGuard';
 
 /**
+ * Payment statuses a success may set to completed: not yet paid, or a
+ * failure the PaymentIntent has since recovered from. A payment already
+ * completed, refunded, part-refunded or disputed is left as it is.
+ */
+const SUCCESS_MAY_OVERWRITE = new Set<unknown>([undefined, null, 'pending', 'processing', 'requires_payment_method', 'failed']);
+
+export function successMayOverwrite(status: unknown): boolean {
+  return SUCCESS_MAY_OVERWRITE.has(status);
+}
+
+/**
  * Handle successful payment intent (for tenant payments via Stripe Connect / embedded).
  *
  * This is the one place a public payment-link payment is recorded: the link's
@@ -82,49 +93,48 @@ export async function handlePaymentIntentSucceeded(
       );
     }
 
-    // Update facility-level payment record (for ledger/reconciliation)
+    // Update facility-level payment record (for ledger/reconciliation).
+    //
+    // One transaction over the record already carrying this PaymentIntent
+    // (externalPaymentId) and `stripe_{pi}`, the id this handler and the
+    // failure handler both create: two deliveries, or a success racing its
+    // own failure event, converge on one record. A record that is already
+    // paid, refunded or disputed keeps its status: a resent success set a
+    // refunded payment back to completed. One the failure handler wrote is
+    // upgraded, as a PaymentIntent that failed and was then retried did go
+    // through.
     const paymentsRef = admin.firestore().collection('facilities').doc(facilityId).collection('payments');
-
-    const existingPayments = await paymentsRef.where('externalPaymentId', '==', paymentIntent.id).limit(1).get();
-    const markCompleted = () => {
+    const byPaymentIntent = paymentsRef.where('externalPaymentId', '==', paymentIntent.id).limit(1);
+    const deterministicRef = paymentsRef.doc(`stripe_${paymentIntent.id}`);
+    const paymentRecordId = await admin.firestore().runTransaction(async (tx) => {
+      const existing = await tx.get(byPaymentIntent);
+      const deterministic = await tx.get(deterministicRef);
+      const current = existing.empty ? deterministic : existing.docs[0];
       const now = admin.firestore.FieldValue.serverTimestamp();
-      return { status: 'completed', paidAt: now, paidDate: now, updatedAt: now };
-    };
-
-    let paymentRecordId: string;
-    if (!existingPayments.empty) {
-      paymentRecordId = existingPayments.docs[0].id;
-      await existingPayments.docs[0].ref.update(markCompleted());
-    } else {
-      // Create new payment record (embedded or Connect). Deterministic id and
-      // create(): two deliveries of this event racing past the query above
-      // (the processed-event check is not atomic) converge on one record
-      // instead of each adding one.
-      const paymentRef = paymentsRef.doc(`stripe_${paymentIntent.id}`);
-      paymentRecordId = paymentRef.id;
-      const now = admin.firestore.FieldValue.serverTimestamp();
-      try {
-        await paymentRef.create({
-          tenantId: tenantId,
-          facilityId: facilityId,
-          contractId: paymentIntent.metadata?.contractId || '',
-          amount: paymentIntent.amount / 100, // Convert from cents
-          status: 'completed',
-          method: 'stripe',
-          externalPaymentId: paymentIntent.id,
-          transactionId: paymentIntent.id,
-          paidAt: now,
-          paidDate: now,
-          createdAt: now,
-          updatedAt: now,
-          createdBy: 'system@stripe-webhook',
-          isActive: true,
-        });
-      } catch (error) {
-        if (!isAlreadyExistsError(error)) throw error;
-        await paymentRef.update(markCompleted());
+      if (current.exists) {
+        if (successMayOverwrite(current.get('status'))) {
+          tx.update(current.ref, { status: 'completed', paidAt: now, paidDate: now, updatedAt: now });
+        }
+        return current.ref.id;
       }
-    }
+      tx.create(deterministicRef, {
+        tenantId: tenantId,
+        facilityId: facilityId,
+        contractId: paymentIntent.metadata?.contractId || '',
+        amount: paymentIntent.amount / 100, // Convert from cents
+        status: 'completed',
+        method: 'stripe',
+        externalPaymentId: paymentIntent.id,
+        transactionId: paymentIntent.id,
+        paidAt: now,
+        paidDate: now,
+        createdAt: now,
+        updatedAt: now,
+        createdBy: 'system@stripe-webhook',
+        isActive: true,
+      });
+      return deterministicRef.id;
+    });
 
     // If invoiceId provided, mark invoice as paid
     if (invoiceId) {

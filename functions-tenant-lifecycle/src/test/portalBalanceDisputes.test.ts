@@ -82,11 +82,11 @@ test('a tenant whose only open record is a disputed payment is not shown owing o
   assert.equal(result.units[0].isDelinquent, false);
 });
 
-test('only records still owed count: no status, pending and failed', async () => {
+test('only records still owed count: no status and pending', async () => {
   const { fetch } = setup([
     ['no_status', { amount: 10 }],
     ['pending', { amount: 20, status: 'pending' }],
-    ['failed', { amount: 40, status: 'failed' }],
+    ['failed', { amount: 1000, status: 'failed' }],
     ['paid', { amount: 1000, status: 'paid' }],
     ['completed', { amount: 1000, status: 'completed' }],
     ['refunded', { amount: 1000, status: 'refunded' }],
@@ -97,5 +97,20 @@ test('only records still owed count: no status, pending and failed', async () =>
 
   const result = await fetch();
 
-  assert.equal(result.stats.outstandingBalance, 70);
+  assert.equal(result.stats.outstandingBalance, 30);
+});
+
+test('an autopay decline followed by a successful retry leaves nothing owed and no Pay now', async () => {
+  // What the Stripe webhook writes: one record per PaymentIntent.
+  const { fetch } = setup([
+    ['stripe_pi_declined', { amount: 100, status: 'failed', method: 'stripe', externalPaymentId: 'pi_declined' }],
+    ['stripe_pi_retry', { amount: 100, status: 'completed', method: 'stripe', externalPaymentId: 'pi_retry' }],
+  ]);
+
+  const result = await fetch();
+
+  // It was $100: Pay now asked for rent the retry had already paid.
+  assert.equal(result.stats.outstandingBalance, 0);
+  assert.equal(result.stats.nextAmountDue, null);
+  assert.equal(result.units[0].isDelinquent, false);
 });

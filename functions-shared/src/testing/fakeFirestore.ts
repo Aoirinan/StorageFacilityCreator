@@ -376,8 +376,8 @@ export class FakeFirestore {
       orderBy(): Query {
         return this;
       }
-      async get(): Promise<{ empty: boolean; size: number; docs: DocSnapshot[] }> {
-        await fake.tick();
+      /** Paths of the documents this query matches right now. */
+      matchingPaths(): string[] {
         let paths = this.group
           ? fake.listGroup(this.path)
           : fake.list(this.path).map((id) => `${this.path}/${id}`);
@@ -386,8 +386,15 @@ export class FakeFirestore {
           return this.filters.every((filter) => matchesFilter(data, filter));
         });
         if (this.max !== null) paths = paths.slice(0, this.max);
+        return paths;
+      }
+      snapshot(paths: string[]): { empty: boolean; size: number; docs: DocSnapshot[] } {
         const docs = paths.map((path) => new DocSnapshot(new DocRef(path), fake.read(path)));
         return { empty: docs.length === 0, size: docs.length, docs };
+      }
+      async get(): Promise<{ empty: boolean; size: number; docs: DocSnapshot[] }> {
+        await fake.tick();
+        return this.snapshot(this.matchingPaths());
       }
     }
 
@@ -410,14 +417,40 @@ export class FakeFirestore {
 
     class Transaction {
       readonly reads = new Map<string, number>();
+      /**
+       * Queries read in this transaction, with the paths they matched. Like
+       * Firestore's serializable transactions, a document that starts or
+       * stops matching before the commit (not only a change to one it
+       * returned) is a conflict, and the transaction is retried.
+       */
+      readonly queryReads: Array<{ query: Query; paths: string[] }> = [];
       readonly pending: PendingWrite[] = [];
-      async get(ref: DocRef): Promise<DocSnapshot> {
+      get(ref: DocRef): Promise<DocSnapshot>;
+      get(query: Query): Promise<{ empty: boolean; size: number; docs: DocSnapshot[] }>;
+      async get(target: DocRef | Query): Promise<unknown> {
         if (this.pending.length > 0) {
           throw new Error('Firestore transactions require all reads to be executed before all writes.');
         }
         await fake.tick();
+        if (target instanceof Query) {
+          const paths = target.matchingPaths();
+          for (const path of paths) {
+            if (!this.reads.has(path)) this.reads.set(path, fake.version(path));
+          }
+          this.queryReads.push({ query: target, paths });
+          return target.snapshot(paths);
+        }
+        const ref = target;
         if (!this.reads.has(ref.path)) this.reads.set(ref.path, fake.version(ref.path));
         return new DocSnapshot(ref, fake.read(ref.path));
+      }
+      /** Whether anything this transaction read has changed since. */
+      conflicted(): boolean {
+        if ([...this.reads.entries()].some(([path, version]) => fake.version(path) !== version)) return true;
+        return this.queryReads.some(({ query, paths }) => {
+          const now = query.matchingPaths();
+          return now.length !== paths.length || now.some((path, i) => path !== paths[i]);
+        });
       }
       set(ref: DocRef, data: DocData, options?: { merge?: boolean }): Transaction {
         this.pending.push({ op: 'set', path: ref.path, data, merge: !!options?.merge });
@@ -473,8 +506,7 @@ export class FakeFirestore {
           const result = await fn(tx);
           if (fake.beforeCommit) await fake.beforeCommit(attempt);
           await fake.tick();
-          const conflicted = [...tx.reads.entries()].some(([path, version]) => fake.version(path) !== version);
-          if (conflicted) {
+          if (tx.conflicted()) {
             fake.transactionConflicts++;
             continue;
           }

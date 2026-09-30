@@ -89,9 +89,13 @@ void main() {
   // Process is refused by an allowlist, so a status added later is refused
   // until someone decides it may be processed.
   test('Process is allowed only for a payment still owed', () {
-    for (final status in [null, 'pending', 'failed']) {
+    for (final status in [null, 'pending']) {
       expect(paymentNotProcessableReason(status), isNull, reason: '$status');
     }
+    // A failed card attempt took no money: processing it moved paidThrough
+    // with nothing received, even after autopay's retry had paid that rent.
+    expect(paymentNotProcessableReason('failed'), contains('took no money'));
+    expect(paymentNotProcessableReason('failed'), contains('Record payment'));
     for (final status in [
       'paid',
       'completed',

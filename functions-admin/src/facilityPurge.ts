@@ -131,6 +131,10 @@ export const FACILITY_KEYED_COLLECTIONS = [
   // The webhook's processed-event marks name the facility and tenant too.
   // Platform purge already wipes them; a facility or account delete left them.
   'stripeWebhookEvents',
+  // One per online move-in payment: the tenant it moved in and the amount,
+  // and, for one refunded or disputed before the move-in completed, the
+  // refund or dispute the Stripe webhook recorded there.
+  'publicMoveInPayments',
 ] as const;
 
 /** Deletes every row of [FACILITY_KEYED_COLLECTIONS] whose facilityId is [facilityId]. */

@@ -14,6 +14,11 @@ type Report = { paymentLinks: Array<Record<string, unknown>> };
 type SessionsApi = {
   retrieve(id: string, params: unknown, options: { stripeAccount?: string }): Promise<unknown>;
   expire(id: string, params: unknown, options: { stripeAccount?: string }): Promise<unknown>;
+  list?(params: Record<string, unknown>, options: { stripeAccount?: string }): Promise<unknown>;
+};
+type FakeStripeApi = {
+  checkout: { sessions: SessionsApi };
+  paymentIntents?: { search(params: Record<string, unknown>, options: { stripeAccount?: string }): Promise<unknown> };
 };
 
 // The ops script is plain CommonJS outside src/; load it the way `npm run security:cleanup` does.
@@ -27,7 +32,7 @@ const cleanup = require('../../scripts/security-hardening-cleanup.cjs') as {
   ) => Record<string, unknown>;
   rotatePendingPaymentLinks: (deps: {
     db: admin.firestore.Firestore;
-    stripe: { checkout: { sessions: SessionsApi } } | null;
+    stripe: FakeStripeApi | null;
     apply: boolean;
     report: Report;
     fieldValue: unknown;
@@ -49,6 +54,13 @@ test('deleting one facility deletes its link exceptions, Stripe refusals and pro
   assert.ok(keyed.includes(PUBLIC_PAYMENT_LINK_EXCEPTIONS_COLLECTION));
   assert.ok(keyed.includes(STRIPE_WEBHOOK_REFUSALS_COLLECTION));
   assert.ok(keyed.includes('stripeWebhookEvents'));
+});
+
+test('online move-in payment records go with their facility, and with a platform purge', () => {
+  // Tenant ids and amounts, and refunds or disputes the webhook recorded on
+  // a move-in payment that never completed a move-in.
+  assert.ok((FACILITY_KEYED_COLLECTIONS as readonly string[]).includes('publicMoveInPayments'));
+  assert.ok((PURGE_ROOT_COLLECTIONS as readonly string[]).includes('publicMoveInPayments'));
 });
 
 test('a rotated payment link keeps the link but not the old token\'s checkout session', () => {
@@ -133,7 +145,7 @@ function setupLinks(link: Record<string, unknown>) {
   return fake;
 }
 
-async function rotate(fake: FakeFirestore, stripe: { checkout: { sessions: SessionsApi } } | null, apply: boolean) {
+async function rotate(fake: FakeFirestore, stripe: FakeStripeApi | null, apply: boolean) {
   const report: Report = { paymentLinks: [] };
   await cleanup.rotatePendingPaymentLinks({
     db: fake.firestore(),
@@ -220,14 +232,246 @@ test('a link is left alone when its sessions cannot be checked or expired', asyn
   assert.deepEqual(fake.writes, []);
 });
 
-test('a link that never started a checkout is rotated, with or without Stripe', async () => {
+// --- legacy links with no recorded session ----------------------------------
+
+type ListedSession = {
+  id: string;
+  status: string;
+  payment_status: string;
+  metadata?: Record<string, string>;
+  payment_intent?: string | null;
+  amount_total?: number;
+  currency?: string;
+};
+type SearchablePaymentIntent = { id: string; status: string; amount: number; currency: string; metadata: Record<string, string> };
+
+/**
+ * Stripe for a link that recorded no session: [listed] sessions and
+ * [searchable] PaymentIntents per account, found only by listing and by
+ * metadata search, as the real API allows. [failSearch] makes the search fail.
+ */
+function tokenSearchStripe(
+  listed: Record<string, ListedSession[]>,
+  searchable: Record<string, SearchablePaymentIntent[]> = {},
+  { failSearch, pageSize = 100 }: { failSearch?: Error; pageSize?: number } = {},
+) {
+  const calls: Array<[string, string | undefined, Record<string, unknown>?]> = [];
+  const byId = new Map<string, ListedSession & { account: string }>();
+  for (const [account, sessions] of Object.entries(listed)) for (const s of sessions) byId.set(s.id, { ...s, account });
+  const stripe: FakeStripeApi = {
+    checkout: {
+      sessions: {
+        async retrieve(id, _params, options) {
+          calls.push(['retrieve', options.stripeAccount]);
+          const found = byId.get(id);
+          if (!found || found.account !== options.stripeAccount) {
+            throw Object.assign(new Error(`No such checkout.session: '${id}'`), { code: 'resource_missing', statusCode: 404 });
+          }
+          return found;
+        },
+        async expire(id, _params, options) {
+          calls.push(['expire', options.stripeAccount, { id }]);
+          const found = byId.get(id);
+          if (found) found.status = 'expired';
+          return { id, status: 'expired' };
+        },
+        async list(params, options) {
+          calls.push(['list', options.stripeAccount, params]);
+          if (failSearch) throw failSearch;
+          const all = listed[options.stripeAccount ?? ''] ?? [];
+          const after = params.starting_after ? all.findIndex((s) => s.id === params.starting_after) + 1 : 0;
+          const data = all.slice(after, after + pageSize);
+          return { data, has_more: after + pageSize < all.length };
+        },
+      },
+    },
+    paymentIntents: {
+      async search(params, options) {
+        calls.push(['search', options.stripeAccount, params]);
+        if (failSearch) throw failSearch;
+        const token = /paymentLinkToken'\]:'(.*)'$/.exec(String(params.query))?.[1];
+        return { data: (searchable[options.stripeAccount ?? ''] ?? []).filter((pi) => pi.metadata.paymentLinkToken === token) };
+      },
+    },
+  };
+  return { stripe, calls };
+}
+
+const legacySession = (id: string, overrides: Partial<ListedSession> = {}): ListedSession => ({
+  id,
+  status: 'complete',
+  payment_status: 'paid',
+  metadata: { type: 'public_payment_link', paymentLinkToken: 'legacy-token', facilityId: 'f1', tenantId: 't1' },
+  payment_intent: `pi_for_${id}`,
+  amount_total: 8000,
+  currency: 'usd',
+  ...overrides,
+});
+
+test('a legacy link with no recorded session is not rotated without asking Stripe', async () => {
   const fake = setupLinks({});
 
   const links = await rotate(fake, null, true);
 
+  // Before: rotated, so a link paid but never marked became a fresh Pay Now.
+  assert.equal(links[0].action, 'skipped');
+  assert.equal(links[0].reason, 'stripe_not_checked');
+  assert.deepEqual(fake.writes, []);
+});
+
+test('a legacy link Stripe shows was paid is marked paid, not rotated, and staff are asked to check the ledger', async () => {
+  const fake = setupLinks({});
+  const { stripe } = tokenSearchStripe({
+    [ACCOUNT]: [
+      legacySession('cs_other', { metadata: { paymentLinkToken: 'another-token' } }),
+      legacySession('cs_paid'),
+    ],
+  });
+
+  const links = await rotate(fake, stripe, true);
+
+  assert.equal(links[0].action, 'marked_paid');
+  assert.equal(links[0].checkoutSessionId, 'cs_paid');
+  const link = fake.read('publicPaymentLinks/legacy-token')!;
+  assert.equal(link.status, 'paid');
+  assert.equal(link.paymentIntentId, 'pi_for_cs_paid');
+  assert.equal(link.paidVia, 'security_cleanup');
+  assert.equal(link.needsLedgerCheck, true);
+  assert.equal(fake.read(`publicPaymentLinks/${NEW_TOKEN}`), undefined);
+  const exception = fake.read('publicPaymentLinkExceptions/cs_paid')!;
+  assert.equal(exception.reason, 'untracked_session');
+  assert.equal(exception.amountCents, 8000);
+  const notice = fake.read('facilities/f1/Notifications/publicLinkException_cs_paid')!;
+  assert.match(String(notice.message), /Check the tenant ledger shows it/);
+});
+
+test('a dry run reports a paid legacy link as would_mark_paid and writes nothing', async () => {
+  const fake = setupLinks({});
+  const { stripe, calls } = tokenSearchStripe({ [ACCOUNT]: [legacySession('cs_paid')] });
+
+  const links = await rotate(fake, stripe, false);
+
+  assert.equal(links[0].action, 'would_mark_paid');
+  assert.deepEqual(fake.writes, []);
+  assert.equal(calls.some(([op]) => op === 'expire'), false);
+});
+
+test('a legacy link paid through a PaymentIntent the session listing missed is marked paid', async () => {
+  const fake = setupLinks({});
+  const { stripe } = tokenSearchStripe(
+    { [ACCOUNT]: [] },
+    { [ACCOUNT]: [{ id: 'pi_found', status: 'succeeded', amount: 8000, currency: 'usd', metadata: { paymentLinkToken: 'legacy-token' } }] },
+  );
+
+  const links = await rotate(fake, stripe, true);
+
+  assert.equal(links[0].action, 'marked_paid');
+  assert.equal(fake.read('publicPaymentLinks/legacy-token')!.paymentIntentId, 'pi_found');
+  assert.ok(fake.read('publicPaymentLinkExceptions/pi_found'));
+});
+
+test('a legacy link paid on the facility\'s previous account is found there', async () => {
+  const fake = setupLinks({});
+  fake.seed('facilities/f1', { stripeConnectAccountId: 'acct_new', stripeConnectPreviousAccountId: ACCOUNT });
+  const { stripe, calls } = tokenSearchStripe({ acct_new: [], [ACCOUNT]: [legacySession('cs_paid')] });
+
+  const links = await rotate(fake, stripe, true);
+
+  assert.equal(links[0].action, 'marked_paid');
+  assert.equal(links[0].account, ACCOUNT);
+  assert.deepEqual([...new Set(calls.filter(([op]) => op === 'list').map(([, account]) => account))], ['acct_new', ACCOUNT]);
+});
+
+test('a legacy link is left alone when the search for its token cannot be completed', async () => {
+  // Stripe fails.
+  let fake = setupLinks({});
+  let { stripe } = tokenSearchStripe({}, {}, { failSearch: Object.assign(new Error('Stripe is down'), { statusCode: 500 }) });
+  let links = await rotate(fake, stripe, true);
+  assert.equal(links[0].action, 'skipped');
+  assert.equal(links[0].reason, 'token_search_failed');
+  assert.deepEqual(fake.writes, []);
+
+  // More sessions than it lists.
+  fake = setupLinks({});
+  const many = Array.from({ length: 60 }, (_, i) => legacySession(`cs_${i}`, { metadata: { paymentLinkToken: 'x' } }));
+  ({ stripe } = tokenSearchStripe({ [ACCOUNT]: many }, {}, { pageSize: 1 }));
+  links = await rotate(fake, stripe, true);
+  assert.equal(links[0].reason, 'too_many_sessions_to_search');
+  assert.deepEqual(fake.writes, []);
+
+  // No account to search.
+  fake = setupLinks({});
+  fake.seed('facilities/f1', { stripeConnectAccountId: null });
+  links = await rotate(fake, tokenSearchStripe({}).stripe, true);
+  assert.equal(links[0].reason, 'facility_has_no_stripe_account');
+  assert.deepEqual(fake.writes, []);
+});
+
+test('a legacy link paid for a different amount, twice, or still settling is left for a person', async () => {
+  const cases: Array<[string, ListedSession[]]> = [
+    ['paid_amount_differs', [legacySession('cs_paid', { amount_total: 5000 })]],
+    ['paid_more_than_once', [legacySession('cs_a'), legacySession('cs_b')]],
+    ['session_completed', [legacySession('cs_debit', { payment_status: 'unpaid' })]],
+  ];
+  for (const [reason, sessions] of cases) {
+    const fake = setupLinks({});
+    const links = await rotate(fake, tokenSearchStripe({ [ACCOUNT]: sessions }).stripe, true);
+    assert.equal(links[0].action, 'skipped', reason);
+    assert.equal(links[0].reason, reason);
+    assert.deepEqual(fake.writes, [], reason);
+  }
+});
+
+test('a legacy link with only an unpaid open session found by its token has it expired, then is rotated', async () => {
+  const fake = setupLinks({});
+  const { stripe, calls } = tokenSearchStripe({
+    [ACCOUNT]: [legacySession('cs_open', { status: 'open', payment_status: 'unpaid' }), legacySession('cs_gone', { status: 'expired', payment_status: 'unpaid' })],
+  });
+
+  const links = await rotate(fake, stripe, true);
+
   assert.equal(links[0].action, 'rotated');
+  assert.equal(links[0].searchedByToken, true);
+  assert.deepEqual(links[0].expiredSessionIds, ['cs_open']);
+  assert.deepEqual(calls.filter(([op]) => op === 'expire'), [['expire', ACCOUNT, { id: 'cs_open' }]]);
   assert.equal(fake.read('publicPaymentLinks/legacy-token')!.status, 'revoked');
-  assert.equal(fake.read(`publicPaymentLinks/${NEW_TOKEN}`)!.rotatedFrom, 'legacy-token');
+});
+
+test('a recorded session found on none of the facility\'s accounts is not taken as "no session"', async () => {
+  const fake = setupLinks({ checkoutSessionIds: ['cs_lost'] });
+  const { stripe } = fakeStripe({});
+
+  const links = await rotate(fake, stripe, true);
+
+  // Before: missing everywhere read as nothing to pay, and the link was rotated.
+  assert.equal(links[0].action, 'skipped');
+  assert.equal(links[0].reason, 'session_not_found');
+  assert.deepEqual(fake.writes, []);
+});
+
+test('a link whose checkout changed after it was checked is not rotated', async () => {
+  const fake = setupLinks({ checkoutSessionIds: ['cs_1'], checkoutAttempt: 1 });
+  const { stripe } = fakeStripe({ cs_1: { status: 'expired', payment_status: 'unpaid' } });
+  // The tenant opens the old link and starts a second checkout while the script runs.
+  const retrieve = stripe.checkout.sessions.retrieve.bind(stripe.checkout.sessions);
+  stripe.checkout.sessions.retrieve = async (id, params, options) => {
+    const result = await retrieve(id, params, options);
+    fake.seed('publicPaymentLinks/legacy-token', {
+      ...fake.read('publicPaymentLinks/legacy-token')!,
+      checkoutSessionId: 'cs_2',
+      checkoutSessionIds: ['cs_1', 'cs_2'],
+      checkoutAttempt: 2,
+    });
+    return result;
+  };
+
+  const links = await rotate(fake, stripe, true);
+
+  // Before: only the status was checked again, and cs_2 was dropped unchecked.
+  assert.equal(links[0].action, 'skipped');
+  assert.equal(links[0].reason, 'link_checkout_changed');
+  assert.equal(fake.read('publicPaymentLinks/legacy-token')!.status, 'pending');
+  assert.equal(fake.read(`publicPaymentLinks/${NEW_TOKEN}`), undefined);
 });
 
 test('a current 48-character token is never rotated', async () => {

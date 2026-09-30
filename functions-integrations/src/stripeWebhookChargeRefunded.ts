@@ -4,6 +4,7 @@ import type Stripe from 'stripe';
 import { getStripeClient } from '@sfc/functions-shared';
 import { eventAccountMatchesFacility } from './connectedAccountGuard';
 import { isAlreadyExistsError } from './firestoreErrors';
+import { isMoveInPaymentIntent, resolveMoveInTenantOrRecord } from './moveInPaymentTenant';
 
 /**
  * Record a refund against the tenant's ledger.
@@ -46,7 +47,7 @@ export async function handleChargeRefunded(
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, requestOptions);
 
     const facilityId = paymentIntent.metadata?.facilityId;
-    const tenantId = paymentIntent.metadata?.tenantId;
+    const tenantId: string | null = paymentIntent.metadata?.tenantId || null;
     // A refund of a payment staff took for a card dispute (the charge or
     // link carried the dispute's id) reopens that dispute, not rent. Untagged,
     // its +amount landed in what autopay collects, and autopay charged the
@@ -71,6 +72,43 @@ export async function handleChargeRefunded(
     });
     if (!accountMatches) return;
 
+    // Refund objects may not be expanded on the event payload; fetch them so
+    // each one can be recorded individually.
+    const refunds =
+      charge.refunds?.data && charge.refunds.data.length > 0
+        ? charge.refunds.data
+        : (await stripe.refunds.list({ charge: charge.id, limit: 100 }, requestOptions)).data;
+    const succeeded = refunds.filter((refund) => !refund.status || refund.status === 'succeeded');
+
+    // An online move-in's PaymentIntent names no tenant. Its refund used to
+    // go on the ledger with tenantId null: on nobody's ledger, while the
+    // tenant it moved in kept the credit for money handed back. Found through
+    // the move-in's records instead; with no tenant (refunded before the
+    // move-in was completed) it goes on no ledger at all, and is recorded on
+    // the move-in payment for the owner (moveInPaymentTenant.ts).
+    // Each refund is resolved on its own: one recorded before the move-in
+    // completed has no tenant, and a later one may.
+    const tenantByRefund = new Map<string, string | null>();
+    if (!tenantId && isMoveInPaymentIntent(paymentIntent)) {
+      for (const refund of succeeded) {
+        const resolved = await resolveMoveInTenantOrRecord({
+          facilityId,
+          paymentIntent,
+          connectedAccountId,
+          money: { kind: 'refund', id: refund.id, amountCents: refund.amount, status: refund.status ?? null },
+        });
+        tenantByRefund.set(refund.id, resolved.tenantId);
+      }
+      if (![...tenantByRefund.values()].some((id) => id !== null)) return;
+    }
+    // A move-in refund with no tenant was recorded on the move-in payment
+    // instead, and goes on no ledger.
+    const refundsToPost = succeeded.flatMap((refund) => {
+      if (!tenantByRefund.has(refund.id)) return [{ refund, tenantId }];
+      const resolved = tenantByRefund.get(refund.id) ?? null;
+      return resolved ? [{ refund, tenantId: resolved }] : [];
+    });
+
     const facilityRef = admin.firestore().collection('facilities').doc(facilityId);
     const paymentsRef = facilityRef.collection('payments');
     const existingPayments = await paymentsRef
@@ -88,16 +126,7 @@ export async function handleChargeRefunded(
       });
     }
 
-    // Refund objects may not be expanded on the event payload; fetch them so
-    // each one can be recorded individually.
-    const refunds =
-      charge.refunds?.data && charge.refunds.data.length > 0
-        ? charge.refunds.data
-        : (await stripe.refunds.list({ charge: charge.id, limit: 100 }, requestOptions)).data;
-
-    for (const refund of refunds) {
-      if (refund.status && refund.status !== 'succeeded') continue;
-
+    for (const { refund, tenantId: refundTenantId } of refundsToPost) {
       // Deterministic id per refund: redelivery of the same event, or a later
       // event listing this refund again, updates one entry instead of adding
       // another. A ledger that double-counts refunds understates what a tenant
@@ -112,7 +141,7 @@ export async function handleChargeRefunded(
       };
       try {
         await ledgerRef.create({
-          tenantId: tenantId || null,
+          tenantId: refundTenantId || null,
           facilityId,
           type: 'refund',
           // Positive: a refund reverses a payment, so what the tenant owes goes

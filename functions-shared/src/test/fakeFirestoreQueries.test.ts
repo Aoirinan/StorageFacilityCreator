@@ -32,3 +32,27 @@ test('fake Firestore: collection-group, range, in and array-contains queries', a
   assert.deepEqual(await ids(ledgers.where('m.d', '==', 'du')), ['a']);
   assert.deepEqual(await ids(ledgers.where('m.d', '!=', 'other')), ['a']);
 });
+
+// A payment checked against the ledger and written in one transaction is
+// only safe if a matching row added by someone else in between makes the
+// transaction start again, as Firestore's serializable transactions do.
+test('fake Firestore: a query read in a transaction is retried when a matching document appears', async () => {
+  const fake = new FakeFirestore();
+  fake.seed('facilities/f1/ledgers/a', { tenantId: 't1', amount: 100 });
+  const db = fake.firestore();
+  const rows = db.collection('facilities/f1/ledgers').where('tenantId', '==', 't1');
+  let attempts = 0;
+  fake.beforeCommit = async (attempt) => {
+    if (attempt === 1) await db.collection('facilities/f1/ledgers').doc('b').set({ tenantId: 't1', amount: -100 });
+  };
+
+  const seen = await db.runTransaction(async (tx) => {
+    attempts += 1;
+    const snap = await tx.get(rows);
+    return snap.docs.map((d) => d.id);
+  });
+
+  assert.equal(attempts, 2);
+  assert.deepEqual(seen, ['a', 'b']);
+  assert.equal(fake.transactionConflicts, 1);
+});

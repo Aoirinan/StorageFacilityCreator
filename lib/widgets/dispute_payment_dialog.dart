@@ -16,12 +16,16 @@ enum DisputePaymentWay {
 }
 
 /// What the dialog returns: [method] is only read for [DisputePaymentWay.byHand].
+/// [tenantConsent] is true only for the card on file, once staff have
+/// confirmed the tenant agreed; it is sent to chargeTenantOffSession, which
+/// refuses a dispute charge without it.
 typedef DisputePaymentEntry = ({
   DisputePaymentWay way,
   double amount,
   PaymentMethod method,
   String? reference,
   String? notes,
+  bool tenantConsent,
 });
 
 /// Stripe's smallest card charge; the callable refuses less.
@@ -49,8 +53,12 @@ const String cardConsentLabel = 'The tenant has agreed to this charge on their c
 /// amount is capped at what the dispute still has out ([outstanding]).
 ///
 /// Charging the card on file again needs the cardholder's fresh consent, so
-/// staff tick that the tenant agreed; for a `fraudulent` dispute
+/// staff tick that the tenant agreed, and the confirmation goes to the
+/// server, which refuses the charge without it and keeps it on the
+/// PaymentIntent and in the audit log. For a `fraudulent` dispute
 /// ([disputeReason]) it is not offered at all (the server refuses it too).
+/// The amount cap is checked by the server as well: by hand through
+/// recordDisputePaymentByHand, the card and the link by their callables.
 class DisputePaymentDialog extends StatefulWidget {
   final double outstanding;
   final bool hasCardOnFile;
@@ -146,6 +154,7 @@ class _DisputePaymentDialogState extends State<DisputePaymentDialog> {
       method: _method,
       reference: _way == DisputePaymentWay.byHand ? _trimmed(_referenceController) : null,
       notes: _trimmed(_notesController),
+      tenantConsent: _way == DisputePaymentWay.cardOnFile && _cardConsent,
     ));
   }
 

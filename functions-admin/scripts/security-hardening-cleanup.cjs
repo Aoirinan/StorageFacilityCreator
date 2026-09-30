@@ -62,6 +62,108 @@ function isMissingSession(error) {
   return error && (error.code === 'resource_missing' || error.statusCode === 404);
 }
 
+/** The link's checkout fields, compared again inside the rotation transaction. */
+function checkoutFingerprint(link) {
+  return JSON.stringify({
+    checkoutSessionId: link.checkoutSessionId ?? null,
+    checkoutSessionIds: Array.isArray(link.checkoutSessionIds) ? link.checkoutSessionIds : [],
+    checkoutAttempt: link.checkoutAttempt ?? null,
+  });
+}
+
+/** Whether a Checkout Session has been, or is being, paid. */
+function sessionTookPayment(session) {
+  return session.status === 'complete' || session.payment_status === 'paid';
+}
+
+/** A string for a Stripe search query: single-quoted, with quotes and backslashes escaped. */
+function searchLiteral(value) {
+  return `'${String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+}
+
+/** Most pages of sessions listed per account when looking for a link's token. */
+const MAX_SESSION_PAGES = 50;
+
+/**
+ * Every Checkout Session and PaymentIntent on [accounts] that carries the
+ * link's token in its metadata (`paymentLinkToken`: every link checkout has
+ * set it on its session, and newer ones on the PaymentIntent too).
+ *
+ * For a link with no recorded session ids, which is every legacy production
+ * link: links only started recording them with the payment-link fix, so
+ * such a link may still have been paid. Sessions cannot be searched by
+ * metadata, so each account's sessions are listed (from a day before the
+ * link was created) and filtered; PaymentIntents are searched as well.
+ *
+ * Returns { payments, openSessions, inProgress }, or { error } when the
+ * search could not be completed (a failed call, or more sessions than it
+ * lists). The caller then leaves the link alone.
+ */
+async function findLinkPaymentsByToken(token, link, { stripe, accounts }) {
+  const payments = [];
+  const openSessions = [];
+  const inProgress = [];
+  const createdAt = link.createdAt && typeof link.createdAt.toMillis === 'function' ? link.createdAt.toMillis() : null;
+  const createdFilter = createdAt ? { created: { gte: Math.floor(createdAt / 1000) - 24 * 60 * 60 } } : {};
+  for (const account of accounts) {
+    try {
+      let startingAfter;
+      let pages = 0;
+      for (;;) {
+        pages += 1;
+        const page = await stripe.checkout.sessions.list(
+          { limit: 100, ...createdFilter, ...(startingAfter ? { starting_after: startingAfter } : {}) },
+          { stripeAccount: account },
+        );
+        for (const session of page.data || []) {
+          if (!session.metadata || session.metadata.paymentLinkToken !== token) continue;
+          const paymentIntentId =
+            typeof session.payment_intent === 'string'
+              ? session.payment_intent
+              : (session.payment_intent && session.payment_intent.id) || null;
+          if (sessionTookPayment(session)) {
+            payments.push({
+              sessionId: session.id,
+              paymentIntentId,
+              account,
+              amountCents: session.amount_total ?? null,
+              currency: session.currency || null,
+              settled: session.payment_status === 'paid',
+            });
+          } else if (session.status === 'open') {
+            openSessions.push({ id: session.id, account });
+          }
+        }
+        if (!page.has_more || !page.data || page.data.length === 0) break;
+        if (pages >= MAX_SESSION_PAGES) return { error: 'too_many_sessions_to_search', account };
+        startingAfter = page.data[page.data.length - 1].id;
+      }
+      const found = await stripe.paymentIntents.search(
+        { query: `metadata['paymentLinkToken']:${searchLiteral(token)}`, limit: 100 },
+        { stripeAccount: account },
+      );
+      for (const pi of found.data || []) {
+        if (payments.some((p) => p.paymentIntentId === pi.id)) continue;
+        if (pi.status === 'succeeded') {
+          payments.push({
+            sessionId: null,
+            paymentIntentId: pi.id,
+            account,
+            amountCents: pi.amount ?? null,
+            currency: pi.currency || null,
+            settled: true,
+          });
+        } else if (pi.status === 'processing' || pi.status === 'requires_capture') {
+          inProgress.push({ paymentIntentId: pi.id, account, status: pi.status });
+        }
+      }
+    } catch (error) {
+      return { error: 'token_search_failed', account, detail: String(error && error.message) };
+    }
+  }
+  return { payments, openSessions, inProgress };
+}
+
 /**
  * Whether a pending link may be rotated, and which of its sessions are
  * still open.
@@ -73,45 +175,159 @@ function isMissingSession(error) {
  * processed) would otherwise charge the tenant twice. So each session is
  * looked up on the facility's accounts: a complete one skips the link for a
  * person to settle, an open one is expired before rotating, and anything
- * that cannot be checked skips the link rather than guessing.
+ * that cannot be checked skips the link rather than guessing. A recorded
+ * session found on none of the accounts is one of those: it was created, so
+ * "not found" says the lookup is wrong, not that nobody paid.
+ *
+ * A link with no recorded session (every legacy production link) used to be
+ * rotated without asking Stripe, so a paid-but-unmarked one became a fresh
+ * payable link. Its token is searched for instead ([findLinkPaymentsByToken]):
+ * a payment found marks the link paid (`markPaid`), an open session is
+ * expired before rotating, and a search that cannot be completed leaves the
+ * link alone.
  *
  * [accountIds] is the facility's current account, then the one it was
  * connected to before (stripeConnectPreviousAccountId). A link started
  * before a reconnect has its sessions on the old account; looked up only on
  * the new one they read as missing, and a paid link was rotated.
  */
-async function planLinkRotation(link, { stripe, accountIds }) {
+async function planLinkRotation(link, { stripe, accountIds, token }) {
   const sessionIds = linkSessionIds(link);
-  if (sessionIds.length === 0) return { rotate: true, openSessions: [] };
   if (!stripe) return { rotate: false, reason: 'stripe_not_checked', sessionIds };
   const accounts = [...new Set((accountIds || []).filter((id) => typeof id === 'string' && id))];
   if (accounts.length === 0) return { rotate: false, reason: 'facility_has_no_stripe_account', sessionIds };
+
+  if (sessionIds.length === 0) {
+    const search = await findLinkPaymentsByToken(token, link, { stripe, accounts });
+    if (search.error) return { rotate: false, reason: search.error, account: search.account, error: search.detail };
+    if (search.inProgress.length > 0) {
+      const [first] = search.inProgress;
+      return { rotate: false, reason: 'payment_in_progress', paymentIntentId: first.paymentIntentId, account: first.account };
+    }
+    if (search.payments.length > 1) {
+      return { rotate: false, reason: 'paid_more_than_once', payments: search.payments };
+    }
+    if (search.payments.length === 1) {
+      const [payment] = search.payments;
+      const linkCents = typeof link.amount === 'number' && Number.isFinite(link.amount) ? Math.round(link.amount * 100) : null;
+      if (!payment.settled) return { rotate: false, reason: 'session_completed', payment };
+      if (payment.amountCents !== linkCents || String(payment.currency || '').toLowerCase() !== 'usd') {
+        return { rotate: false, reason: 'paid_amount_differs', payment };
+      }
+      return { rotate: false, markPaid: payment };
+    }
+    return { rotate: true, openSessions: search.openSessions, searchedByToken: true };
+  }
+
   const openSessions = [];
   for (const id of sessionIds) {
+    let found = false;
     for (const account of accounts) {
       let session;
       try {
         session = await stripe.checkout.sessions.retrieve(id, {}, { stripeAccount: account });
       } catch (error) {
-        // Not on this account: try the other. Missing on every account
-        // means there is no session to pay.
+        // Not on this account: try the other.
         if (isMissingSession(error)) continue;
         return { rotate: false, reason: 'session_lookup_failed', sessionId: id, account, error: String(error && error.message) };
       }
-      if (session.status === 'complete' || session.payment_status === 'paid') {
+      found = true;
+      if (sessionTookPayment(session)) {
         return { rotate: false, reason: 'session_completed', sessionId: id, account };
       }
       if (session.status === 'open') openSessions.push({ id, account });
       break;
     }
+    if (!found) return { rotate: false, reason: 'session_not_found', sessionId: id, accounts };
   }
   return { rotate: true, openSessions };
 }
 
+function formatDollars(cents) {
+  return `$${((cents || 0) / 100).toFixed(2)}`;
+}
+
+/**
+ * Marks a legacy link paid for a payment [findLinkPaymentsByToken] found,
+ * in one transaction that first checks the link is still pending with the
+ * checkout fields it was planned from. Like a payment the webhook finds on
+ * an untracked session (functions-shared completePublicLinkPayment.ts), it
+ * leaves an exception record and a notification asking staff to check the
+ * ledger shows the payment: a legacy checkout's PaymentIntent carried no
+ * tenant, so the webhook may never have posted it. Returns why nothing was
+ * written, or null.
+ */
+async function markLinkPaidFromSearch({ db, doc, planned, payment, fieldValue }) {
+  const exceptionId = payment.sessionId || payment.paymentIntentId;
+  const exceptionRef = db.collection('publicPaymentLinkExceptions').doc(exceptionId);
+  return db.runTransaction(async (txn) => {
+    const current = await txn.get(doc.ref);
+    if (!current.exists || current.get('status') !== 'pending') return 'link_no_longer_pending';
+    if (checkoutFingerprint(current.data()) !== checkoutFingerprint(planned)) return 'link_checkout_changed';
+    const exception = await txn.get(exceptionRef);
+    const link = current.data();
+    const facilityRef = db.collection('facilities').doc(link.facilityId);
+    const now = fieldValue.serverTimestamp();
+    const sessionIds = Array.isArray(link.checkoutSessionIds) ? link.checkoutSessionIds : [];
+    txn.update(doc.ref, {
+      status: 'paid',
+      paymentIntentId: payment.paymentIntentId,
+      ...(payment.sessionId
+        ? { checkoutSessionId: payment.sessionId, checkoutSessionIds: [...new Set([...sessionIds, payment.sessionId])] }
+        : {}),
+      paidAt: now,
+      paidVia: 'security_cleanup',
+      amountPaidCents: payment.amountCents,
+      needsLedgerCheck: true,
+      updatedAt: now,
+    });
+    if (!exception.exists) {
+      const message =
+        `A payment of ${formatDollars(payment.amountCents)} was made on a payment link checkout started before payment ` +
+        'links recorded payments automatically. Check the tenant ledger shows it, and record it if not.';
+      txn.create(exceptionRef, {
+        facilityId: link.facilityId,
+        tenantId: link.tenantId || null,
+        paymentLinkToken: doc.id,
+        reason: 'untracked_session',
+        message,
+        checkoutSessionId: payment.sessionId,
+        paymentIntentId: payment.paymentIntentId,
+        amountCents: payment.amountCents,
+        currency: payment.currency,
+        linkStatus: 'pending',
+        connectedAccountId: payment.account,
+        source: 'security_cleanup',
+        resolution: 'open',
+        createdAt: now,
+      });
+      txn.set(facilityRef.collection('Notifications').doc(`publicLinkException_${exceptionId}`), {
+        facilityId: link.facilityId,
+        tenantId: link.tenantId || null,
+        tenantName: null,
+        type: 'STRIPE_ACTION_REQUIRED',
+        message,
+        readAt: null,
+        createdAt: now,
+        createdBy: 'system@security-cleanup',
+        metadata: {
+          reason: 'untracked_session',
+          checkoutSessionId: payment.sessionId,
+          paymentIntentId: payment.paymentIntentId,
+          amountCents: payment.amountCents,
+        },
+      });
+    }
+    return null;
+  });
+}
+
 /**
  * Rotates every pending link whose token is legacy/predictable, after
- * [planLinkRotation] clears it. Reports every link: rotated, would rotate
- * (dry run), or skipped with the reason. Exported for tests.
+ * [planLinkRotation] clears it, or marks it paid when Stripe shows it was.
+ * Reports every link: rotated, would rotate (dry run), marked paid, would
+ * mark paid, or skipped with the reason. Dry run unless [apply]. Exported
+ * for tests.
  */
 async function rotatePendingPaymentLinks({ db, stripe, apply, report, fieldValue, newToken = randomToken }) {
   const pendingLinks = await db.collection('publicPaymentLinks').where('status', '==', 'pending').get();
@@ -131,7 +347,27 @@ async function rotatePendingPaymentLinks({ db, stripe, apply, report, fieldValue
     }
     const accountIds = facilityId ? facilityAccounts.get(facilityId) : [];
     const entry = { oldToken: doc.id, facilityId, tenantId: link.tenantId || null };
-    const plan = await planLinkRotation(link, { stripe, accountIds });
+    const plan = await planLinkRotation(link, { stripe, accountIds, token: doc.id });
+
+    if (plan.markPaid) {
+      const payment = plan.markPaid;
+      const paidEntry = {
+        ...entry,
+        checkoutSessionId: payment.sessionId,
+        paymentIntentId: payment.paymentIntentId,
+        account: payment.account,
+        amountCents: payment.amountCents,
+      };
+      if (!apply) {
+        report.paymentLinks.push({ ...paidEntry, action: 'would_mark_paid' });
+        continue;
+      }
+      const refusal = await markLinkPaidFromSearch({ db, doc, planned: link, payment, fieldValue });
+      report.paymentLinks.push(
+        refusal ? { ...paidEntry, action: 'skipped', reason: refusal } : { ...paidEntry, action: 'marked_paid' },
+      );
+      continue;
+    }
     if (!plan.rotate) {
       report.paymentLinks.push({ ...entry, action: 'skipped', ...plan });
       continue;
@@ -158,27 +394,39 @@ async function rotatePendingPaymentLinks({ db, stripe, apply, report, fieldValue
 
     const replacementToken = newToken();
     const replacementRef = db.collection('publicPaymentLinks').doc(replacementToken);
-    report.paymentLinks.push({
+    const rotatedEntry = {
       ...entry,
-      action: apply ? 'rotated' : 'would_rotate',
       replacementToken,
       expiredSessionIds: openSessionIds,
-    });
-    if (apply) {
-      await db.runTransaction(async (txn) => {
-        const current = await txn.get(doc.ref);
-        if (!current.exists || current.get('status') !== 'pending') return;
-        txn.create(
-          replacementRef,
-          rotatedLinkData(current.data(), replacementToken, doc.id, fieldValue.serverTimestamp()),
-        );
-        txn.update(doc.ref, {
-          status: 'revoked',
-          revokedAt: fieldValue.serverTimestamp(),
-          rotatedTo: replacementToken,
-        });
-      });
+      ...(plan.searchedByToken ? { searchedByToken: true } : {}),
+    };
+    if (!apply) {
+      report.paymentLinks.push({ ...rotatedEntry, action: 'would_rotate' });
+      continue;
     }
+    const refusal = await db.runTransaction(async (txn) => {
+      const current = await txn.get(doc.ref);
+      if (!current.exists || current.get('status') !== 'pending') return 'link_no_longer_pending';
+      // A checkout started (or a session recorded) since the plan was made
+      // is one the plan never checked: rotating now would drop it and offer
+      // a second Pay Now alongside it.
+      if (checkoutFingerprint(current.data()) !== checkoutFingerprint(link)) return 'link_checkout_changed';
+      txn.create(
+        replacementRef,
+        rotatedLinkData(current.data(), replacementToken, doc.id, fieldValue.serverTimestamp()),
+      );
+      txn.update(doc.ref, {
+        status: 'revoked',
+        revokedAt: fieldValue.serverTimestamp(),
+        rotatedTo: replacementToken,
+      });
+      return null;
+    });
+    report.paymentLinks.push(
+      refusal
+        ? { ...entry, action: 'skipped', reason: refusal, expiredSessionIds: openSessionIds }
+        : { ...rotatedEntry, action: 'rotated' },
+    );
   }
 }
 
@@ -225,15 +473,16 @@ async function main() {
     suspiciousRoles: [],
   };
 
-  // The platform's Stripe key, to check each link's sessions on the
-  // facility's account before rotating it. Without it, links that ever
-  // started a checkout are skipped and reported, not rotated.
+  // The platform's Stripe key, to check each link's sessions (or, for a
+  // link that recorded none, search for its token) on the facility's
+  // accounts before rotating it. Without it no link is rotated: each is
+  // skipped and reported.
   const stripeKey = String(process.env.STRIPE_SECRET_KEY || '').trim();
   const stripe = stripeKey
     ? new (require('stripe').default)(stripeKey, { apiVersion: '2026-02-25.clover' })
     : null;
   if (!stripe) {
-    console.error('STRIPE_SECRET_KEY not set: payment links with a checkout session will be skipped.');
+    console.error('STRIPE_SECRET_KEY not set: every legacy payment link will be skipped, not rotated.');
   }
   await rotatePendingPaymentLinks({
     db,
@@ -398,4 +647,10 @@ if (require.main === module) {
   });
 }
 
-module.exports = { LINK_FIELDS_NOT_ROTATED, planLinkRotation, rotatePendingPaymentLinks, rotatedLinkData };
+module.exports = {
+  LINK_FIELDS_NOT_ROTATED,
+  findLinkPaymentsByToken,
+  planLinkRotation,
+  rotatePendingPaymentLinks,
+  rotatedLinkData,
+};

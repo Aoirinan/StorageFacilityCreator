@@ -832,6 +832,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
             amount: entry.amount,
             description: entry.notes ?? 'Card dispute payment',
             disputeId: disputeId,
+            tenantConsent: entry.tenantConsent,
           );
           final warning = result['recordingWarning'] as String?;
           messenger.showSnackBar(SnackBar(

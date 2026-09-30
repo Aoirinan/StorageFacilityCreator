@@ -41,7 +41,7 @@ const MAX_PORTAL_PAYMENT_AMOUNT = 50000;
 
 /**
  * Whether a payment record still asks the tenant for money in the portal:
- * no status yet, pending, or failed. Exported for tests.
+ * no status yet, or pending. Exported for tests.
  *
  * An allowlist, like the app's paymentNotProcessableReason. The portal counted
  * every status except paid and completed, so a payment the Stripe webhook had
@@ -49,9 +49,15 @@ const MAX_PORTAL_PAYMENT_AMOUNT = 50000;
  * asked to pay the disputed amount again, and paid it twice when the facility
  * won. Refunded, part-refunded and cancelled records were counted the same
  * way. A disputed amount is for staff to collect by hand.
+ *
+ * Not `failed` either. Only the Stripe webhook writes a failed payment
+ * record, one per failed PaymentIntent: a record of an attempt, not a bill.
+ * The rent it was for is still on the ledger. Counted as owed, an autopay
+ * decline followed by a successful retry (a new PaymentIntent) left the
+ * failed record asking for the same rent again forever, with Pay now.
  */
 export function portalPaymentIsOwed(status: unknown): boolean {
-  return status === undefined || status === null || status === 'pending' || status === 'failed';
+  return status === undefined || status === null || status === 'pending';
 }
 
 async function enforceSigningTokenRateLimit(context: functions.https.CallableContext): Promise<void> {

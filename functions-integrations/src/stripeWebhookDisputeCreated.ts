@@ -9,6 +9,12 @@ import {
   writeAuditLog,
 } from '@sfc/functions-shared';
 import { eventAccountMatchesFacility } from './connectedAccountGuard';
+import { isDisputeLedgerEnabled, recordHeldDispute, resolveHeldDispute } from './disputeLedgerGate';
+import { FRAUDULENT_DISPUTE_REASON, pauseAutopayForFraudDispute } from './disputeFraudAutopayPause';
+import { isMoveInPaymentIntent, resolveMoveInTenantOrRecord } from './moveInPaymentTenant';
+
+/** held: the dispute ledger is switched off, so nothing was posted and the event must not be marked processed. */
+export type DisputeHandlerOutcome = { held: boolean };
 
 export type DisputeEventType =
   | 'charge.dispute.created'
@@ -151,6 +157,17 @@ export function disputeMoneyMovement(
  * Tenant charges live on the facility's connected account, so lookups use
  * `stripeAccount`, and the account must be the facility's own before anything
  * is written. Errors propagate: the webhook returns 500 and Stripe redelivers.
+ *
+ * Before any of that:
+ * - An online move-in payment carries no tenantId: its tenant is looked up
+ *   through the move-in's own records (moveInPaymentTenant.ts). A dispute on
+ *   one that never completed a move-in goes on no ledger; it is recorded on
+ *   the move-in payment and the owner is told.
+ * - A `fraudulent` dispute switches the tenant's autopay off and tells staff
+ *   (disputeFraudAutopayPause.ts), whatever else happens.
+ * - Nothing is posted, to the ledger or the payment, while
+ *   `appConfig/payments.disputeLedgerEnabled` is off (disputeLedgerGate.ts):
+ *   the event is recorded as held and returns `{ held: true }`.
  */
 export async function handleDisputeCreated(
   dispute: Stripe.Dispute,
@@ -158,7 +175,7 @@ export async function handleDisputeCreated(
   eventType: DisputeEventType = 'charge.dispute.created',
   eventCreated?: number,
   eventId?: string,
-) {
+): Promise<DisputeHandlerOutcome> {
   const stripe = getStripeClient();
   const requestOptions: Stripe.RequestOptions = connectedAccountId ? { stripeAccount: connectedAccountId } : {};
   const chargeId = typeof dispute.charge === 'string' ? dispute.charge : dispute.charge?.id || null;
@@ -172,19 +189,19 @@ export async function handleDisputeCreated(
   }
   if (!paymentIntentId) {
     functions.logger.warn('Dispute has no payment intent', { disputeId: dispute.id, chargeId });
-    return;
+    return { held: false };
   }
 
   const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, {}, requestOptions);
   const facilityId = paymentIntent.metadata?.facilityId;
-  const tenantId = paymentIntent.metadata?.tenantId;
+  let tenantId: string | null = paymentIntent.metadata?.tenantId || null;
 
   if (!facilityId) {
     functions.logger.warn('Dispute payment intent has no facilityId metadata', {
       disputeId: dispute.id,
       paymentIntentId,
     });
-    return;
+    return { held: false };
   }
 
   // The metadata was written by whoever created the PaymentIntent; only the
@@ -195,10 +212,52 @@ export async function handleDisputeCreated(
     eventType,
     objectId: dispute.id,
     eventId,
-    tenantId: tenantId ?? null,
+    tenantId,
     amount: dispute.amount / 100,
   });
-  if (!accountMatches) return;
+  if (!accountMatches) return { held: false };
+
+  // An online move-in's PaymentIntent names no tenant: without this the
+  // dispute was posted with tenantId null, on nobody's ledger.
+  if (!tenantId && isMoveInPaymentIntent(paymentIntent)) {
+    const resolved = await resolveMoveInTenantOrRecord({
+      facilityId,
+      paymentIntent,
+      connectedAccountId,
+      money: {
+        kind: 'dispute',
+        id: dispute.id,
+        amountCents: dispute.amount,
+        status: dispute.status || null,
+        reason: dispute.reason || null,
+      },
+    });
+    if (resolved.tenantId === null) return { held: false };
+    tenantId = resolved.tenantId;
+  }
+
+  // Before the ledger switch: stopping autopay from charging a card the
+  // cardholder says is not theirs is safe whatever else is deployed.
+  if (tenantId && dispute.reason === FRAUDULENT_DISPUTE_REASON) {
+    await pauseAutopayForFraudDispute({ facilityId, tenantId, disputeId: dispute.id, amount: dispute.amount / 100 });
+  }
+
+  if (!(await isDisputeLedgerEnabled())) {
+    await recordHeldDispute({
+      facilityId,
+      tenantId,
+      connectedAccountId,
+      disputeId: dispute.id,
+      paymentIntentId,
+      chargeId,
+      eventType,
+      eventId,
+      status: dispute.status || null,
+      reason: dispute.reason || null,
+      amount: dispute.amount / 100,
+    });
+    return { held: true };
+  }
 
   const db = admin.firestore();
   const facilityRef = db.collection('facilities').doc(facilityId);
@@ -368,6 +427,10 @@ export async function handleDisputeCreated(
     voidedInvoices,
     overpaid,
   });
+  // Held while the ledger was switched off: posted now, so the row the
+  // pre-deploy check lists is closed.
+  await resolveHeldDispute(connectedAccountId, dispute.id);
+  return { held: false };
 }
 
 /** Invoice statuses that still ask the tenant for money. */

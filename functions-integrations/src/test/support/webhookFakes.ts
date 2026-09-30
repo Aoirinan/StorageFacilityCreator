@@ -104,10 +104,15 @@ export function linkPaymentIntent(id: string): Stripe.PaymentIntent {
   } as unknown as Stripe.PaymentIntent;
 }
 
-/** A facility on ACCOUNT, tenant t1, and a pending $42 link that issued cs_1 and cs_2. */
-export function setup(link: Record<string, unknown> = {}) {
+/**
+ * A facility on ACCOUNT, tenant t1, and a pending $42 link that issued cs_1
+ * and cs_2. The dispute ledger switch (appConfig/payments) is on, as it is
+ * once every codebase is deployed; [options.disputeLedger] false leaves it off.
+ */
+export function setup(link: Record<string, unknown> = {}, options: { disputeLedger?: boolean } = {}) {
   const fake = new FakeFirestore();
   installFakeFirestore(fake);
+  if (options.disputeLedger !== false) fake.seed('appConfig/payments', { disputeLedgerEnabled: true });
   fake.seed('facilities/f1', { name: 'Test Storage', stripeConnectAccountId: ACCOUNT, stripeConnectOnboardingComplete: true });
   fake.seed('facilities/f1/tenants/t1', { name: 'Pat Tenant' });
   fake.seed(LINK_PATH, {

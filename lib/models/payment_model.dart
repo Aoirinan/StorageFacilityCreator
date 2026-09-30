@@ -98,7 +98,9 @@ String receivedPaymentDescription(
 
 /// "Card dispute payment - Cash #1234": the ledger line for money taken by
 /// hand for a lost card dispute (the Ledger's "Record payment for this
-/// dispute"), so it does not read as rent.
+/// dispute"), so it does not read as rent. The server writes that row
+/// (recordDisputePaymentByHand) with the same line, built by
+/// disputeHandPaymentDescription in functions-shared ledger/disputePayment.ts.
 String disputePaymentDescription(
   PaymentMethod method, {
   String? reference,

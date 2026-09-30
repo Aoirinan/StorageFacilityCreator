@@ -381,14 +381,19 @@ export {
   isDisputeLedgerRow,
   splitLedgerBalance,
 } from './ledger/disputeEntries';
-export type { DisputePaymentCheck, DisputePaymentRefusal } from './ledger/disputePayment';
+export type { DisputeHandPaymentResult, DisputePaymentCheck, DisputePaymentRefusal } from './ledger/disputePayment';
 export {
   checkDisputeForPayment,
+  checkDisputeForPaymentInTransaction,
+  DISPUTE_HAND_PAYMENT_METHODS,
   DISPUTE_OVERPAID_NOTIFICATION_PREFIX,
+  disputeHandPaymentDescription,
+  disputeHandPaymentDocId,
   disputeLedgerEntryId,
   disputeOutstanding,
   disputeOverpaidNotificationId,
   notifyIfDisputeOverpaid,
+  recordDisputeHandPayment,
 } from './ledger/disputePayment';
 
 export type { UnitNotOfferedReason } from './units/onlineRental';
