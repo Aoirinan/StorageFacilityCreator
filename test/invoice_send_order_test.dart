@@ -176,7 +176,7 @@ void main() {
   test('sendInvoice writes status sent only through markSent', () {
     final source =
         File('lib/services/invoice_service.dart').readAsStringSync();
-    final start = source.indexOf('static Future<void> sendInvoice(');
+    final start = source.indexOf('static Future<InvoiceModel> sendInvoice(');
     final end = source.indexOf('static Future<void> deliverInvoice(');
     expect(start, greaterThan(0));
     expect(end, greaterThan(start));

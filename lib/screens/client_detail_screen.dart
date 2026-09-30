@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../models/tenant_model.dart';
 import '../models/dnr_model.dart';
 import '../models/payment_model.dart';
+import 'package:sfcapp/models/security_deposit_model.dart';
 import '../models/contract_model.dart';
 import '../models/provider_params.dart';
 import '../providers/contract_provider.dart' as contractProv;
@@ -21,6 +22,7 @@ import '../services/reminder_service.dart';
 import '../services/gate_access_service.dart';
 import '../models/reminder_model.dart';
 import '../models/gate_access_model.dart';
+import 'package:sfcapp/providers/facility_provider.dart';
 import '../providers/payment_provider.dart';
 import '../providers/tenant_provider.dart';
 import '../providers/ledger_provider.dart';
@@ -28,6 +30,8 @@ import 'package:sfcapp/providers/unit_label_provider.dart';
 import 'package:sfcapp/utils/paid_through.dart';
 import 'package:sfcapp/utils/payment_month_status.dart';
 import 'package:sfcapp/utils/sms_consent.dart';
+import 'package:sfcapp/providers/unit_provider.dart';
+import 'package:sfcapp/utils/unit_areas.dart';
 import 'package:sfcapp/utils/unit_label.dart';
 import '../models/ledger_entry_model.dart';
 import '../theme/app_theme.dart';
@@ -44,7 +48,11 @@ import 'package:intl/intl.dart';
 import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
 import 'package:sfcapp/widgets/move_out_action.dart';
 import 'package:sfcapp/widgets/payment_history_summary.dart';
+import 'package:sfcapp/widgets/security_deposit_dialogs.dart';
+import 'package:sfcapp/utils/mailing_address_edit.dart' show currentMailingAddress, mailingAddressGap;
+import 'package:sfcapp/utils/print_documents.dart' show tenantPrintAddress;
 import 'package:sfcapp/widgets/tenant_contact_edit_dialog.dart';
+import 'package:sfcapp/widgets/tenant_mailing_address_dialog.dart';
 import 'package:sfcapp/widgets/tenant_prev_next.dart';
 import 'package:sfcapp/screens/tenant_past_history_dialog.dart';
 
@@ -832,13 +840,29 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
       orElse: () => widget.tenant,
     );
     // "12", or "12 (Complex 2)" once the facility numbers units per area.
-    final unitLabel = tenantUnitLabel(
+    final includeUnitArea = ref
+            .watch(unitLabelsIncludeAreaProvider(tenant.facilityId))
+            .value ??
+        false;
+    final unitLabel = tenantUnitLabel(tenant, includeArea: includeUnitArea);
+    // Every unit the tenant holds, for the Unit row: the record's unitNumber
+    // names one, and the rest point back through units.tenantId.
+    final facilityUnits =
+        ref.watch(facilityUnitsProvider(tenant.facilityId)).value;
+    final heldUnits = tenantHeldUnitLabels(
       tenant,
-      includeArea: ref
-              .watch(unitLabelsIncludeAreaProvider(tenant.facilityId))
-              .value ??
-          false,
+      units: facilityUnits == null ? null : TenantUnitAreaIndex(facilityUnits),
+      includeArea: includeUnitArea,
     );
+    // The facility's usual deposit, prefilled in the Security deposit
+    // dialog. Watched here so it has loaded by the time the pencil is
+    // pressed; null until then, or when the facility has none.
+    final defaultSecurityDeposit = SecurityDeposit.facilityDefault(
+        ref.watch(facilityProvider(tenant.facilityId)).value?.billingSettings);
+    // The address the invoice and statement print, and what it is still
+    // missing (a workbook import usually leaves only the street).
+    final mailingAddress = currentMailingAddress(tenant.addresses);
+    final mailingGap = mailingAddress == null ? null : mailingAddressGap(mailingAddress);
 
     return SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
@@ -1096,7 +1120,23 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                       _buildInfoItem(context, icon: Icons.person_outlined, label: 'Name', value: _valueOrPlaceholder(tenant.name)),
                       _buildInfoItem(context, icon: Icons.email_outlined, label: 'Email', value: _valueOrPlaceholder(tenant.email)),
                       _buildInfoItem(context, icon: Icons.phone_outlined, label: 'Phone', value: _valueOrPlaceholder(tenant.phone)),
-                      _buildInfoItem(context, icon: Icons.home_work_outlined, label: 'Unit', value: _valueOrPlaceholder(unitLabel, fallback: 'No unit assigned')),
+                      // The address the invoice and statement print. Its own
+                      // pencil: Edit Contact Information does not carry it.
+                      // A street-only address says what it is missing under
+                      // the street, in the colour the SMS row uses for opted
+                      // out, so the owner can see which tenants to complete
+                      // before statements go out without opening each one.
+                      _buildInfoItem(
+                        context,
+                        icon: Icons.markunread_mailbox_outlined,
+                        label: 'Mailing Address',
+                        value: mailingAddress == null
+                            ? 'Not provided'
+                            : [tenantPrintAddress(tenant.addresses)!, if (mailingGap != null) mailingGap].join('\n'),
+                        valueColor: mailingGap != null ? AppTheme.error : null,
+                        onEdit: () => editTenantMailingAddress(context, ref, tenant),
+                      ),
+                      _buildUnitsItem(context, heldUnits),
                       _buildInfoItem(context, icon: Icons.attach_money, label: 'Monthly Rate', value: _formatCurrency(tenant.monthlyRate)),
                       // Always shown, so the owner can see who cannot be
                       // texted yet (Edit Contact Information records it).
@@ -1255,6 +1295,17 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                         label: 'Payment Status',
                         value: tenant.isLate ? 'Late (${tenant.daysLate} days)' : 'Current',
                       ),
+                      // Held for the tenant, off the ledger: not in the
+                      // balance above or in Paid Through. Once settled it
+                      // reads as history until a new deposit is saved over
+                      // it (a tenant who came back), so the pencil stays.
+                      _buildInfoItem(
+                        context,
+                        icon: Icons.savings_outlined,
+                        label: 'Security Deposit',
+                        value: tenant.securityDeposit?.summary ?? 'None on file',
+                        onEdit: () => editSecurityDeposit(context, tenant, defaultAmount: defaultSecurityDeposit),
+                      ),
                       const SizedBox(height: 16),
                       _buildPaymentHistorySummary(tenant),
                       const SizedBox(height: 16),
@@ -1290,6 +1341,23 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                           ),
                         ),
                       ),
+                      // Apply the held deposit to what is owed, refund the
+                      // rest, or both. From here rather than only move-out:
+                      // a tenant with no contract has no Move out button.
+                      if (tenant.securityDeposit?.isHeld == true) ...[
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: () => settleSecurityDeposit(context, tenant),
+                            icon: const Icon(Icons.savings_outlined),
+                            label: const Text('Settle deposit'),
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -2538,8 +2606,43 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
     );
   }
 
+  /// The Contact card's Unit row: every unit the tenant holds, each a link
+  /// to its unit page when its unit doc is loaded, so a tenant renting two
+  /// units reads "B-14, B-15" rather than the first alone.
+  Widget _buildUnitsItem(BuildContext context, List<HeldUnitLabel> units) {
+    final style = Theme.of(context).textTheme.bodyMedium?.copyWith(color: AppTheme.textTertiary);
+    return _buildInfoItem(
+      context,
+      icon: Icons.home_work_outlined,
+      label: units.length > 1 ? 'Units' : 'Unit',
+      value: units.isEmpty ? 'No unit assigned' : units.map((u) => u.label).join(', '),
+      valueWidget: units.isEmpty
+          ? null
+          : Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                for (var i = 0; i < units.length; i++) ...[
+                  if (i > 0) Text(', ', style: style),
+                  if (units[i].unit == null)
+                    Text(units[i].label, style: style)
+                  else
+                    InkWell(
+                      onTap: () => context.push(
+                          '${AppRoute.unitDetail}?unitId=${units[i].unit!.id}&facilityId=${units[i].unit!.facilityId}'),
+                      child: Text(
+                        units[i].label,
+                        style: style?.copyWith(color: AppTheme.primaryBlue, decoration: TextDecoration.underline),
+                      ),
+                    ),
+                ],
+              ],
+            ),
+    );
+  }
+
+  /// [valueWidget], when given, stands in for the [value] text.
   Widget _buildInfoItem(BuildContext context,
-      {required IconData icon, required String label, required String value, Color? valueColor, VoidCallback? onEdit}) {
+      {required IconData icon, required String label, required String value, Color? valueColor, VoidCallback? onEdit, Widget? valueWidget}) {
     final textTheme = Theme.of(context).textTheme;
     final color = Theme.of(context).colorScheme.primary;
     return Padding(
@@ -2555,7 +2658,7 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
               children: [
                 Text(label, style: textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
                 const SizedBox(height: 2),
-                Text(value, style: textTheme.bodyMedium?.copyWith(color: valueColor ?? AppTheme.textTertiary)),
+                valueWidget ?? Text(value, style: textTheme.bodyMedium?.copyWith(color: valueColor ?? AppTheme.textTertiary)),
               ],
             ),
           ),

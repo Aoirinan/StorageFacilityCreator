@@ -150,7 +150,30 @@ export type {
 } from './stripe/subscriptionCleanup';
 export { mapStripeErrorToUserMessage } from './stripe/errors';
 export { getOrCreateBasePriceId, getOrCreateAddOnPriceId } from './stripe/subscriptionPricing';
-export { FIRST_MONTH_FREE_COUPON_ID, getOrCreateFirstMonthFreeCouponId } from './stripe/firstMonthFreeCoupon';
+export { FIRST_MONTH_FREE_COUPON_ID } from './stripe/firstMonthFreeCoupon';
+export {
+  DEFAULT_PLATFORM_TRIAL_DAYS,
+  FIRST_MONTH_FREE_DAYS,
+  FIRST_MONTH_FREE_METADATA_KEY,
+  FREE_MONTH_START_METADATA_KEY,
+  FREE_MONTH_TRIAL_END_METADATA_KEY,
+  STRIPE_CHECKOUT_MIN_TRIAL_END_LEAD_MS,
+  TRIAL_END_SAFETY_MARGIN_MS,
+  assessPlatformOfferHistory,
+  decidePlatformCheckoutOffer,
+  platformCheckoutOfferMetadata,
+  platformCheckoutTrialSubscriptionData,
+  platformOfferMarkerUpdates,
+  platformOfferUsageFromSubscription,
+  trialEndToMillis,
+} from './stripe/platformCheckoutTrial';
+export type {
+  PlatformCheckoutOffer,
+  PlatformCheckoutOfferInput,
+  PlatformCheckoutTrialDecision,
+  PlatformOfferHistory,
+  PlatformOfferHistoryInput,
+} from './stripe/platformCheckoutTrial';
 export { computeAccountRollup, isLocalTrialExpired } from './subscription/accountRollup';
 export type {
   AccountSubscriptionStatus,
@@ -158,6 +181,16 @@ export type {
   AccountRollupResult,
   FacilitySubscriptionSnapshot,
 } from './subscription/accountRollup';
+export {
+  CARD_TRIAL_GRACE_MS,
+  accountHasPaidOrCardTrialSubscription,
+  facilityHasPaidOrCardTrialSubscription,
+  hasPaidOrCardTrialSubscription,
+  isUnpaidAppTrial,
+  ownerHasPaidOrCardTrialSubscription,
+  ownerOnUnpaidAppTrial,
+} from './subscription/paidSubscription';
+export type { SubscriptionDocData } from './subscription/paidSubscription';
 export {
   OWNER_ACCOUNT_READ_LIMIT,
   OWNER_ACCOUNT_STANDING_FIELD,

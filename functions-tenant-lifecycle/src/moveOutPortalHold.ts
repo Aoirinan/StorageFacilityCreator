@@ -14,10 +14,26 @@ import {
 } from '@sfc/functions-shared';
 import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './secrets';
 import { enforceAppCheckOrThrow, enforceRateLimit, writeAuditLog } from './guardrails';
+import { moveOutInstant } from './moveOutDate';
 import { tenantFieldsAfterMoveOut } from './moveOutTenantFields';
+
+/** A dollar amount from the request, in whole cents; 0 when it is not a number. */
+function cents(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+}
+
 /**
  * Process move-out workflow
  * Handles move-out in a transaction-safe way: updates contract, frees unit, calculates charges/refunds
+ *
+ * Ledger signs, as everywhere else (getLedgerBalance is the plain sum of
+ * posted amounts): charges positive, payments and credits negative, and
+ * refunds POSITIVE, because handing money back takes away the credit the
+ * tenant was holding. The screen sends `moveOutCharges` as the net of its
+ * lines (fees plus prorated rent, which is a credit when the month was
+ * already billed) and `moveOutRefund` as the credit left after them; a
+ * refund is posted only when the owner ticked Process Refund.
  */
 export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).https.onCall(async (data: any, context) => {
   if (!context.auth) {
@@ -52,6 +68,19 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
     throw new functions.https.HttpsError('invalid-argument', 'Missing required parameters');
   }
 
+  // The day the owner picked, at noon UTC (moveOutInstant), so the contract,
+  // the unit and the ledger all show that day in every US time zone.
+  const moveOutAt = moveOutInstant(moveOutDate);
+  if (!moveOutAt) {
+    throw new functions.https.HttpsError('invalid-argument', 'moveOutDate must be a date (yyyy-MM-dd)');
+  }
+  const charges = cents(moveOutCharges);
+  const refund = cents(moveOutRefund);
+  // Unticking Process Refund on the screen leaves the credit on the ledger.
+  // The screen always sends the refund it worked out, so the amount alone
+  // used to post a refund the owner had said not to give.
+  const refundPosted = processRefund === true && refund > 0;
+
   try {
     // Verify user has access to this facility
     const facilityDoc = await admin.firestore()
@@ -72,7 +101,7 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
       throw new functions.https.HttpsError('permission-denied', 'User does not have permission to process move-outs');
     }
 
-    const moveOutTimestamp = admin.firestore.Timestamp.fromDate(new Date(moveOutDate));
+    const moveOutTimestamp = admin.firestore.Timestamp.fromDate(moveOutAt);
     const now = admin.firestore.FieldValue.serverTimestamp();
 
     // Use Firestore transaction to ensure consistency
@@ -181,8 +210,10 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
       transaction.update(contractRef, {
         moveOutStatus: 'completed',
         moveOutDate: moveOutTimestamp,
-        moveOutCharges: moveOutCharges || 0,
-        moveOutRefund: moveOutRefund || 0,
+        moveOutCharges: charges,
+        // What was refunded, not what could have been: with Process Refund
+        // off the credit stays on the ledger and no refund was given.
+        moveOutRefund: refundPosted ? refund : 0,
         moveOutNotes: moveOutNotes || null,
         status: 'cancelled', // Mark contract as cancelled/ended
         isActive: false,
@@ -210,44 +241,54 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
         transaction.update(gate.ref, { isActive: false, updatedAt: now, updatedBy: userId });
       }
 
-    // 7. Create ledger entries for move-out charges if any
-      if (moveOutCharges && moveOutCharges > 0) {
+      // 7. The move-out's net charges: fees plus prorated rent. Negative
+      // when the month was already billed and the unused days outweigh the
+      // fees; that is a credit the tenant is owed, posted so the ledger
+      // carries it. It used to be dropped (only a positive net was posted)
+      // while the screen still counted it in the refund, so a refund of the
+      // unused days left the tenant apparently owing that much.
+      if (charges !== 0) {
         const ledgerRef = admin.firestore()
           .collection('facilities')
           .doc(facilityId)
           .collection('ledgers')
           .doc();
-        
+
         transaction.set(ledgerRef, {
           tenantId: tenantId,
           facilityId: facilityId,
-          type: 'moveOutFee',
-          amount: moveOutCharges,
-          description: 'Move-out charges',
+          type: charges > 0 ? 'moveOutFee' : 'credit',
+          amount: charges,
+          description: charges > 0 ? 'Move-out charges' : 'Move-out credit (unused prorated rent, less any fees)',
           referenceId: contractId,
           entryDate: moveOutTimestamp,
           status: 'posted',
           createdAt: now,
           createdBy: userId,
           metadata: {
-            moveOutDate: moveOutDate,
+            moveOutDate: moveOutAt.toISOString(),
           },
         });
       }
 
-    // 8. Create refund ledger entry if applicable
-      if (moveOutRefund && moveOutRefund > 0) {
+      // 8. The refund, only when the owner ticked Process Refund. Positive,
+      // as the Stripe webhook, the refund callable and Add Entry write
+      // refunds: the tenant held a credit (a negative balance) and the
+      // money was handed back, so what they owe returns to 0. Written
+      // negative, a $50 refund against a -$50 balance left -$100, and the
+      // facility looked as though it still owed the money it had just paid.
+      if (refundPosted) {
         const refundLedgerRef = admin.firestore()
           .collection('facilities')
           .doc(facilityId)
           .collection('ledgers')
           .doc();
-        
+
         transaction.set(refundLedgerRef, {
           tenantId: tenantId,
           facilityId: facilityId,
           type: 'refund',
-          amount: -moveOutRefund, // Negative for refunds
+          amount: refund,
           description: 'Move-out refund',
           referenceId: contractId,
           entryDate: moveOutTimestamp,
@@ -255,7 +296,8 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
           createdAt: now,
           createdBy: userId,
           metadata: {
-            moveOutDate: moveOutDate,
+            moveOutDate: moveOutAt.toISOString(),
+            moveOutRefund: true,
             refundMethod: refundMethod || 'manual',
           },
         });
@@ -267,6 +309,7 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
         contractId,
         unitId,
         tenantId,
+        refundPosted,
         rentNotice: settled.rentNotice,
         rentWarning: settled.rentWarning,
       };
@@ -275,6 +318,7 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
     if (result.alreadyCompleted) {
       return {
         ...result,
+        refundPosted: false,
         refundProcessed: false,
         message: 'This move-out was already completed, so nothing was charged or changed again.',
       };
@@ -282,14 +326,14 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
 
     // 9. Process refund via Stripe if requested
     const refundResult = null;
-    if (processRefund && moveOutRefund && moveOutRefund > 0 && refundMethod === 'creditCard') {
+    if (refundPosted && refundMethod === 'creditCard') {
       try {
         // Note: We can't directly call another Cloud Function, so we'll process it here
         // or the client can call processRefund separately after move-out completes
-        functions.logger.info(`Move-out refund should be processed separately: $${moveOutRefund}`, {
+        functions.logger.info(`Move-out refund should be processed separately: $${refund}`, {
           facilityId,
           tenantId,
-          amount: moveOutRefund,
+          amount: refund,
           refundMethod: 'creditCard',
           referenceId: data.refundReferenceId,
         });
@@ -312,9 +356,9 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
         const moveOutHtml = `
             <h2>Move-Out Confirmation</h2>
             <p>Dear ${tenantData.name || 'Tenant'},</p>
-            <p>This confirms that your move-out has been processed on ${new Date(moveOutDate).toLocaleDateString()}.</p>
-            ${moveOutCharges > 0 ? `<p><strong>Final Charges:</strong> $${moveOutCharges.toFixed(2)}</p>` : ''}
-            ${moveOutRefund > 0 ? `<p><strong>Refund Amount:</strong> $${moveOutRefund.toFixed(2)}</p>` : ''}
+            <p>This confirms that your move-out has been processed on ${moveOutAt.toLocaleDateString('en-US', { timeZone: 'UTC' })}.</p>
+            ${charges > 0 ? `<p><strong>Final Charges:</strong> $${charges.toFixed(2)}</p>` : ''}
+            ${refundPosted ? `<p><strong>Refund Amount:</strong> $${refund.toFixed(2)}</p>` : ''}
             ${moveOutNotes ? `<p><strong>Notes:</strong> ${moveOutNotes}</p>` : ''}
             <p>Thank you for your business.</p>
           `;

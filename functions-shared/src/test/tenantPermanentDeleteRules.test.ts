@@ -226,6 +226,59 @@ test('entitlement: mirrors _assertFacilityAllowsPermanentTenantDeletion', () => 
     assert.equal(facilityAllowsPermanentTenantDelete(unpaid, { subscriptionStatus: status }, now), false, String(status));
   }
 
+  // The card-backed free month (trialing with a Stripe subscription) counts as paid,
+  // like active, until its trial end plus a few days' grace for the webhook.
+  assert.equal(
+    facilityAllowsPermanentTenantDelete(
+      { platformSubscriptionStatus: 'trialing', stripePlatformSubscriptionId: 'sub_test_1', platformSubscriptionTrialEnd: earlier },
+      null,
+      now,
+    ),
+    true,
+  );
+  assert.equal(
+    facilityAllowsPermanentTenantDelete(
+      unpaid,
+      { subscriptionStatus: 'trialing', stripeSubscriptionId: 'sub_test_2', subscriptionTrialEnd: earlier },
+      now,
+    ),
+    true,
+  );
+  assert.equal(
+    facilityAllowsPermanentTenantDelete(
+      unpaid,
+      { subscriptionStatus: 'trialing', stripeSubscriptionId: 'sub_test_2', subscriptionTrialEnd: later, suspended: true },
+      now,
+    ),
+    false,
+  );
+  // Stale: the trial end is past the grace, or missing. Not paid.
+  const longAgo = { toMillis: () => now - 10 * 86_400_000 };
+  assert.equal(
+    facilityAllowsPermanentTenantDelete(
+      { platformSubscriptionStatus: 'trialing', stripePlatformSubscriptionId: 'sub_test_1', platformSubscriptionTrialEnd: longAgo },
+      null,
+      now,
+    ),
+    false,
+  );
+  assert.equal(
+    facilityAllowsPermanentTenantDelete(
+      { platformSubscriptionStatus: 'trialing', stripePlatformSubscriptionId: 'sub_test_1' },
+      null,
+      now,
+    ),
+    false,
+  );
+  assert.equal(
+    facilityAllowsPermanentTenantDelete(
+      unpaid,
+      { subscriptionStatus: 'trialing', stripeSubscriptionId: 'sub_test_2', subscriptionTrialEnd: longAgo },
+      now,
+    ),
+    false,
+  );
+
   assert.equal(facilityCreatorAccountIdOf({ facilityCreatorAccountId: 'acc1' }), 'acc1');
   assert.equal(facilityCreatorAccountIdOf({ facilityCreatorAccountId: '' }), null);
   assert.equal(facilityCreatorAccountIdOf({}), null);

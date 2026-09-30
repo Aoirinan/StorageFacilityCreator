@@ -1,25 +1,36 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import {
-  writeAuditLog,
-  getStripeClient,
   getOrCreateBasePriceId,
   getOrCreateAddOnPriceId,
+  DEFAULT_PLATFORM_TRIAL_DAYS,
+  writeAuditLog,
 } from '@sfc/functions-shared';
 import { tryUpdateExistingSubscriptionInsteadOfCheckout } from './stripePlatformSubscriptionCheckoutUpdateExisting';
 import { createSubscriptionCheckoutSessionAndAudit } from './stripePlatformSubscriptionCheckoutSessionCreate';
+import {
+  decideOfferForAccount,
+  resolvePlatformCheckoutDeps,
+  type PlatformCheckoutDeps,
+} from './platformCheckoutOfferContext';
 
 /**
  * Core flow for account-level subscription checkout (after auth, App Check, rate limit, and required fields).
+ * `deps` is for tests; the callable passes nothing.
  */
 export async function executeCreateSubscriptionCheckout(
   data: { accountId: string; customerEmail: string; successUrl?: string; cancelUrl?: string },
   context: functions.https.CallableContext,
+  deps?: Partial<PlatformCheckoutDeps>,
 ): Promise<unknown> {
   const { accountId, customerEmail, successUrl, cancelUrl } = data;
+  let auditLog = deps?.auditLog;
 
   try {
-    const accountDoc = await admin.firestore().collection('facilityCreatorAccounts').doc(accountId).get();
+    const { db, stripe, auditLog: resolvedAuditLog, nowMs } = resolvePlatformCheckoutDeps(deps);
+    auditLog = resolvedAuditLog;
+    const accountRef = db.collection('facilityCreatorAccounts').doc(accountId);
+    const accountDoc = await accountRef.get();
 
     if (!accountDoc.exists) {
       throw new functions.https.HttpsError('not-found', 'Account not found');
@@ -29,8 +40,6 @@ export async function executeCreateSubscriptionCheckout(
     if (accountData.ownerUid !== context.auth!.uid) {
       throw new functions.https.HttpsError('permission-denied', 'Access denied');
     }
-
-    const stripe = getStripeClient();
 
     let customerId = accountData.stripeCustomerId as string | undefined;
     if (!customerId) {
@@ -43,7 +52,7 @@ export async function executeCreateSubscriptionCheckout(
       });
       customerId = customer.id;
 
-      await admin.firestore().collection('facilityCreatorAccounts').doc(accountId).update({
+      await accountRef.update({
         stripeCustomerId: customerId,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
@@ -84,7 +93,7 @@ export async function executeCreateSubscriptionCheckout(
           accountId,
           subscriptionId,
         });
-        await admin.firestore().collection('facilityCreatorAccounts').doc(accountId).update({
+        await accountRef.update({
           stripeSubscriptionId: subscriptionId,
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         });
@@ -100,10 +109,30 @@ export async function executeCreateSubscriptionCheckout(
       basePriceId,
       addOnPriceId,
       uid: context.auth!.uid,
+      db,
+      auditLog,
     });
     if (updatedInstead) {
       return updatedInstead;
     }
+
+    // One trial and one free month per owner, ever. An unused free month is extra trial
+    // time after the owner's trial; once it is used, only the rest of a running app
+    // trial is left, and nothing fresh is ever given again.
+    const offer = await decideOfferForAccount({
+      db,
+      accountId,
+      account: { ...accountData, stripeSubscriptionId: subscriptionId ?? accountData.stripeSubscriptionId },
+      defaultTrialDays: DEFAULT_PLATFORM_TRIAL_DAYS,
+      nowMs: nowMs(),
+    });
+    functions.logger.info('Account subscription checkout offer', {
+      accountId,
+      trialDecision: offer.trial.kind,
+      trialReason: offer.trial.reason,
+      firstMonthFree: offer.firstMonthFree,
+      historyReasons: offer.history.reasons,
+    });
 
     return await createSubscriptionCheckoutSessionAndAudit({
       stripe,
@@ -116,6 +145,8 @@ export async function executeCreateSubscriptionCheckout(
       successUrl,
       cancelUrl,
       ownerUid: context.auth!.uid,
+      trial: offer.trial,
+      auditLog,
     });
   } catch (error: any) {
     const errorMessage = error?.message || 'Unknown error';
@@ -130,7 +161,7 @@ export async function executeCreateSubscriptionCheckout(
       errorCode: error?.code,
     });
 
-    await writeAuditLog(accountId, {
+    await (auditLog ?? writeAuditLog)(accountId, {
       action: 'subscription_checkout_failed',
       userId: context.auth?.uid,
       error: errorMessage,

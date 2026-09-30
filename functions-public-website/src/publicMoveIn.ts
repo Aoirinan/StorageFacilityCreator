@@ -1296,6 +1296,7 @@ function humanizeUnitType(unitTypeRaw: string): string {
     document: 'Document storage',
     wine: 'Wine storage',
     outdoor: 'Outdoor storage',
+    rvSite: 'RV site',
   };
   return m[unitTypeRaw] || unitTypeRaw;
 }

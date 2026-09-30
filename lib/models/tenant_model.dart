@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'occupant_model.dart';
 import 'address_model.dart';
+import 'package:sfcapp/models/security_deposit_model.dart';
 import 'tenant_autopay_model.dart';
 import 'tenant_stripe_model.dart';
 
@@ -193,6 +194,15 @@ class TenantModel {
   /// Manual per-month status overrides: key "yyyy-MM", value "paid"|"late"|"moved_out".
   final Map<String, String> monthStatusOverrides;
 
+  /// The security deposit the facility holds (or settled) for this tenant;
+  /// null when none is on file. Never part of the ledger balance.
+  final SecurityDeposit? securityDeposit;
+
+  /// Deposits settled before [securityDeposit] was recorded (a tenant who
+  /// came back, or paid a fresh deposit), oldest first. Empty for nearly
+  /// everyone.
+  final List<SecurityDeposit> securityDepositHistory;
+
   TenantModel({
     required this.id,
     required this.facilityId,
@@ -260,6 +270,8 @@ class TenantModel {
     this.stripe = const TenantStripeModel(),
     this.overlockIsActive = false,
     this.monthStatusOverrides = const {},
+    this.securityDeposit,
+    this.securityDepositHistory = const [],
   });
 
   /// Whether a tenant doc's `isActive` value makes it an active tenant: only
@@ -418,6 +430,12 @@ class TenantModel {
           ? Map<String, String>.from((data!['monthStatusOverrides'] as Map)
               .map((k, v) => MapEntry(k.toString(), v.toString())))
           : {},
+      securityDeposit: data?['securityDeposit'] is Map
+          ? SecurityDeposit.fromMap(
+              Map<String, dynamic>.from(data!['securityDeposit'] as Map))
+          : null,
+      securityDepositHistory:
+          SecurityDeposit.historyFromStored(data?['securityDepositHistory']),
     );
   }
 
@@ -545,6 +563,11 @@ class TenantModel {
       'overlockIsActive': overlockIsActive,
       if (monthStatusOverrides.isNotEmpty)
         'monthStatusOverrides': monthStatusOverrides,
+      if (securityDeposit != null) 'securityDeposit': securityDeposit!.toMap(),
+      if (securityDepositHistory.isNotEmpty)
+        'securityDepositHistory': [
+          for (final deposit in securityDepositHistory) deposit.toMap(),
+        ],
     };
   }
 
@@ -618,6 +641,9 @@ class TenantModel {
     TenantStripeModel? stripe,
     bool? overlockIsActive,
     Map<String, String>? monthStatusOverrides,
+    SecurityDeposit? securityDeposit,
+    bool clearSecurityDeposit = false,
+    List<SecurityDeposit>? securityDepositHistory,
   }) {
     return TenantModel(
       id: id ?? this.id,
@@ -688,6 +714,11 @@ class TenantModel {
       stripe: stripe ?? this.stripe,
       overlockIsActive: overlockIsActive ?? this.overlockIsActive,
       monthStatusOverrides: monthStatusOverrides ?? this.monthStatusOverrides,
+      securityDeposit: clearSecurityDeposit
+          ? null
+          : (securityDeposit ?? this.securityDeposit),
+      securityDepositHistory:
+          securityDepositHistory ?? this.securityDepositHistory,
     );
   }
 

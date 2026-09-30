@@ -497,8 +497,42 @@ class _TenantPastHistoryDialogState extends ConsumerState<TenantPastHistoryDialo
           Text('Choose the move-in date to list the months.', style: theme.textTheme.bodySmall)
         else if (_charges.isEmpty)
           Text('No months to add: rent is already on the ledger from the move-in month.', style: theme.textTheme.bodySmall)
-        else
+        else ...[
           for (var i = 0; i < _charges.length; i++) _buildChargeRow(i),
+          // A person renting two units was entered at their combined rent on
+          // a record whose rate was one unit's, and nothing said so. Above
+          // the rate is that case and gets the warning. The other unit is
+          // usually held by a duplicate record of the same person, so Assign
+          // Tenant alone stops on "occupied": the copy names Unassign first,
+          // and says what Unassign does to that copy (TenantService
+          // .unassignUnit switches it off once it holds no unit; its ledger
+          // stays). The rate only follows when it was the sum of the units
+          // already held (rentAfterUnitChange); otherwise Assign shows a
+          // "Check ... rent" notice and the owner sets it on Edit Tenant, so
+          // the copy says both. Below the rate is what the helper text
+          // invites (a rent raise, a discounted month), so it is only named,
+          // in case of a slip. Saving goes ahead either way; the rate is
+          // theirs to fix.
+          for (final amount in historyAmountsOffRate(charges: _charges, monthlyRate: widget.tenant.monthlyRate))
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: amount > widget.tenant.monthlyRate
+                  ? Text(
+                      '${_money(amount)} is more than this tenant\'s rate of ${_money(widget.tenant.monthlyRate)}. '
+                      'Do they rent another unit? Add it to this tenant first: open the other unit (Units › Unit List). '
+                      'If it shows a second copy of this tenant, choose Unassign Tenant there (that copy is switched off '
+                      'once it holds no unit; anything already entered on it stays there), then Assign Tenant and pick '
+                      'this tenant. Their rate becomes the total when it matched the rate of the unit they already hold; '
+                      'otherwise you are asked to check it under Edit Tenant.',
+                      style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.warning),
+                    )
+                  : Text(
+                      '${_money(amount)} is not this tenant\'s rate of ${_money(widget.tenant.monthlyRate)}. '
+                      'Fine if the rent was different then.',
+                      style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
+                    ),
+            ),
+        ],
         const SizedBox(height: 20),
         Text('2. Payments received', style: theme.textTheme.titleMedium),
         const SizedBox(height: 4),
