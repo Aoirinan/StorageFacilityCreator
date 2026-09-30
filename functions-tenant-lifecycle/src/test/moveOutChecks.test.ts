@@ -67,6 +67,7 @@ test('ledger rows: charges positive, a credit negative, a refund made in cash po
     description: 'Move-out credit (unused prorated rent, less any fees)',
   });
   assert.deepEqual(rows.refund, { amount: 36.67, method: 'cash' });
+  assert.equal(rows.cardRefund, null);
   assert.equal(rows.refundWarning, null);
   // The balance they leave with is 0: the credit, then the money paid back.
   assert.equal(rows.charges!.amount + rows.refund!.amount, 0);
@@ -83,10 +84,22 @@ test('ledger rows: charges positive, a credit negative, a refund made in cash po
 test('no refund row unless the owner made one outside Stripe', () => {
   // Not ticked: the tenant still holds the credit.
   assert.equal(moveOutLedgerRows({ moveOutCharges: -50, moveOutRefund: 50, processRefund: false, refundMethod: 'cash' }).refund, null);
-  // A card refund is made in Stripe, whose webhook posts it; nothing here made it.
+  // A card refund is not made or posted here: its amount goes back to the
+  // screen, which refunds it through processRefund. The webhook alone does
+  // not post it for every payment (an online move-in's PaymentIntent has no
+  // tenantId), so the warning no longer says the ledger will record it.
   const card = moveOutLedgerRows({ moveOutCharges: -50, moveOutRefund: 50, processRefund: true, refundMethod: 'creditCard' });
   assert.equal(card.refund, null);
-  assert.match(card.refundWarning ?? '', /^The \$50\.00 card refund was not made\. Refund it to their card in your Stripe dashboard/);
+  assert.equal(card.cardRefund, 50);
+  assert.equal(
+    card.refundWarning,
+    'The $50.00 card refund was not made by the move-out, and it stays on their ledger as a credit. ' +
+      'Refund it to their card in your Stripe dashboard, then record it on their ledger (Add entry, type Refund).',
+  );
+  assert.doesNotMatch(card.refundWarning ?? '', /when Stripe confirms/);
+  // Not ticked, or nothing to refund: no card refund either.
+  assert.equal(moveOutLedgerRows({ moveOutCharges: -50, moveOutRefund: 50, processRefund: false, refundMethod: 'creditCard' }).cardRefund, null);
+  assert.equal(moveOutLedgerRows({ moveOutCharges: 10, moveOutRefund: 0, processRefund: true, refundMethod: 'creditCard' }).cardRefund, null);
   assert.deepEqual(
     moveOutLedgerRows({ moveOutCharges: 0, moveOutRefund: 12.5, processRefund: true }).refund,
     { amount: 12.5, method: 'manual' },

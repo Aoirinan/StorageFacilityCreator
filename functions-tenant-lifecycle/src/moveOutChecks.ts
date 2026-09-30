@@ -90,10 +90,18 @@ function amountOf(value: unknown): number {
  *
  * The refund is posted only when the owner says it was made (processRefund)
  * by cash, check or ACH. It used to be posted negative, and whether or not
- * it was made: a $50 refund took a -$50 balance to -$100. A card refund is
- * made in Stripe, whose charge.refunded webhook posts it (keyed by the
- * refund's id); posted here too it would count twice, and nothing here
- * makes it, so [refundWarning] tells the owner to.
+ * it was made: a $50 refund took a -$50 balance to -$100.
+ *
+ * A card refund is not made or posted here: [cardRefund] is its amount,
+ * which the move-out screen then refunds through the processRefund callable
+ * (functions-integrations) against the tenant's card payments. That call
+ * makes the refund on the facility's Stripe account and posts it to the
+ * ledger as `refund_<Stripe refund id>`, the row charge.refunded converges
+ * on, so it is counted once. Whatever it cannot refund stays on the ledger
+ * as the tenant's credit, and [refundWarning] says what the owner does
+ * then. Stripe's webhook alone does not post it: an online move-in payment
+ * carries no tenantId on its PaymentIntent, and a checkout-link payment
+ * carries no metadata on it at all.
  */
 export function moveOutLedgerRows(input: {
   moveOutCharges: unknown;
@@ -103,6 +111,7 @@ export function moveOutLedgerRows(input: {
 }): {
   charges: { type: 'moveOutFee' | 'credit'; amount: number; description: string } | null;
   refund: { amount: number; method: string } | null;
+  cardRefund: number | null;
   refundWarning: string | null;
 } {
   const net = amountOf(input.moveOutCharges);
@@ -115,16 +124,18 @@ export function moveOutLedgerRows(input: {
   const refund = amountOf(input.moveOutRefund);
   const method = text(input.refundMethod) || 'manual';
   if (input.processRefund !== true || refund <= 0) {
-    return { charges, refund: null, refundWarning: null };
+    return { charges, refund: null, cardRefund: null, refundWarning: null };
   }
   if (method === 'creditCard') {
     return {
       charges,
       refund: null,
+      cardRefund: refund,
       refundWarning:
-        `The $${refund.toFixed(2)} card refund was not made. Refund it to their card in your Stripe ` +
-        'dashboard; the ledger records it when Stripe confirms the refund.',
+        `The $${refund.toFixed(2)} card refund was not made by the move-out, and it stays on their ledger ` +
+        'as a credit. Refund it to their card in your Stripe dashboard, then record it on their ledger ' +
+        '(Add entry, type Refund).',
     };
   }
-  return { charges, refund: { amount: refund, method }, refundWarning: null };
+  return { charges, refund: { amount: refund, method }, cardRefund: null, refundWarning: null };
 }

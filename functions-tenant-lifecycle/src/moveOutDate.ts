@@ -42,3 +42,22 @@ export function moveOutInstant(value: unknown): Date | null {
   const instant = new Date(text);
   return Number.isNaN(instant.getTime()) ? null : instant;
 }
+
+/** [d]'s calendar day in UTC, as a number that orders days: yyyymmdd. */
+function utcDayNumber(d: Date): number {
+  return d.getUTCFullYear() * 10000 + (d.getUTCMonth() + 1) * 100 + d.getUTCDate();
+}
+
+/**
+ * Why a move-out dated [moveOutAt] (from [moveOutInstant]) is refused as
+ * [now]: its day is after today, in UTC. The screen offers no day after
+ * today (its date picker ends at today, local time, which in every US time
+ * zone is never ahead of UTC's today), but a direct call or an old page
+ * could send one, and a move-out dated ahead prorates days that have not
+ * happened and frees a unit the tenant still uses. Null when it is today or
+ * earlier.
+ */
+export function moveOutFutureDateRefusal(moveOutAt: Date, now: Date): string | null {
+  if (utcDayNumber(moveOutAt) <= utcDayNumber(now)) return null;
+  return 'The move-out date is after today, so nothing was moved out. Pick today or an earlier day.';
+}

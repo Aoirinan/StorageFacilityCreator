@@ -9,6 +9,25 @@ import {
 import { STRIPE_SECRETS } from './secrets';
 
 /**
+ * The charge a refund of [paymentIntent] goes against: its `latest_charge`,
+ * an id or (expanded) the charge. PaymentIntents have had no `charges` list
+ * since Stripe API 2022-11-15, and this client pins a later version
+ * (functions-shared stripe/client.ts), so the retrieve below used to ask to
+ * expand 'charges', which Stripe refuses: every card refund failed with
+ * "Card refund failed ... No refund was issued". A `charges` list is still
+ * read when present, for a caller on an older version.
+ */
+export function refundChargeId(paymentIntent: unknown): string | null {
+  const pi = paymentIntent as {
+    latest_charge?: string | { id?: string } | null;
+    charges?: { data?: Array<{ id?: string }> };
+  } | null;
+  const latest = pi?.latest_charge;
+  const id = typeof latest === 'string' ? latest : latest?.id ?? pi?.charges?.data?.[0]?.id;
+  return typeof id === 'string' && id.length > 0 ? id : null;
+}
+
+/**
  * Process refund via Stripe
  * Used for move-out refunds and other refund scenarios
  */
@@ -67,7 +86,7 @@ export const processRefund = functions.runWith({ secrets: STRIPE_SECRETS }).http
         // told the refund went through while the card was never touched.
         const paymentIntent = await stripe.paymentIntents.retrieve(
           referenceId,
-          { expand: ['charges'] },
+          {},
           { stripeAccount: stripeConnectAccountId },
         );
 
@@ -75,11 +94,7 @@ export const processRefund = functions.runWith({ secrets: STRIPE_SECRETS }).http
           throw new Error('Payment intent not succeeded, cannot refund');
         }
 
-        const chargeId =
-          (paymentIntent as any).charges?.data?.[0]?.id ??
-          (typeof (paymentIntent as any).latest_charge === 'string'
-            ? (paymentIntent as any).latest_charge
-            : (paymentIntent as any).latest_charge?.id);
+        const chargeId = refundChargeId(paymentIntent);
         if (!chargeId) {
           throw new Error('Charge ID not found in payment intent');
         }

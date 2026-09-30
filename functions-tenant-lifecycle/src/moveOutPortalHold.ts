@@ -11,7 +11,7 @@ import {
 } from '@sfc/functions-shared';
 import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './secrets';
 import { enforceAppCheckOrThrow, enforceRateLimit, writeAuditLog } from './guardrails';
-import { moveOutInstant } from './moveOutDate';
+import { moveOutFutureDateRefusal, moveOutInstant } from './moveOutDate';
 import { moveOutProrationRate, tenantFieldsAfterMoveOut } from './moveOutTenantFields';
 import { instantDay, moveOutLines, moveOutPreviewRefusal, moveOutRentLine, postedBalance, wallDay } from './moveOutRent';
 import { contractTenantRefusal, contractUnitRefusal, moveOutLedgerRows } from './moveOutChecks';
@@ -33,8 +33,10 @@ function cents(value: unknown): number {
  * lines (fees plus prorated rent, which is a credit when the month was
  * already billed) and `moveOutRefund` as the credit left after them; a
  * refund is posted only when the owner ticked Process Refund and made it by
- * cash, check or ACH (moveOutLedgerRows): a card refund is made in Stripe,
- * whose charge.refunded webhook posts it.
+ * cash, check or ACH (moveOutLedgerRows). A card refund is not made here:
+ * the answer's `cardRefundDue` is its amount, which the screen refunds
+ * through processRefund (functions-integrations) and records on the
+ * contract (`moveOutCardRefund`, left 'pending' here until it does).
  */
 export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).https.onCall(async (data: any, context) => {
   if (!context.auth) {
@@ -76,6 +78,11 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
   const moveOutAt = moveOutInstant(moveOutDate);
   if (!moveOutAt) {
     throw new functions.https.HttpsError('invalid-argument', 'moveOutDate must be a date (yyyy-MM-dd)');
+  }
+  // No day after today (UTC), as the screen's date picker offers none.
+  const futureDate = moveOutFutureDateRefusal(moveOutAt, new Date());
+  if (futureDate) {
+    throw new functions.https.HttpsError('invalid-argument', futureDate);
   }
   // Whole cents, and 0 for anything that is not a number, as before.
   // Whether a refund is posted (Process Refund, and not by card) is
@@ -285,6 +292,13 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
         // off the credit stays on the ledger and no refund was given, and a
         // card refund is not made here.
         moveOutRefund: money.refund ? money.refund.amount : 0,
+        moveOutRefundMethod: money.refund ? money.refund.method : money.cardRefund ? 'creditCard' : null,
+        // A card refund the screen is to make next (processRefund). It
+        // records what happened here; 'pending' left behind means it never
+        // reported back, and the credit may still be on the ledger.
+        ...(money.cardRefund
+          ? { moveOutCardRefund: { status: 'pending', requested: money.cardRefund, refunded: 0 } }
+          : {}),
         moveOutNotes: moveOutNotes || null,
         status: 'cancelled', // Mark contract as cancelled/ended
         isActive: false,
@@ -411,6 +425,10 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
         rentWarning: settled.rentWarning,
         refundRecorded: money.refund !== null,
         refundWarning: money.refundWarning,
+        // The card refund the screen makes next through processRefund; 0
+        // when there is none. An older screen ignores it (and shows no
+        // refund, since refundPosted is false).
+        cardRefundDue: money.cardRefund ?? 0,
         charges: postedCharges,
       };
     });
@@ -421,27 +439,21 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
         refundPosted: false,
         refundRecorded: false,
         refundProcessed: false,
+        // Never refunded again on a retry.
+        cardRefundDue: 0,
         message: 'This move-out was already completed, so nothing was charged or changed again.',
       };
     }
 
-    // 9. Process refund via Stripe if requested
-    const refundResult = null;
-    if (processRefund === true && refund > 0 && refundMethod === 'creditCard') {
-      try {
-        // Note: We can't directly call another Cloud Function, so we'll process it here
-        // or the client can call processRefund separately after move-out completes
-        functions.logger.info(`Move-out refund should be processed separately: $${refund}`, {
-          facilityId,
-          tenantId,
-          amount: refund,
-          refundMethod: 'creditCard',
-          referenceId: data.refundReferenceId,
-        });
-      } catch (refundError: any) {
-        functions.logger.error('Error processing move-out refund:', refundError);
-        // Don't fail move-out if refund fails - it can be processed manually
-      }
+    // 9. A card refund is the screen's to make next, through processRefund
+    // (cardRefundDue); nothing here touches the card.
+    if ((result.cardRefundDue ?? 0) > 0) {
+      functions.logger.info(`Move-out card refund left to the screen: $${result.cardRefundDue}`, {
+        facilityId,
+        tenantId,
+        contractId,
+        amount: result.cardRefundDue,
+      });
     }
 
     // 10. Send move-out confirmation email (async, don't wait)
@@ -491,7 +503,8 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
     return {
       ...result,
       success: true,
-      refundProcessed: (refundResult as any)?.success || false,
+      // Nothing here refunds a card (cardRefundDue).
+      refundProcessed: false,
     };
   } catch (error: any) {
     functions.logger.error('Error processing move-out:', error);

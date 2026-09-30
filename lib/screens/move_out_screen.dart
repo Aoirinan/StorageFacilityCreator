@@ -4,14 +4,12 @@ import 'package:intl/intl.dart';
 import '../models/contract_model.dart';
 import '../models/tenant_model.dart';
 import '../models/unit_model.dart';
+import 'package:sfcapp/services/move_out_card_refund.dart';
 import '../services/move_out_service.dart';
 import '../services/contract_service.dart';
 import '../services/tenant_service.dart';
 import '../services/unit_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
-import '../router/app_router.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/router/back_navigation.dart';
 import 'package:sfcapp/utils/unit_label.dart';
@@ -61,6 +59,11 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
   bool _processRefund = false;
   String? _refundMethod;
   final _refundReferenceController = TextEditingController();
+
+  /// What the app would refund to the tenant's card, for the words under
+  /// Refund Method (MoveOutCardRefund.preview); null while it loads, or when
+  /// the method is not a card.
+  String? _cardRefundPreview;
 
   @override
   void initState() {
@@ -171,6 +174,7 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
         _processRefund = calculation.refundAmount > 0;
         _isCalculating = false;
       });
+      if (_refundMethod == 'creditCard') await _loadCardRefundPreview();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -184,6 +188,53 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
         });
       }
     }
+  }
+
+  /// Works out what the app would refund to the tenant's card, from their
+  /// posted ledger, for [_cardRefundPreview]. The refund itself is worked
+  /// out again, from a fresh read, once the move-out is done.
+  Future<void> _loadCardRefundPreview() async {
+    final tenant = _tenant;
+    final calculation = _calculation;
+    if (!mounted || tenant == null || calculation == null || calculation.refundAmount <= 0) return;
+    setState(() => _cardRefundPreview = null);
+    String preview;
+    try {
+      final rows = await MoveOutCardRefund.postedLedgerRows(
+        facilityId: widget.facilityId,
+        tenantId: tenant.id,
+      );
+      preview = MoveOutCardRefund.preview(MoveOutCardRefund.plan(
+        amount: calculation.refundAmount,
+        payments: MoveOutCardRefund.refundablePayments(rows),
+      ));
+    } catch (e) {
+      preview = "Couldn't check their card payments ($e). The app will try when you complete "
+          "the move-out, and tell you what it couldn't refund.";
+    }
+    if (!mounted || _refundMethod != 'creditCard' || !identical(calculation, _calculation)) return;
+    setState(() => _cardRefundPreview = preview);
+  }
+
+  /// A card refund that was not (all) made: what happened and what to do,
+  /// kept on screen until the owner closes it. A snackbar was gone in 15
+  /// seconds, with the credit still on the tenant's ledger.
+  Future<void> _showRefundAlert(MoveOutResult result) {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        key: const Key('move-out-card-refund-alert'),
+        title: Text(result.refundAlertTitle ?? 'Card refund not made'),
+        content: SingleChildScrollView(child: SelectableText(result.refundAlert!)),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// The contract's page, by id: where a move-out is started from, and where
@@ -229,6 +280,7 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
     });
 
     var completed = false;
+    MoveOutResult? completedResult;
     try {
       final result = await MoveOutService.completeMoveOut(
         tenantId: _tenant!.id,
@@ -247,11 +299,16 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
 
       if (result.success) {
         completed = true;
+        completedResult = result;
         if (mounted) {
+          final refundLine = result.refund != null && result.refund! > 0
+              ? '\n${result.refundByCard ? 'Refunded to their card' : 'Refund'}: '
+                  '\$${result.refund!.toStringAsFixed(2)}'
+              : '';
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
-                'Move-out completed successfully${result.refund != null && result.refund! > 0 ? '\nRefund: \$${result.refund!.toStringAsFixed(2)}' : ''}'
+                'Move-out completed successfully$refundLine'
                 // The tenant's new rent, or a request to check it.
                 '${result.notice != null ? '\n${result.notice}' : ''}'
                 '${result.warning != null ? '\n${result.warning}' : ''}',
@@ -281,6 +338,12 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
           _isProcessing = false;
         });
       }
+    }
+
+    // A card refund not (all) made stays on screen until the owner closes
+    // it, before the page goes.
+    if (completed && mounted && completedResult?.refundAlert != null) {
+      await _showRefundAlert(completedResult!);
     }
 
     // Leave outside the try, and leave the button off: a bare context.pop
@@ -736,16 +799,24 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
                   labelText: 'Refund Method',
                   border: OutlineInputBorder(),
                 ),
+                // Whether the app makes the refund is in the name: it
+                // refunds a card through Stripe; cash, a check or ACH the
+                // owner hands over, and the app records.
                 items: const [
-                  DropdownMenuItem(value: 'cash', child: Text('Cash')),
-                  DropdownMenuItem(value: 'check', child: Text('Check')),
-                  DropdownMenuItem(value: 'creditCard', child: Text('Credit Card Refund')),
-                  DropdownMenuItem(value: 'ach', child: Text('ACH')),
+                  DropdownMenuItem(value: 'cash', child: Text('Cash (you pay it; recorded now)')),
+                  DropdownMenuItem(value: 'check', child: Text('Check (you pay it; recorded now)')),
+                  DropdownMenuItem(
+                    value: 'creditCard',
+                    child: Text('Card (the app refunds it through Stripe)'),
+                  ),
+                  DropdownMenuItem(value: 'ach', child: Text('ACH (you send it; recorded now)')),
                 ],
                 onChanged: (value) {
                   setState(() {
                     _refundMethod = value;
+                    _cardRefundPreview = null;
                   });
+                  if (value == 'creditCard') _loadCardRefundPreview();
                 },
                 validator: (value) {
                   if (_processRefund && (value == null || value.isEmpty)) {
@@ -754,15 +825,32 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
                   return null;
                 },
               ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _refundReferenceController,
-                decoration: const InputDecoration(
-                  labelText: 'Reference Number (Optional)',
-                  border: OutlineInputBorder(),
-                  helperText: 'Check number, transaction ID, etc.',
+              if (_refundMethod != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _refundMethod == 'creditCard'
+                      ? _cardRefundPreview ?? 'Checking their card payments...'
+                      : 'You hand over the refund yourself; the app records it on their '
+                          'ledger as made when you complete the move-out.',
+                  key: const Key('move-out-refund-method-note'),
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: AppTheme.textSecondary),
                 ),
-              ),
+              ],
+              // The app fills in a card refund's Stripe ids itself.
+              if (_refundMethod != 'creditCard') ...[
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _refundReferenceController,
+                  decoration: const InputDecoration(
+                    labelText: 'Reference Number (Optional)',
+                    border: OutlineInputBorder(),
+                    helperText: 'Check number, transaction ID, etc.',
+                  ),
+                ),
+              ],
             ],
           ],
         ),

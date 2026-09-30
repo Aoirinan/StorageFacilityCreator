@@ -4,6 +4,31 @@ import type Stripe from 'stripe';
 import { getStripeClient } from '@sfc/functions-shared';
 
 /**
+ * Who a refund row belongs to once this event is merged into it: the
+ * tenant and reference the event names, else what the row already holds.
+ *
+ * processRefund (the app's card refund, the move-out screen's included)
+ * writes `refund_<id>` first, with the tenant it refunded. An online
+ * move-in's PaymentIntent carries no tenantId, so this merge wrote
+ * tenantId null over it: the refund dropped off the tenant's ledger while
+ * the credit it paid out stayed, and the tenant looked owed money already
+ * handed back, which invites a second refund. Its createdBy (the staff
+ * member who refunded) and referenceId (the PaymentIntent) are kept too.
+ */
+export function refundRowOwner(
+  existing: Record<string, unknown> | undefined,
+  fromEvent: { tenantId: string | null | undefined; referenceId: string | null },
+): { tenantId: string | null; referenceId: string | null; createdBy: string } {
+  const text = (value: unknown): string | null =>
+    typeof value === 'string' && value.trim().length > 0 ? value : null;
+  return {
+    tenantId: text(fromEvent.tenantId) ?? text(existing?.tenantId),
+    referenceId: fromEvent.referenceId ?? text(existing?.referenceId),
+    createdBy: text(existing?.createdBy) ?? 'system@stripe-webhook',
+  };
+}
+
+/**
  * Record a refund against the tenant's ledger.
  *
  * Two things this has to get right, both of which it previously did not:
@@ -76,20 +101,27 @@ export async function handleChargeRefunded(
       // another. A ledger that double-counts refunds understates what a tenant
       // owes, which is money the facility never collects.
       const ledgerRef = facilityRef.collection('ledgers').doc(`refund_${refund.id}`);
+      // processRefund may have written it first, naming the tenant this
+      // event cannot (refundRowOwner).
+      const existing = await ledgerRef.get();
+      const owner = refundRowOwner(existing.exists ? existing.data() : undefined, {
+        tenantId,
+        referenceId: existingPayments.empty ? null : existingPayments.docs[0].id,
+      });
       await ledgerRef.set(
         {
-          tenantId: tenantId || null,
+          tenantId: owner.tenantId,
           facilityId,
           type: 'refund',
           // Positive: a refund reverses a payment, so what the tenant owes goes
           // back up. Payments are stored negative, charges positive.
           amount: refund.amount / 100,
           description: `Refund for charge ${charge.id}`,
-          referenceId: existingPayments.empty ? null : existingPayments.docs[0].id,
+          referenceId: owner.referenceId,
           entryDate: admin.firestore.FieldValue.serverTimestamp(),
           status: 'posted',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          createdBy: 'system@stripe-webhook',
+          createdBy: owner.createdBy,
           metadata: {
             chargeId: charge.id,
             paymentIntentId,

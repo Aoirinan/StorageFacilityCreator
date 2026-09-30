@@ -5,14 +5,11 @@ import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:sfcapp/models/contract_model.dart';
 import 'package:sfcapp/models/invoice_line_item_model.dart';
-import 'package:sfcapp/models/ledger_entry_model.dart'
-    show LedgerEntryStatus, LedgerEntryType;
 import 'package:sfcapp/models/unit_model.dart';
-import 'package:sfcapp/services/audit_service.dart';
 import 'package:sfcapp/services/ledger_service.dart';
+import 'package:sfcapp/services/move_out_card_refund.dart';
 import 'package:sfcapp/services/move_out_rent.dart';
 import 'package:sfcapp/services/tenant_service.dart';
-import 'package:sfcapp/services/unit_service.dart';
 
 /// Service for managing move-out workflow
 class MoveOutService {
@@ -316,7 +313,17 @@ class MoveOutService {
     }
   }
 
-  /// Complete move-out workflow using Cloud Function for transaction safety
+  /// Completes the move-out through processMoveOut, which posts the lines,
+  /// ends the contract, frees the unit and settles the tenant in one
+  /// transaction, then makes a card refund, if one was asked for, through
+  /// processRefund ([MoveOutCardRefund]).
+  ///
+  /// There was a second path here (`useCloudFunction: false`, which nothing
+  /// passed) that wrote the same records from the app, one by one. For a
+  /// card refund it posted the refund as made and then called processRefund
+  /// with the typed reference number: a PaymentIntent id there refunded the
+  /// card and posted the refund a second time, and anything else refunded
+  /// nothing. It is gone.
   static Future<MoveOutResult> completeMoveOut({
     required String tenantId,
     required String facilityId,
@@ -328,194 +335,33 @@ class MoveOutService {
     bool processRefund = false,
     String? refundMethod, // 'cash', 'check', 'creditCard', 'ach'
     String? refundReferenceId,
-    bool useCloudFunction = true, // Use Cloud Function by default for transaction safety
   }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) throw Exception('User not authenticated');
-
-      if (kDebugMode) {
-        print('🔄 [MoveOut] Starting move-out process for tenant: $tenantId');
-      }
-
-      // Use Cloud Function for transaction-safe move-out processing
-      if (useCloudFunction) {
-        return await _completeMoveOutViaCloudFunction(
-          tenantId: tenantId,
-          facilityId: facilityId,
-          contractId: contractId,
-          unitId: unitId,
-          moveOutDate: moveOutDate,
-          calculation: calculation,
-          moveOutNotes: moveOutNotes,
-          processRefund: processRefund,
-          refundMethod: refundMethod,
-          refundReferenceId: refundReferenceId,
-        );
-      }
-
-      List<String> ledgerEntryIds = [];
-
-      // Step 1: Create ledger entries for move-out charges
-      for (final lineItem in calculation.lineItems) {
-        final entry = await LedgerService.createLedgerEntry(
-          tenantId: tenantId,
-          facilityId: facilityId,
-          type: LedgerEntryType.moveOutFee,
-          amount: lineItem.amount,
-          description: lineItem.description,
-          referenceId: contractId,
-          entryDate: moveOutDate,
-          status: LedgerEntryStatus.posted,
-          metadata: {
-            'lineItemId': lineItem.id,
-            'moveOutDate': moveOutDate.toIso8601String(),
-          },
-        );
-
-        ledgerEntryIds.add(entry.id);
-      }
-
-      // Step 2: Process refund if applicable
-      if (processRefund && calculation.refundAmount > 0) {
-        // Create refund ledger entry
-        final refundEntry = await LedgerService.createLedgerEntry(
-          tenantId: tenantId,
-          facilityId: facilityId,
-          type: LedgerEntryType.refund,
-          // Positive. A refund hands money back to the tenant, which removes a
-          // credit they were holding, so what they owe goes back up. Written
-          // negative, a $50 refund against a -$50 balance produced -$100: the
-          // system believed the facility still owed the money it had just paid
-          // out. The Stripe webhook already writes refunds positive.
-          amount: calculation.refundAmount,
-          description: 'Move-out Refund - ${refundMethod ?? 'Cash'}',
-          referenceId: refundReferenceId,
-          entryDate: DateTime.now(),
-          status: LedgerEntryStatus.posted,
-          metadata: {
-            'moveOutRefund': true,
-            'refundMethod': refundMethod,
-            'contractId': contractId,
-          },
-        );
-
-        ledgerEntryIds.add(refundEntry.id);
-
-        // Process refund via Stripe if credit card or ACH
-        if (refundMethod == 'creditCard' || refundMethod == 'ach') {
-          try {
-            // Call Cloud Function to process refund
-            final result = await _processStripeRefund(
-              facilityId: facilityId,
-              tenantId: tenantId,
-              amount: calculation.refundAmount,
-              refundMethod: refundMethod,
-              referenceId: refundReferenceId,
-            );
-            
-            if (kDebugMode) {
-              print('💸 [MoveOut] Stripe refund processed: $result');
-            }
-          } catch (e) {
-            if (kDebugMode) {
-              print('⚠️ [MoveOut] Error processing Stripe refund: $e');
-            }
-            // Don't fail move-out if refund fails - it's logged in ledger
-          }
-        } else {
-          // Cash/Check refunds are handled manually
-          if (kDebugMode) {
-            print('💸 [MoveOut] Refund processed: \$${calculation.refundAmount.toStringAsFixed(2)} via $refundMethod');
-          }
-        }
-      }
-
-      // From here the charges and refund above are posted, so a failed step
-      // is a warning on a completed move-out, never "Error completing
-      // move-out": a retry would post them again.
-      final warnings = <String>[];
-
-      // Step 3: Update contract with move-out status
-      // Note: ContractService.updateContract may need to be enhanced to support move-out fields
-      // For now, we'll update directly via Firestore
-      try {
-        await _firestore
-            .collection('facilities')
-            .doc(facilityId)
-            .collection('contracts')
-            .doc(contractId)
-            .update({
-          'moveOutStatus': MoveOutStatus.completed.name,
-          'moveOutDate': Timestamp.fromDate(moveOutDate),
-          'moveOutCharges': calculation.newCharges,
-          'moveOutRefund': calculation.refundAmount,
-          if (moveOutNotes != null && moveOutNotes.isNotEmpty) 'moveOutNotes': moveOutNotes,
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
-      } catch (e) {
-        warnings.add("The contract wasn't marked as moved out ($e).");
-      }
-
-      // Step 4: Update unit status to available
-      try {
-        await UnitService.updateUnit(
-          unitId: unitId,
-          facilityId: facilityId,
-          status: UnitStatus.available,
-          moveOutDate: moveOutDate,
-        );
-      } catch (e) {
-        warnings.add("The unit wasn't set to available ($e).");
-      }
-
-      // Steps 5 and 6: the tenant's own record and gate codes. A tenant who
-      // still rents another unit stays active with their gate codes on.
-      final tenantWarning = await settleTenantAfterMoveOut(
-        facilityId: facilityId,
-        tenantId: tenantId,
-        unitId: unitId,
-      );
-      if (tenantWarning != null) warnings.add(tenantWarning);
-
-      // Audit log
-      await AuditService.logMoveOutCompleted(
-        facilityId: facilityId,
-        tenantId: tenantId,
-        unitId: unitId,
-        contractId: contractId,
-        charges: calculation.newCharges,
-        refund: calculation.refundAmount,
-      );
-
-      if (kDebugMode) {
-        print('✅ [MoveOut] Move-out completed successfully');
-        print('   - Charges: \$${calculation.newCharges.toStringAsFixed(2)}');
-        print('   - Refund: \$${calculation.refundAmount.toStringAsFixed(2)}');
-        print('   - Ledger Entries: ${ledgerEntryIds.length}');
-      }
-
-      return MoveOutResult(
-        success: true,
-        ledgerEntryIds: ledgerEntryIds,
-        charges: calculation.newCharges,
-        refund: calculation.refundAmount,
-        warning: warnings.isEmpty ? null : warnings.join(' '),
-      );
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ [MoveOut] Error completing move-out: $e');
-      }
-      return MoveOutResult(
-        success: false,
-        error: e.toString(),
-      );
+    final user = _auth.currentUser;
+    if (user == null) {
+      return MoveOutResult(success: false, error: 'User not authenticated');
     }
+    if (kDebugMode) {
+      print('🔄 [MoveOut] Starting move-out process for tenant: $tenantId');
+    }
+    return _completeMoveOutViaCloudFunction(
+      tenantId: tenantId,
+      facilityId: facilityId,
+      contractId: contractId,
+      unitId: unitId,
+      moveOutDate: moveOutDate,
+      calculation: calculation,
+      moveOutNotes: moveOutNotes,
+      processRefund: processRefund,
+      refundMethod: refundMethod,
+      refundReferenceId: refundReferenceId,
+    );
   }
 
-  /// Steps 5 and 6 of [completeMoveOut]: [TenantService.recordMoveOut],
+  /// The app's own tenant step of a move-out: [TenantService.recordMoveOut],
   /// which switches the tenant (and their gate codes) off only when they
-  /// hold no other unit. Returns what the owner is shown with the finished
+  /// hold no other unit. processMoveOut does this step on the server
+  /// (tenantFieldsAfterMoveOut); this is kept, with its tests, as the app's
+  /// statement of the same rule, since the app path that called it is gone. Returns what the owner is shown with the finished
   /// move-out: the tenant's new rent or a request to check it, or a warning
   /// instead of throwing, since it runs after fees and refunds are posted.
   /// The old step set every tenant inactive and turned every gate code off,
@@ -599,7 +445,19 @@ class MoveOutService {
         print('✅ [MoveOut] Cloud Function completed successfully');
       }
 
-      return moveOutResultFromServer(data, calculation);
+      final moveOut = moveOutResultFromServer(data, calculation);
+      // A card refund is not made by processMoveOut: it answers with the
+      // amount, refunded here through processRefund. Never on a retry of a
+      // finished move-out (the server answers 0 then).
+      final due = cardRefundDue(data);
+      if (!moveOut.success || due <= 0) return moveOut;
+      final outcome = await MoveOutCardRefund.refundAfterMoveOut(
+        facilityId: facilityId,
+        tenantId: tenantId,
+        contractId: contractId,
+        amount: due,
+      );
+      return withCardRefund(moveOut, outcome);
     } on FirebaseFunctionsException catch (e) {
       if (kDebugMode) {
         print('❌ [MoveOut] Cloud Function error: ${e.code} - ${e.message}');
@@ -630,6 +488,17 @@ class MoveOutService {
   static String moveOutDay(DateTime moveOutDate) =>
       DateFormat('yyyy-MM-dd').format(moveOutDate);
 
+  /// The card refund processMoveOut left to the screen (`cardRefundDue`),
+  /// or 0: none asked for, a retry of a finished move-out, or a server from
+  /// before it (which recorded a card refund as made and says so in
+  /// refundPosted, so nothing is refunded here on top of it).
+  @visibleForTesting
+  static double cardRefundDue(Map<String, dynamic> data) {
+    if (data['alreadyCompleted'] == true) return 0;
+    final due = data['cardRefundDue'];
+    return due is num && due.isFinite && due > 0 ? MoveOutCardRefund.cents(due.toDouble()) : 0;
+  }
+
   /// What processMoveOut answered, for the screen. A move-out that had
   /// already been completed (a retry after a dropped connection) charged
   /// and freed nothing this time: its charges are not shown as posted
@@ -637,9 +506,10 @@ class MoveOutService {
   /// check it, comes with the result. The refund is shown only when the
   /// server recorded one (`refundRecorded`, or `refundPosted` from a server
   /// that sends only that): with Process Refund off the credit stays on the
-  /// ledger, and a card refund is made in Stripe, so why comes as a warning
-  /// (refundWarning). "Refund: $36.67" was shown for a card refund nothing
-  /// had made.
+  /// ledger. A card refund the server leaves to the screen ([cardRefundDue])
+  /// is made next ([withCardRefund]), so the server's refundWarning, which
+  /// says it was not made, is not shown for it. "Refund: $36.67" was shown
+  /// for a card refund nothing had made.
   @visibleForTesting
   static MoveOutResult moveOutResultFromServer(
     Map<String, dynamic> data,
@@ -652,9 +522,10 @@ class MoveOutService {
     // A server that sends neither predates both and recorded every refund.
     final recorded = data['refundRecorded'] ?? data['refundPosted'];
     final refundRecorded = recorded is bool ? recorded : true;
+    final cardRefundNext = cardRefundDue(data) > 0;
     final warnings = [
       if (text(data['rentWarning']) != null) text(data['rentWarning'])!,
-      if (text(data['refundWarning']) != null) text(data['refundWarning'])!,
+      if (!cardRefundNext && text(data['refundWarning']) != null) text(data['refundWarning'])!,
     ];
     return MoveOutResult(
       success: data['success'] == true,
@@ -669,34 +540,30 @@ class MoveOutService {
     );
   }
 
-  /// Process refund via Stripe Cloud Function
-  static Future<String> _processStripeRefund({
-    required String facilityId,
-    required String tenantId,
-    required double amount,
-    required String? refundMethod,
-    String? referenceId,
-  }) async {
-    try {
-      final functions = FirebaseFunctions.instance;
-      final callable = functions.httpsCallable('processRefund');
-
-      final result = await callable.call(<String, dynamic>{
-        'facilityId': facilityId,
-        'tenantId': tenantId,
-        'amount': amount,
-        'refundMethod': refundMethod,
-        'referenceId': referenceId,
-      });
-
-      return result.data['refundId'] as String? ?? 'unknown';
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ [MoveOut] Error calling refund Cloud Function: $e');
-      }
-      rethrow;
-    }
-  }
+  /// [moveOut] with the card refund [outcome] made after it: the amount
+  /// refunded to the card is shown as the refund, and when not all of it
+  /// was refunded, [MoveOutResult.refundAlert] says what happened and what
+  /// the owner does now (refund the rest in Stripe, then record it with Add
+  /// entry, type Refund). The screen keeps that on screen until they close
+  /// it, not in a snackbar that is gone in seconds.
+  @visibleForTesting
+  static MoveOutResult withCardRefund(MoveOutResult moveOut, CardRefundOutcome outcome) =>
+      MoveOutResult(
+        success: moveOut.success,
+        ledgerEntryIds: moveOut.ledgerEntryIds,
+        charges: moveOut.charges,
+        refund: outcome.refunded > 0 ? outcome.refunded : null,
+        refundByCard: outcome.refunded > 0,
+        refundAlert: outcome.ownerAlert,
+        refundAlertTitle: switch (outcome.status) {
+          CardRefundStatus.refunded => null,
+          CardRefundStatus.partial => 'Card refund only partly made',
+          CardRefundStatus.notMade => 'Card refund not made',
+        },
+        error: moveOut.error,
+        warning: moveOut.warning,
+        notice: moveOut.notice,
+      );
 }
 
 class MoveOutCalculation {
@@ -736,6 +603,16 @@ class MoveOutResult {
   /// For the owner with the finished move-out: the tenant's new rent.
   final String? notice;
 
+  /// [refund] went back to the tenant's card through Stripe.
+  final bool refundByCard;
+
+  /// A card refund that was not (all) made: what happened and what the
+  /// owner does now. Shown until they close it.
+  final String? refundAlert;
+
+  /// The heading for [refundAlert].
+  final String? refundAlertTitle;
+
   MoveOutResult({
     required this.success,
     this.ledgerEntryIds = const [],
@@ -744,6 +621,9 @@ class MoveOutResult {
     this.error,
     this.warning,
     this.notice,
+    this.refundByCard = false,
+    this.refundAlert,
+    this.refundAlertTitle,
   });
 }
 

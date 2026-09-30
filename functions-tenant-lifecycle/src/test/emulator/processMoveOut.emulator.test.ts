@@ -337,6 +337,23 @@ test('a move-out date that is not a date is refused before anything is written',
   assert.equal((await ledger()).length, 0);
 });
 
+test('a move-out dated after today (UTC) is refused before anything is written', { skip: skipWithoutEmulator }, async () => {
+  // The screen offers no later day; a direct call or an old page could.
+  await seed();
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  await rejectsWith(
+    moveOut('u101', 'c101', { moveOutDate: tomorrow, moveOutCharges: 10 }),
+    'invalid-argument',
+    /^The move-out date is after today, so nothing was moved out\./,
+  );
+  assert.equal((await unit('u101')).status, 'occupied');
+  assert.equal((await contract('c101')).isActive, true);
+  assert.equal((await ledger()).length, 0);
+  // Today (UTC) is allowed.
+  const today = new Date().toISOString().slice(0, 10);
+  assert.equal((await moveOut('u101', 'c101', { moveOutDate: today })).success, true);
+});
+
 test("another tenant's contract is refused before anything, and their own move-out still runs", { skip: skipWithoutEmulator }, async () => {
   // t1 sent with t2's contract c7 ended c7 and moved t1 out; t2's real
   // move-out through c7 was then answered "already completed".
@@ -416,8 +433,10 @@ test('a refund is posted positive, only once made, and the credit it pays out is
   assert.equal(kept.refundRecorded, false);
   assert.equal(await balance(), -36.67);
 
-  // By card: nothing here refunds the card, so nothing is posted as refunded
-  // and the owner is told; Stripe's webhook posts it when it is made.
+  // By card: nothing here refunds the card or posts a refund. The amount
+  // goes back as cardRefundDue for the screen to refund through
+  // processRefund, and the contract says a card refund is pending until
+  // the screen records what happened.
   await clearEmulator();
   await seed();
   const card = await moveOut('u101', 'c101', {
@@ -427,8 +446,38 @@ test('a refund is posted positive, only once made, and the credit it pays out is
     refundMethod: 'creditCard',
   });
   assert.equal(card.refundRecorded, false);
-  assert.match(String(card.refundWarning), /card refund was not made/);
+  assert.equal(card.refundPosted, false);
+  assert.equal(card.cardRefundDue, 36.67);
+  assert.equal(card.refundProcessed, false);
+  assert.match(String(card.refundWarning), /card refund was not made by the move-out/);
+  assert.doesNotMatch(String(card.refundWarning), /when Stripe confirms/);
   assert.equal(await balance(), -36.67);
+  const signed = await contract('c101');
+  assert.equal(signed.moveOutRefund, 0);
+  assert.equal(signed.moveOutRefundMethod, 'creditCard');
+  assert.deepEqual(signed.moveOutCardRefund, { status: 'pending', requested: 36.67, refunded: 0 });
+  // A retry (a dropped connection) is never refunded again.
+  const again = await moveOut('u101', 'c101', {
+    moveOutCharges: -36.67,
+    moveOutRefund: 36.67,
+    processRefund: true,
+    refundMethod: 'creditCard',
+  });
+  assert.equal(again.alreadyCompleted, true);
+  assert.equal(again.cardRefundDue, 0);
+
+  // Cash: no card refund, and none pending on the contract.
+  await clearEmulator();
+  await seed();
+  const byCash = await moveOut('u101', 'c101', {
+    moveOutCharges: -36.67,
+    moveOutRefund: 36.67,
+    processRefund: true,
+    refundMethod: 'cash',
+  });
+  assert.equal(byCash.cardRefundDue, 0);
+  assert.equal((await contract('c101')).moveOutRefundMethod, 'cash');
+  assert.equal((await contract('c101')).moveOutCardRefund, undefined);
 });
 
 /**
