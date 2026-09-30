@@ -18,7 +18,9 @@ import type { UnitNotOfferedReason } from '@sfc/functions-shared';
 import {
   amountsMatchCents,
   isPublicMoveInStripePaymentRequired,
+  isUnpricedPaidMoveIn,
   loadPublicMoveInChargeQuote,
+  MOVE_IN_NOT_PRICED_MESSAGE,
 } from './moveInCharges';
 import { SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, STRIPE_SECRETS } from './secrets';
 import { optionalStripeCheckoutCustomerEmail } from './stripeHelpers';
@@ -1214,6 +1216,24 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   });
   const requiredPaymentCents = chargeQuote.totalCents;
   const paymentRequired = isPublicMoveInStripePaymentRequired(facilityPre, chargeQuote.totalAmount);
+
+  // A unit with rent priced at $0 at a facility paid online: pricing went
+  // wrong, and the no-payment path below would hand the unit over for free.
+  // A renter who went through checkout for a positive amount and brings the
+  // payment still goes on to have it verified against that amount: one who
+  // has paid is not turned away.
+  const paidAtCheckout =
+    !skipPayment && Boolean(paymentIntentId) && Number(reservation.expectedCheckoutAmountCents) > 0;
+  if (isUnpricedPaidMoveIn(facilityPre, chargeQuote) && !paidAtCheckout) {
+    functions.logger.error('Public move-in: a unit with rent was priced at nothing', {
+      facilityId,
+      reservationId,
+      unitId: unitId || null,
+      monthlyRent: chargeQuote.monthlyRent,
+      moveInDate: moveInDate.toISOString(),
+    });
+    throw new functions.https.HttpsError('failed-precondition', MOVE_IN_NOT_PRICED_MESSAGE);
+  }
 
   if (paymentRequired) {
     if (skipPayment) {

@@ -8,11 +8,11 @@
  * completePublicMoveIn refused them, while the unit was free to be held and
  * rented by someone else.
  */
-import test from 'node:test';
+import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { Timestamp } from 'firebase-admin/firestore';
 import firebaseFunctionsTest from 'firebase-functions-test';
-import { computePublicMoveInCharges } from '../moveInCharges';
+import { computePublicMoveInCharges, MOVE_IN_NOT_PRICED_MESSAGE } from '../moveInCharges';
 import {
   CHECKOUT_RUN_OUT_MESSAGE,
   CHECKOUT_SESSION_MINUTES,
@@ -366,19 +366,140 @@ test('a move-in whose hold lapsed is refused without a payment, and left open fo
 
 // A renter who gave no move-in date
 
-test('checkout records the date it priced a move-in with no move-in date from', async () => {
-  const inMemory = new InMemoryFirestore();
+/**
+ * Runs [fn] with the clock stopped at [iso]. A renter with no move-in date is
+ * priced from the moment checkout runs, so these tests fix that moment rather
+ * than pass or fail by the day they run: the first of them failed on the 30th
+ * of the month, when the rent came to $0.
+ */
+async function atTime<T>(iso: string, fn: () => Promise<T>): Promise<T> {
+  mock.timers.enable({ apis: ['Date'], now: new Date(iso) });
+  try {
+    return await fn();
+  } finally {
+    mock.timers.reset();
+  }
+}
+
+/** Seeds a reservation for a renter who gave no move-in date. */
+function seedWithNoMoveInDate(inMemory: InMemoryFirestore) {
   seed(inMemory, { expiresInMinutes: 10 });
   inMemory.seed(RESERVATION_PATH, { ...inMemory.read(RESERVATION_PATH), moveInDate: null });
-  const { checkout } = loadPublicMoveIn(inMemory);
-  const before = Date.now();
+}
 
-  await checkout();
+function ledgerEntries(inMemory: InMemoryFirestore): Record<string, unknown>[] {
+  return inMemory
+    .listCollection(`facilities/${FACILITY}/ledgers`)
+    .map((docPath) => inMemory.read(docPath) as Record<string, unknown>);
+}
 
-  const reservation = inMemory.read(RESERVATION_PATH) as Record<string, unknown>;
-  const priced = millisOf(reservation.checkoutMoveInDate);
-  assert.ok(priced >= before && priced <= Date.now());
-  assert.equal(reservation.expectedCheckoutAmountCents, quoteCents(inMemory, new Date(priced)));
+test('checkout records the date it priced a move-in with no move-in date from', async () => {
+  await atTime('2026-09-15T20:00:00Z', async () => {
+    const inMemory = new InMemoryFirestore();
+    seedWithNoMoveInDate(inMemory);
+    const { checkout } = loadPublicMoveIn(inMemory);
+
+    await checkout();
+
+    const reservation = inMemory.read(RESERVATION_PATH) as Record<string, unknown>;
+    const priced = millisOf(reservation.checkoutMoveInDate);
+    assert.equal(priced, Date.parse('2026-09-15T20:00:00Z'));
+    assert.equal(reservation.expectedCheckoutAmountCents, quoteCents(inMemory, new Date(priced)));
+    // The 15th through the 30th: 16 of 30 days of $100. Measured from 20:00
+    // to midnight at the start of the 30th, this was 15 days.
+    assert.equal(reservation.expectedCheckoutAmountCents, 5333);
+  });
+});
+
+test('checkout on the last day of a month at 20:00 charges a day, not $0', async () => {
+  // Priced at 0 days, the total came to $0 and checkout refused it, so a
+  // renter with no move-in date could not pay online on the 30th or 31st.
+  await atTime('2026-09-30T20:00:00Z', async () => {
+    const inMemory = new InMemoryFirestore();
+    seedWithNoMoveInDate(inMemory);
+    const { checkout, stripeCalls } = loadPublicMoveIn(inMemory);
+
+    await checkout();
+
+    const reservation = inMemory.read(RESERVATION_PATH) as Record<string, unknown>;
+    assert.equal(reservation.expectedCheckoutAmountCents, 333);
+    const session = stripeCalls.find((c) => c.method === 'checkout.sessions.create');
+    assert.equal(session?.params?.line_items?.[0]?.price_data?.unit_amount, 333);
+  });
+});
+
+test('a renter who paid on the last day and finished after midnight is billed the day checkout priced', async () => {
+  await atTime('2026-09-30T23:55:00Z', async () => {
+    const inMemory = new InMemoryFirestore();
+    seedWithNoMoveInDate(inMemory);
+    const { checkout, complete } = loadPublicMoveIn(inMemory, { reservationId: RESERVATION });
+    await checkout();
+    assert.equal(inMemory.read(RESERVATION_PATH)?.expectedCheckoutAmountCents, 333);
+
+    mock.timers.tick(10 * MINUTE); // 00:05 on 1 Oct: today would price all of October.
+    const result = (await complete()) as { success?: boolean };
+
+    assert.equal(result.success, true);
+    const rent = ledgerEntries(inMemory).filter((e) => e.type === 'proratedRent');
+    assert.deepEqual(rent.map((e) => e.amount), [3.33]);
+    assert.equal(millisOf(inMemory.read(UNIT_PATH)?.moveInDate), Date.parse('2026-09-30T23:55:00Z'));
+  });
+});
+
+// Nothing to pay
+
+test('a renter moving in on the last day of a month cannot skip paying', async () => {
+  // The last day priced at $0, so with no fees completion took the
+  // nothing-to-pay path and moved in a caller who never went to checkout.
+  const inMemory = new InMemoryFirestore();
+  seed(inMemory, { expiresInMinutes: 10 });
+  inMemory.seed(RESERVATION_PATH, {
+    ...inMemory.read(RESERVATION_PATH),
+    moveInDate: Timestamp.fromDate(new Date('2026-09-30T20:00:00Z')),
+  });
+  const { complete } = loadPublicMoveIn(inMemory);
+
+  await assert.rejects(
+    () => complete({ skipPayment: true, paymentIntentId: undefined }),
+    refusedWith('Payment is required to complete this move-in.'),
+  );
+  assertNoMoveIn(inMemory);
+});
+
+test('a unit with rent priced at nothing is not handed over unpaid', async () => {
+  // Too little rent to come to a cent for the one day left in the month.
+  const inMemory = new InMemoryFirestore();
+  seed(inMemory, { expiresInMinutes: 10 });
+  inMemory.seed(UNIT_PATH, { ...UNIT_DATA, monthlyRate: 0.1 });
+  inMemory.seed(RESERVATION_PATH, {
+    ...inMemory.read(RESERVATION_PATH),
+    moveInDate: Timestamp.fromDate(new Date('2026-09-30T12:00:00Z')),
+  });
+  const { complete } = loadPublicMoveIn(inMemory);
+
+  await assert.rejects(
+    () => complete({ skipPayment: true, paymentIntentId: undefined }),
+    refusedWith(MOVE_IN_NOT_PRICED_MESSAGE),
+  );
+  assertNoMoveIn(inMemory);
+});
+
+test('a facility that takes no payment online still moves a renter in without paying', async () => {
+  // The charges go on the renter's ledger, to be paid to the facility.
+  const inMemory = new InMemoryFirestore();
+  seed(inMemory, { expiresInMinutes: 10 });
+  inMemory.seed(`facilities/${FACILITY}`, { name: 'Hold Storage' });
+  inMemory.seed(RESERVATION_PATH, {
+    ...inMemory.read(RESERVATION_PATH),
+    moveInDate: Timestamp.fromDate(new Date('2026-09-30T20:00:00Z')),
+  });
+  const { complete } = loadPublicMoveIn(inMemory);
+
+  const result = (await complete({ skipPayment: true, paymentIntentId: undefined })) as { success?: boolean };
+
+  assert.equal(result.success, true);
+  const rent = ledgerEntries(inMemory).filter((e) => e.type === 'proratedRent');
+  assert.deepEqual(rent.map((e) => e.amount), [3.33]);
 });
 
 test('a renter with no move-in date who paid finishes after the day changed', async () => {

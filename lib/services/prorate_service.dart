@@ -69,6 +69,27 @@ class ProrateService {
     return double.parse(proratedAmount.toStringAsFixed(2));
   }
 
+  /// The day an online move-in is priced from: the renter's chosen move-in
+  /// date, or else today's date in UTC.
+  ///
+  /// The server (calculateProratedRent in functions-public-website) prices a
+  /// move-in with no chosen date from the UTC date of the moment checkout
+  /// runs, and refuses a total that differs from its own by a cent. The
+  /// browser's local date is a day behind UTC every evening in the Americas
+  /// (from 8pm Eastern, 5pm Pacific in summer; an hour earlier in winter), so
+  /// a total priced from DateTime.now() was a day's rent off and checkout
+  /// turned the renter away. A chosen date is used as it is:
+  /// getPublicReservationByToken hands it over as a UTC instant already, the
+  /// date the server prices it from.
+  ///
+  /// Both sides are pinned to test/fixtures/move_in_proration.json.
+  static DateTime onlineMoveInPricingDate(
+    DateTime? chosenMoveInDate, {
+    DateTime? now,
+  }) {
+    return chosenMoveInDate ?? (now ?? DateTime.now()).toUtc();
+  }
+
   /// Calculate prorated amount for any charge
   /// 
   /// Useful for insurance, fees, etc. that are charged monthly
