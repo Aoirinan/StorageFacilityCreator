@@ -27,6 +27,12 @@
       );
     }
 
+    // The facility's owner (ownerUid) itself, not a co-owner or manager.
+    function isFacilityOwnerUid(facilityId) {
+      return isAuthenticated() && facilityExists(facilityId) &&
+        facilityDoc(facilityId).ownerUid == request.auth.uid;
+    }
+
     function isFacilityStaff(facilityId) {
       return isFacilityOwnerOrManager(facilityId) ||
         facilityRole(facilityId) == 'manager' ||
@@ -351,15 +357,34 @@
     }
 
     // Invite acceptance: pending invite must match signed-in email and claimed role (see PermissionService.assignRole).
+    // The same write must also mark that invite accepted by this user
+    // (inviteSpentByThisWrite). A verified address only, as for accepting
+    // the invite itself (facilities/{id}/invites).
     function pendingInviteMatchesUserRoleWrite(facilityId, inviteId, roleType, assignedBy) {
       return inviteId is string &&
         exists(inviteDocPath(facilityId, inviteId)) &&
         get(inviteDocPath(facilityId, inviteId)).data.status == 'pending' &&
         get(inviteDocPath(facilityId, inviteId)).data.facilityId == facilityId &&
         authEmailLower() != null &&
+        request.auth.token.email_verified == true &&
         get(inviteDocPath(facilityId, inviteId)).data.emailLower == authEmailLower() &&
         get(inviteDocPath(facilityId, inviteId)).data.roleType == roleType &&
-        get(inviteDocPath(facilityId, inviteId)).data.invitedBy == assignedBy;
+        get(inviteDocPath(facilityId, inviteId)).data.invitedBy == assignedBy &&
+        inviteSpentByThisWrite(facilityId, inviteId);
+    }
+
+    // An invite gives a role once: the role row and roles-map entry it allows
+    // are written in the batch that marks it accepted by this user
+    // (assignRole's one batch). Unspent, an invitee could join and leave the
+    // invite pending. A role row without the invitee's address (userEmail is
+    // theirs to write) or a roles-map entry alone left removeRole nothing to
+    // find the invite by, so it stayed pending and let them straight back in
+    // after every removal. And a row written while an invite said manager
+    // stayed active, and a manager to the callables that read rows, after the
+    // owner changed the invite to viewer.
+    function inviteSpentByThisWrite(facilityId, inviteId) {
+      return getAfter(inviteDocPath(facilityId, inviteId)).data.status == 'accepted' &&
+        getAfter(inviteDocPath(facilityId, inviteId)).data.acceptedBy == request.auth.uid;
     }
 
     // The accept write is set({roles: {<own uid>: <invite role>}, acceptingInviteId}, merge).
@@ -384,6 +409,57 @@
             ? request.resource.data.roles.diff(resource.data.roles).affectedKeys().hasOnly([request.auth.uid])
             : request.resource.data.roles.keys().hasOnly([request.auth.uid])
         );
+    }
+
+    // A manager removing a team member (PermissionService.removeRole): entries
+    // taken out of the roles and legacy managers maps, never the owner's, and
+    // nothing else on the facility. Only the owner could write the facility,
+    // so a manager's removal failed there and the user kept their access.
+    // Nor anyone the roles map names owner or admin (a co-owner): only the
+    // owner takes them off the team.
+    function facilityManagerRoleRemovalAllowed(facilityId) {
+      return isFacilityOwnerOrManager(facilityId) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['roles', 'managers']) &&
+        mapOnlyLosesKeys(resource.data.get('roles', {}), request.resource.data.get('roles', {}), resource.data.ownerUid) &&
+        mapOnlyLosesKeys(resource.data.get('managers', {}), request.resource.data.get('managers', {}), resource.data.ownerUid) &&
+        ownerOrAdminCount(resource.data.get('roles', {})) == ownerOrAdminCount(request.resource.data.get('roles', {}));
+    }
+
+    // How many entries of the roles map [roles] are 'owner' or 'admin'. With
+    // keys only taken out (mapOnlyLosesKeys), the same count before and after
+    // means none of those was. Rules cannot loop over the removed keys.
+    function ownerOrAdminCount(roles) {
+      return roles.values().size() - roles.values().removeAll(['owner', 'admin']).size();
+    }
+
+    // An invite's role, as created or updated (the role it had: [previousRole],
+    // null on create): 'owner' or 'admin' only from the facility's owner or a
+    // super admin (checked by the caller). A manager could invite a second
+    // login of their own as owner, which the roles map then holds, and an
+    // admin is one the managers cannot remove. A resend keeps the role it has.
+    function inviteRoleGrantAllowed(facilityId, previousRole) {
+      return request.resource.data.get('roleType', null) == previousRole ||
+        !(request.resource.data.get('roleType', null) in ['owner', 'admin']) ||
+        isFacilityOwnerUid(facilityId);
+    }
+
+    // Who sent an invite is shown to the invitee ("Invited by ..." on their
+    // dashboard and in the email), so it is the sender's own verified address
+    // or none. Anyone can create a facility and invite any address, and could
+    // otherwise sign one as support@storagefacilitycreator.com.
+    function inviteSenderEmailAllowed() {
+      return request.resource.data.get('invitedByEmail', null) == null ||
+        (request.auth.token.email_verified == true &&
+          request.resource.data.invitedByEmail == request.auth.token.email);
+    }
+
+    // [after] is [before] with some keys taken out, none of them [kept].
+    // a.diff(b).addedKeys() is the keys in a and not in b, so this diffs
+    // [after] against [before].
+    function mapOnlyLosesKeys(before, after, kept) {
+      return after.diff(before).addedKeys().size() == 0 &&
+        after.diff(before).changedKeys().size() == 0 &&
+        !after.diff(before).removedKeys().hasAny([kept]);
     }
 
     function stringMatchesTime(value) {

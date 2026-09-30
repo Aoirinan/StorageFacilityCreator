@@ -30,6 +30,12 @@ service cloud.firestore {
       );
     }
 
+    // The facility's owner (ownerUid) itself, not a co-owner or manager.
+    function isFacilityOwnerUid(facilityId) {
+      return isAuthenticated() && facilityExists(facilityId) &&
+        facilityDoc(facilityId).ownerUid == request.auth.uid;
+    }
+
     function isFacilityStaff(facilityId) {
       return isFacilityOwnerOrManager(facilityId) ||
         facilityRole(facilityId) == 'manager' ||
@@ -354,15 +360,34 @@ service cloud.firestore {
     }
 
     // Invite acceptance: pending invite must match signed-in email and claimed role (see PermissionService.assignRole).
+    // The same write must also mark that invite accepted by this user
+    // (inviteSpentByThisWrite). A verified address only, as for accepting
+    // the invite itself (facilities/{id}/invites).
     function pendingInviteMatchesUserRoleWrite(facilityId, inviteId, roleType, assignedBy) {
       return inviteId is string &&
         exists(inviteDocPath(facilityId, inviteId)) &&
         get(inviteDocPath(facilityId, inviteId)).data.status == 'pending' &&
         get(inviteDocPath(facilityId, inviteId)).data.facilityId == facilityId &&
         authEmailLower() != null &&
+        request.auth.token.email_verified == true &&
         get(inviteDocPath(facilityId, inviteId)).data.emailLower == authEmailLower() &&
         get(inviteDocPath(facilityId, inviteId)).data.roleType == roleType &&
-        get(inviteDocPath(facilityId, inviteId)).data.invitedBy == assignedBy;
+        get(inviteDocPath(facilityId, inviteId)).data.invitedBy == assignedBy &&
+        inviteSpentByThisWrite(facilityId, inviteId);
+    }
+
+    // An invite gives a role once: the role row and roles-map entry it allows
+    // are written in the batch that marks it accepted by this user
+    // (assignRole's one batch). Unspent, an invitee could join and leave the
+    // invite pending. A role row without the invitee's address (userEmail is
+    // theirs to write) or a roles-map entry alone left removeRole nothing to
+    // find the invite by, so it stayed pending and let them straight back in
+    // after every removal. And a row written while an invite said manager
+    // stayed active, and a manager to the callables that read rows, after the
+    // owner changed the invite to viewer.
+    function inviteSpentByThisWrite(facilityId, inviteId) {
+      return getAfter(inviteDocPath(facilityId, inviteId)).data.status == 'accepted' &&
+        getAfter(inviteDocPath(facilityId, inviteId)).data.acceptedBy == request.auth.uid;
     }
 
     // The accept write is set({roles: {<own uid>: <invite role>}, acceptingInviteId}, merge).
@@ -387,6 +412,57 @@ service cloud.firestore {
             ? request.resource.data.roles.diff(resource.data.roles).affectedKeys().hasOnly([request.auth.uid])
             : request.resource.data.roles.keys().hasOnly([request.auth.uid])
         );
+    }
+
+    // A manager removing a team member (PermissionService.removeRole): entries
+    // taken out of the roles and legacy managers maps, never the owner's, and
+    // nothing else on the facility. Only the owner could write the facility,
+    // so a manager's removal failed there and the user kept their access.
+    // Nor anyone the roles map names owner or admin (a co-owner): only the
+    // owner takes them off the team.
+    function facilityManagerRoleRemovalAllowed(facilityId) {
+      return isFacilityOwnerOrManager(facilityId) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['roles', 'managers']) &&
+        mapOnlyLosesKeys(resource.data.get('roles', {}), request.resource.data.get('roles', {}), resource.data.ownerUid) &&
+        mapOnlyLosesKeys(resource.data.get('managers', {}), request.resource.data.get('managers', {}), resource.data.ownerUid) &&
+        ownerOrAdminCount(resource.data.get('roles', {})) == ownerOrAdminCount(request.resource.data.get('roles', {}));
+    }
+
+    // How many entries of the roles map [roles] are 'owner' or 'admin'. With
+    // keys only taken out (mapOnlyLosesKeys), the same count before and after
+    // means none of those was. Rules cannot loop over the removed keys.
+    function ownerOrAdminCount(roles) {
+      return roles.values().size() - roles.values().removeAll(['owner', 'admin']).size();
+    }
+
+    // An invite's role, as created or updated (the role it had: [previousRole],
+    // null on create): 'owner' or 'admin' only from the facility's owner or a
+    // super admin (checked by the caller). A manager could invite a second
+    // login of their own as owner, which the roles map then holds, and an
+    // admin is one the managers cannot remove. A resend keeps the role it has.
+    function inviteRoleGrantAllowed(facilityId, previousRole) {
+      return request.resource.data.get('roleType', null) == previousRole ||
+        !(request.resource.data.get('roleType', null) in ['owner', 'admin']) ||
+        isFacilityOwnerUid(facilityId);
+    }
+
+    // Who sent an invite is shown to the invitee ("Invited by ..." on their
+    // dashboard and in the email), so it is the sender's own verified address
+    // or none. Anyone can create a facility and invite any address, and could
+    // otherwise sign one as support@storagefacilitycreator.com.
+    function inviteSenderEmailAllowed() {
+      return request.resource.data.get('invitedByEmail', null) == null ||
+        (request.auth.token.email_verified == true &&
+          request.resource.data.invitedByEmail == request.auth.token.email);
+    }
+
+    // [after] is [before] with some keys taken out, none of them [kept].
+    // a.diff(b).addedKeys() is the keys in a and not in b, so this diffs
+    // [after] against [before].
+    function mapOnlyLosesKeys(before, after, kept) {
+      return after.diff(before).addedKeys().size() == 0 &&
+        after.diff(before).changedKeys().size() == 0 &&
+        !after.diff(before).removedKeys().hasAny([kept]);
     }
 
     function stringMatchesTime(value) {
@@ -580,7 +656,8 @@ service cloud.firestore {
         request.resource.data.active == true &&
         !request.resource.data.keys().hasAny(facilityEntitlementWriteForbiddenKeys());
       
-      // Allow update by owner or super admin, or invitee merging their own role + trace field (assignRole)
+      // Allow update by owner or super admin, invitee merging their own role + trace field (assignRole),
+      // or a manager removing a team member (removeRole)
       allow update: if request.auth != null && (
         isSuperAdmin() ||
         (
@@ -588,7 +665,8 @@ service cloud.firestore {
           !request.resource.data.diff(resource.data).affectedKeys()
             .hasAny(facilityEntitlementWriteForbiddenKeys())
         ) ||
-        facilityInviteRoleMergeAllowed(facilityId)
+        facilityInviteRoleMergeAllowed(facilityId) ||
+        facilityManagerRoleRemovalAllowed(facilityId)
       );
       
       // Owners delete through the deleteFacilityPermanently callable, which
@@ -1080,25 +1158,59 @@ service cloud.firestore {
             'invitedBy'
           ]) &&
           request.resource.data.roleType is string &&
+          inviteRoleGrantAllowed(facilityId, null) &&
           request.resource.data.status == 'pending' &&
           request.resource.data.invitedBy == request.auth.uid &&
+          inviteSenderEmailAllowed() &&
           request.resource.data.invitedAt is timestamp);
+        // The facility's owner and managers edit its invites (resend, change
+        // the role, cancel) as this facility's: authorised by the path, and
+        // facilityId must name it after the write. Authorised by the doc's own
+        // facilityId, an invitee who pointed it at a facility of their own
+        // (anyone can create one) could reopen it as a manager invite and let
+        // themselves back in after every removal, or leave it pending where
+        // the real owner could neither cancel nor delete it, which made them
+        // unremovable. Whom it is addressed to and who sent it stay as
+        // written: the invitee is shown the sender, and a manager could
+        // readdress an owner's invite to a login of their own.
+        //
+        // Only the facility's owner sets a spent or cancelled invite back to
+        // pending. A manager could reopen an accepted owner invite (getting
+        // round the owner-only grant below), and a co-owner demoted to
+        // manager could reopen their own and accept it again, as owner. The
+        // app never reopens one: a resend is refused unless it is pending.
+        //
+        // The invitee may only accept a pending invite (a removed team member
+        // could flip their cancelled one to accepted, overwriting the record
+        // of the cancellation), and change nothing else on it. And only with
+        // a verified address: an unverified account can carry anyone's, and
+        // with the link could accept an invite it never received. The app
+        // signs out an unverified password login anyway (AuthService), and a
+        // Google sign-in's token says its address is verified.
         allow update: if isSuperAdmin() ||
-          (resource.data.facilityId != null && isFacilityOwnerOrManager(resource.data.facilityId)) ||
           (
+            isFacilityOwnerOrManager(facilityId) &&
+            request.resource.data.get('facilityId', facilityId) == facilityId &&
+            !request.resource.data.diff(resource.data).affectedKeys()
+              .hasAny(['email', 'emailLower', 'invitedBy', 'invitedByEmail']) &&
+            inviteRoleGrantAllowed(facilityId, resource.data.get('roleType', null)) &&
+            (
+              resource.data.get('status', null) == 'pending' ||
+              request.resource.data.get('status', null) != 'pending' ||
+              isFacilityOwnerUid(facilityId)
+            )
+          ) ||
+          (
+            resource.data.status == 'pending' &&
             authEmailLower() != null &&
+            request.auth.token.email_verified == true &&
             resource.data.emailLower == authEmailLower() &&
-            request.resource.data.emailLower == resource.data.emailLower &&
-            request.resource.data.roleType == resource.data.roleType &&
-            request.resource.data.invitedAt == resource.data.invitedAt &&
-            request.resource.data.invitedBy == resource.data.invitedBy &&
-            (!('invitedByEmail' in resource.data) || request.resource.data.invitedByEmail == resource.data.invitedByEmail) &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'acceptedAt', 'acceptedBy']) &&
             request.resource.data.status == 'accepted' &&
             request.resource.data.acceptedBy == request.auth.uid &&
             request.resource.data.acceptedAt is timestamp
           );
-        allow delete: if isSuperAdmin() || 
-          (resource.data.facilityId != null && isFacilityOwnerOrManager(resource.data.facilityId));
+        allow delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
       }
 
       match /digests/{digestId} {
@@ -2166,15 +2278,19 @@ service cloud.firestore {
       allow read: if request.auth != null && 
         resource.data.userId == request.auth.uid;
       
-      // Facility owners/managers can read roles for their facilities
-      allow read: if request.auth != null && 
-        exists(/databases/$(database)/documents/facilities/$(resource.data.facilityId)) &&
-        (
-          get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.ownerUid == request.auth.uid ||
-          get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.managers[request.auth.uid] == true
-        );
+      // Facility owners/managers can read roles for their facilities. Any
+      // manager: a manager who joined by invite is one in the roles map, not
+      // the legacy managers map, and was refused this read, so the team
+      // screen listed nobody and every removal they tried failed.
+      allow read: if request.auth != null &&
+        isFacilityOwnerOrManager(resource.data.facilityId);
       
-      // Allow create if user is super admin, facility owner, or has manageUsers permission
+      // Allow create by a super admin, the facility's owner, or an invitee
+      // accepting a pending invite. Managers invite instead (their
+      // assignRole was refused at the roles map anyway). A legacy manager
+      // could create an active row naming anyone, with any role, and a row is
+      // what the app reads for someone's role and the callables that move
+      // money accept as access.
       allow create: if request.auth != null && (
         isSuperAdmin() ||
         (
@@ -2182,11 +2298,7 @@ service cloud.firestore {
           request.resource.data.facilityId is string &&
           request.resource.data.roleType is string &&
           request.resource.data.assignedBy == request.auth.uid &&
-          exists(/databases/$(database)/documents/facilities/$(request.resource.data.facilityId)) &&
-          (
-            get(/databases/$(database)/documents/facilities/$(request.resource.data.facilityId)).data.ownerUid == request.auth.uid ||
-            get(/databases/$(database)/documents/facilities/$(request.resource.data.facilityId)).data.managers[request.auth.uid] == true
-          )
+          isFacilityOwnerUid(request.resource.data.facilityId)
         ) ||
         (
           request.resource.data.inviteId is string &&
@@ -2204,17 +2316,27 @@ service cloud.firestore {
         )
       );
       
-      // Allow update if super admin, facility owner, assignedBy self, or pending-invite acceptance (merge)
+      // Allow update by a super admin, the facility's owner, a manager taking
+      // someone off the team, or a pending-invite acceptance (merge).
+      // A manager (either map, as for reads) may only deactivate a row
+      // (removeRole), and never one naming an owner or admin: the row is what
+      // the app reads for someone's role and the callables that move money
+      // accept as access, so a manager who could set it could make anyone a
+      // manager, bring back someone removed, or demote a co-owner. Whoever
+      // assigned a row could do the same to it after leaving the team.
       allow update: if request.auth != null && (
         isSuperAdmin() ||
         (
           request.resource.data.userId == resource.data.userId &&
           request.resource.data.facilityId == resource.data.facilityId &&
-          exists(/databases/$(database)/documents/facilities/$(resource.data.facilityId)) &&
           (
-            get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.ownerUid == request.auth.uid ||
-            get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.managers[request.auth.uid] == true ||
-            resource.data.assignedBy == request.auth.uid
+            isFacilityOwnerUid(resource.data.facilityId) ||
+            (
+              isFacilityOwnerOrManager(resource.data.facilityId) &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isActive', 'updatedAt']) &&
+              request.resource.data.isActive == false &&
+              !(resource.data.get('roleType', null) in ['owner', 'admin'])
+            )
           )
         ) ||
         (
@@ -2234,16 +2356,12 @@ service cloud.firestore {
         )
       );
 
+      // The app never deletes a row (removeRole deactivates it). A legacy
+      // manager could delete anyone's, a co-owner's included, and whoever
+      // assigned a row could delete it after leaving the team.
       allow delete: if request.auth != null && (
         isSuperAdmin() ||
-        (
-          exists(/databases/$(database)/documents/facilities/$(resource.data.facilityId)) &&
-          (
-            get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.ownerUid == request.auth.uid ||
-            get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.managers[request.auth.uid] == true ||
-            resource.data.assignedBy == request.auth.uid
-          )
-        )
+        isFacilityOwnerUid(resource.data.facilityId)
       );
     }
 

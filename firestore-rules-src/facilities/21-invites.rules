@@ -23,24 +23,58 @@
             'invitedBy'
           ]) &&
           request.resource.data.roleType is string &&
+          inviteRoleGrantAllowed(facilityId, null) &&
           request.resource.data.status == 'pending' &&
           request.resource.data.invitedBy == request.auth.uid &&
+          inviteSenderEmailAllowed() &&
           request.resource.data.invitedAt is timestamp);
+        // The facility's owner and managers edit its invites (resend, change
+        // the role, cancel) as this facility's: authorised by the path, and
+        // facilityId must name it after the write. Authorised by the doc's own
+        // facilityId, an invitee who pointed it at a facility of their own
+        // (anyone can create one) could reopen it as a manager invite and let
+        // themselves back in after every removal, or leave it pending where
+        // the real owner could neither cancel nor delete it, which made them
+        // unremovable. Whom it is addressed to and who sent it stay as
+        // written: the invitee is shown the sender, and a manager could
+        // readdress an owner's invite to a login of their own.
+        //
+        // Only the facility's owner sets a spent or cancelled invite back to
+        // pending. A manager could reopen an accepted owner invite (getting
+        // round the owner-only grant below), and a co-owner demoted to
+        // manager could reopen their own and accept it again, as owner. The
+        // app never reopens one: a resend is refused unless it is pending.
+        //
+        // The invitee may only accept a pending invite (a removed team member
+        // could flip their cancelled one to accepted, overwriting the record
+        // of the cancellation), and change nothing else on it. And only with
+        // a verified address: an unverified account can carry anyone's, and
+        // with the link could accept an invite it never received. The app
+        // signs out an unverified password login anyway (AuthService), and a
+        // Google sign-in's token says its address is verified.
         allow update: if isSuperAdmin() ||
-          (resource.data.facilityId != null && isFacilityOwnerOrManager(resource.data.facilityId)) ||
           (
+            isFacilityOwnerOrManager(facilityId) &&
+            request.resource.data.get('facilityId', facilityId) == facilityId &&
+            !request.resource.data.diff(resource.data).affectedKeys()
+              .hasAny(['email', 'emailLower', 'invitedBy', 'invitedByEmail']) &&
+            inviteRoleGrantAllowed(facilityId, resource.data.get('roleType', null)) &&
+            (
+              resource.data.get('status', null) == 'pending' ||
+              request.resource.data.get('status', null) != 'pending' ||
+              isFacilityOwnerUid(facilityId)
+            )
+          ) ||
+          (
+            resource.data.status == 'pending' &&
             authEmailLower() != null &&
+            request.auth.token.email_verified == true &&
             resource.data.emailLower == authEmailLower() &&
-            request.resource.data.emailLower == resource.data.emailLower &&
-            request.resource.data.roleType == resource.data.roleType &&
-            request.resource.data.invitedAt == resource.data.invitedAt &&
-            request.resource.data.invitedBy == resource.data.invitedBy &&
-            (!('invitedByEmail' in resource.data) || request.resource.data.invitedByEmail == resource.data.invitedByEmail) &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'acceptedAt', 'acceptedBy']) &&
             request.resource.data.status == 'accepted' &&
             request.resource.data.acceptedBy == request.auth.uid &&
             request.resource.data.acceptedAt is timestamp
           );
-        allow delete: if isSuperAdmin() || 
-          (resource.data.facilityId != null && isFacilityOwnerOrManager(resource.data.facilityId));
+        allow delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
       }
 
