@@ -20,6 +20,7 @@ import '../widgets/keyboard_scrollable.dart';
 import 'package:sfcapp/utils/move_in_checkout_return.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:sfcapp/services/prorate_service.dart';
 
 /// What the move-in page reads besides the move-in callables
 /// (PublicRentalService), and how it opens Stripe's page. Replaced in tests.
@@ -262,7 +263,9 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
     if (_unit == null || _facility == null || _reservation == null) return;
 
     try {
-      final moveInDate = _reservation!.moveInDate ?? DateTime.now();
+      // The day the server prices from, so checkout accepts this total.
+      final moveInDate =
+          ProrateService.onlineMoveInPricingDate(_reservation!.moveInDate);
       final billing = _facility?.billingSettings;
       final adminFee = _numberFromMap(
         billing,
