@@ -1857,3 +1857,47 @@ test("gate codes: a super admin with no role can read a tenant's and switch it o
   await assertSucceeds(admin.doc('g1').update(off('admin-user')));
   await assertSucceeds(gates(testEnv.authenticatedContext(STAFF_UID)).doc('g1').update(off(STAFF_UID)));
 });
+
+test('gate codes: a super admin with no role can only switch one off, nothing else', async () => {
+  // Least privilege: Unassign Tenant needs isActive false stamped with the
+  // caller, no more. Staff keep their wider update.
+  await seedFacility();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilities').doc(FACILITY_ID).collection('gateAccess').doc('g2').set({
+      facilityId: FACILITY_ID,
+      tenantId: TENANT_ID,
+      accessCode: '5678',
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      createdBy: OWNER_UID,
+    });
+  });
+  const gates = (context) => context.firestore().collection('facilities').doc(FACILITY_ID).collection('gateAccess');
+  const admin = gates(testEnv.authenticatedContext('admin-user', { superadmin: true }));
+  const stamp = { updatedAt: serverTimestamp(), updatedBy: 'admin-user' };
+
+  // Not on, not a new code, hours or tenant, even alongside switching it off.
+  await assertFails(admin.doc('g2').update({ ...stamp, isActive: true }));
+  await assertFails(admin.doc('g2').update({ ...stamp, isActive: false, accessCode: '0000' }));
+  await assertFails(admin.doc('g2').update({ ...stamp, isActive: false, tenantId: 'someone-else' }));
+  await assertFails(admin.doc('g2').update({ ...stamp, isActive: false, allowedDays: ['Mon'] }));
+  await assertFails(admin.doc('g2').update({ ...stamp, accessCode: '0000' }));
+  // Off, stamped with the caller: allowed; again once off (the same write) too.
+  await assertSucceeds(admin.doc('g2').update({ ...stamp, isActive: false }));
+  await assertSucceeds(admin.doc('g2').update({ ...stamp, isActive: false }));
+  // Switched off, a super admin cannot switch it back on; staff can.
+  await assertFails(admin.doc('g2').update({ ...stamp, isActive: true }));
+  const staff = gates(testEnv.authenticatedContext(STAFF_UID));
+  await assertSucceeds(staff.doc('g2').update({ isActive: true, accessCode: '9999', updatedAt: serverTimestamp(), updatedBy: STAFF_UID }));
+  // A super admin still cannot create or delete one.
+  await assertFails(admin.doc('g3').set({
+    facilityId: FACILITY_ID,
+    accessCode: '1111',
+    isActive: true,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    createdBy: 'admin-user',
+  }));
+  await assertFails(admin.doc('g2').delete());
+});
