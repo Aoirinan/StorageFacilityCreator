@@ -1,5 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sfcapp/models/facility_creator_account_model.dart';
 import 'package:sfcapp/services/subscription_banner_logic.dart';
+import 'package:sfcapp/widgets/subscription_warning_banner.dart';
 
 void main() {
   final now = DateTime(2026, 9, 14);
@@ -230,5 +232,68 @@ test("a billing-exempt facility never nags, whatever Stripe says", () {
       supportSession: true,
     );
     expect(decision.show, isFalse);
+  });
+
+  test('a suspended account gets no Subscribe banner, whatever its status says', () {
+    // Suspending also cancels the account, which read as "Your subscription
+    // has been cancelled" beside Subscribe Now, a checkout the server now
+    // refuses and one that never lifted a suspension.
+    for (final status in ['cancelled', 'active', 'pastDue']) {
+      final decision = decideSubscriptionBanner(
+        account: AccountSubscriptionState(
+          status: status,
+          currentPeriodEnd: now.add(const Duration(days: 5)),
+          suspended: true,
+        ),
+        facilities: const [],
+        now: now,
+      );
+      expect(decision.show, isFalse, reason: status);
+    }
+    // Per-facility subscriptions do not bring it back either.
+    expect(
+      decideSubscriptionBanner(
+        account: const AccountSubscriptionState(status: 'cancelled', suspended: true),
+        facilities: const [
+          FacilitySubscriptionState(name: 'North Lot', perFacility: true, status: 'past_due'),
+        ],
+        now: now,
+      ).show,
+      isFalse,
+    );
+    // Not suspended, the same cancelled account is still warned.
+    expect(
+      decideSubscriptionBanner(
+        account: AccountSubscriptionState(
+            status: 'cancelled', currentPeriodEnd: now.add(const Duration(days: 5))),
+        facilities: const [],
+        now: now,
+      ).show,
+      isTrue,
+    );
+  });
+
+  test("the banner decides on the account's suspension too", () {
+    // The decision was tested, but not what the banner hands it: without the
+    // suspension a suspended owner saw Subscribe Now again.
+    FacilityCreatorAccountModel account({required bool suspended}) => FacilityCreatorAccountModel(
+          accountId: 'acct-1',
+          ownerUid: 'owner',
+          ownerEmail: 'owner@example.com',
+          ownerName: 'Owner',
+          subscriptionStatus: SubscriptionStatus.cancelled,
+          subscriptionCurrentPeriodEnd: now.add(const Duration(days: 5)),
+          suspended: suspended,
+          createdAt: now,
+          updatedAt: now,
+        );
+    bool shown({required bool suspended}) => decideSubscriptionBanner(
+          account: SubscriptionWarningBanner.accountStateOf(account(suspended: suspended)),
+          facilities: const [],
+          now: now,
+        ).show;
+
+    expect(shown(suspended: true), isFalse);
+    expect(shown(suspended: false), isTrue);
   });
 }

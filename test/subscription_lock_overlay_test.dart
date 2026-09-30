@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sfcapp/models/facility_creator_account_model.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/models/owner_account_standing.dart';
 import 'package:sfcapp/services/subscription_guard_service.dart';
 import 'package:sfcapp/widgets/subscription_lock_overlay.dart';
 
@@ -23,12 +25,44 @@ FacilityCreatorAccountModel _account({required bool suspended}) {
   );
 }
 
+FacilityCreatorAccountModel _active() {
+  final now = DateTime.now();
+  return FacilityCreatorAccountModel(
+    accountId: 'acct_1',
+    ownerUid: 'owner_1',
+    ownerEmail: 'owner@example.com',
+    ownerName: 'Owner',
+    subscriptionStatus: SubscriptionStatus.active,
+    subscriptionCurrentPeriodEnd: now.add(const Duration(days: 20)),
+    createdAt: now,
+    updatedAt: now,
+  );
+}
+
+/// A facility the signed-in team member works at, whose owner's account the
+/// backend copied onto it as [standing].
+FacilityModel _teamFacility(OwnerAccountStanding standing) => FacilityModel(
+      id: 'fac_team',
+      name: 'Owner Storage',
+      ownerUid: 'owner_1',
+      createdAt: DateTime(2026),
+      facilityCreatorAccountId: 'acct_owner',
+      ownerAccountStanding: standing,
+      currentUserOwnsFacility: false,
+    );
+
 void main() {
   const subscribe = 'Subscribe your facility (\$75/mo)';
 
   /// The overlay in the shell on /dashboard, deciding the lock with the real
-  /// shellLock rule over [account] (read from a fake).
-  Future<List<String>> pumpOverlay(WidgetTester tester, FacilityCreatorAccountModel account) async {
+  /// shellLock rule over the account [account] returns (read from a fake)
+  /// and the facilities [facilities] returns.
+  Future<List<String>> pumpOverlay(
+    WidgetTester tester,
+    FacilityCreatorAccountModel? account, {
+    FacilityCreatorAccountModel? Function()? accountNow,
+    List<FacilityModel> Function()? facilities,
+  }) async {
     final contacted = <String>[];
     final router = GoRouter(initialLocation: '/dashboard', routes: [
       GoRoute(
@@ -37,8 +71,8 @@ void main() {
           currentUser: () => MockUser(uid: 'owner_1', email: 'owner@example.com'),
           shellLock: (uid) => SubscriptionGuardService.shellLock(
             uid,
-            accountProvider: (_) async => account,
-            facilitiesProvider: () async => const [],
+            accountProvider: (_) async => accountNow != null ? accountNow() : account,
+            facilitiesProvider: () async => facilities != null ? facilities() : const [],
           ),
           contactSupport: () async => contacted.add('support'),
           child: const Text('the app'),
@@ -86,6 +120,82 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('subscription page'), findsOneWidget);
     expect(contacted, isEmpty);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('re-checks every 10 seconds: paying elsewhere unlocks, a suspension locks',
+      (tester) async {
+    // Nothing re-evaluated the lock after the first check once the chain of
+    // delayed calls was a timer, so an owner who paid in another tab stayed
+    // locked, and an account suspended mid-session stayed open.
+    var account = _account(suspended: false);
+    await pumpOverlay(tester, null, accountNow: () => account);
+    expect(find.text('Subscription Required'), findsOneWidget);
+
+    account = _active();
+    await tester.pump(const Duration(seconds: 9));
+    await tester.pump();
+    expect(find.text('Subscription Required'), findsOneWidget, reason: 'not yet');
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump();
+    expect(find.text('Subscription Required'), findsNothing);
+    expect(find.text('the app'), findsOneWidget);
+
+    account = _account(suspended: true);
+    await tester.pump(const Duration(seconds: 10));
+    await tester.pump();
+    expect(find.text('Account Suspended'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a team member of a lapsed owner is told to ask the owner, not to subscribe',
+      (tester) async {
+    // With no account of their own, staff were offered Subscribe your
+    // facility and Manage Subscription for a facility they do not own.
+    var standing = const OwnerAccountStanding(
+      accountId: 'acct_owner',
+      subscriptionStatus: SubscriptionStatus.cancelled,
+    );
+    final contacted =
+        await pumpOverlay(tester, null, facilities: () => [_teamFacility(standing)]);
+
+    expect(find.text('Team Access Paused'), findsOneWidget);
+    expect(find.textContaining('Ask the owner to renew it'), findsOneWidget);
+    expect(find.text(subscribe), findsNothing);
+    expect(find.text('Manage Subscription'), findsNothing);
+    expect(find.text('Contact support'), findsNothing);
+
+    // The owner renews; Check again lets them straight back in.
+    standing = const OwnerAccountStanding(
+      accountId: 'acct_owner',
+      subscriptionStatus: SubscriptionStatus.active,
+    );
+    await tester.tap(find.text('Check again'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Team Access Paused'), findsNothing);
+    expect(find.text('the app'), findsOneWidget);
+    expect(contacted, isEmpty);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets("and a suspended owner's team member is not told to have it renewed",
+      (tester) async {
+    await pumpOverlay(tester, null, facilities: () => [
+          _teamFacility(const OwnerAccountStanding(
+            accountId: 'acct_owner',
+            subscriptionStatus: SubscriptionStatus.cancelled,
+            suspended: true,
+          )),
+        ]);
+
+    expect(find.text('Team Access Paused'), findsOneWidget);
+    expect(find.textContaining("owner's account is suspended"), findsOneWidget);
+    expect(find.textContaining('renew'), findsNothing);
+    expect(find.text(subscribe), findsNothing);
 
     await tester.pumpWidget(const SizedBox());
   });
