@@ -6,7 +6,7 @@ const kinds = (before: Record<string, unknown>, after: Record<string, unknown>) 
   describeA2PTransition(before, after).map((a) => a.kind);
 
 test('no alert when nothing registration-related changed', () => {
-  const doc = { a2pStatus: 'pending', a2pBundleReady: true, name: 'Keepsake' };
+  const doc = { a2pStatus: 'pending', a2pBundleReady: true, name: 'Pinewood' };
   assert.deepEqual(kinds(doc, { ...doc, occupiedUnits: 73 }), []);
 });
 
@@ -55,12 +55,12 @@ test('campaign status transitions', () => {
 
 test('email names the facility and never carries tax IDs', () => {
   const facility = {
-    name: 'Keepsake Self Storage',
-    textingBusinessData: { legalBusinessName: 'Keepsake LLC', einLast4: '6789' },
+    name: 'Pinewood Self Storage',
+    textingBusinessData: { legalBusinessName: 'Pinewood LLC', einLast4: '6789' },
   };
   const email = buildA2PAdminAlertEmail('fac1', facility, describeA2PTransition({}, { a2pStatus: 'approved' }));
-  assert.match(email.subject, /Keepsake Self Storage/);
-  assert.match(email.text, /Keepsake LLC/);
+  assert.match(email.subject, /Pinewood Self Storage/);
+  assert.match(email.text, /Pinewood LLC/);
   assert.match(email.text, /fac1/);
   assert.doesNotMatch(email.text, /6789/);
 });

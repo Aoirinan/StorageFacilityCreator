@@ -42,7 +42,7 @@ FacilityModel _facility({
 }) {
   return FacilityModel(
     id: 'fac_1',
-    name: 'Keepsake Storage',
+    name: 'Pinewood Storage',
     ownerUid: 'user_1',
     createdAt: DateTime(2026),
     facilityCreatorAccountId: accountId,

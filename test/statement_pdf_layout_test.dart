@@ -23,14 +23,14 @@ FacilityModel _facility({
 }) =>
     FacilityModel(
       id: 'f1',
-      name: 'Keepsake Self Storage and Boat & RV Parking',
+      name: 'Pinewood Self Storage and Boat & RV Parking',
       ownerUid: 'owner',
       createdAt: DateTime(2026, 1, 1),
       address: '1200 County Road 45\nSpringfield, MO 65801',
       mailingAddress: mailing,
       statementMessage: message,
       phone: '(555) 123-4567',
-      email: 'office@keepsake.example',
+      email: 'office@pinewood.example',
       logoUrl: logoUrl,
       documentLogo: documentLogo,
       unitNumbersRepeatAcrossAreas: repeat,
@@ -701,12 +701,12 @@ void main() {
           documentLogo: const DocumentLogoLayout(showName: false));
       final shown = _facility();
 
-      expect(await _letterheadPdf(shown), contains('Keepsake'));
+      expect(await _letterheadPdf(shown), contains('Pinewood'));
       final noName = await _letterheadPdf(hidden);
-      expect(noName, isNot(contains('Keepsake')));
+      expect(noName, isNot(contains('Pinewood')));
       expect(noName, contains('County'));
       // No logo to carry the name, so the name prints after all.
-      expect(await _letterheadPdf(hidden, withLogo: false), contains('Keepsake'));
+      expect(await _letterheadPdf(hidden, withLogo: false), contains('Pinewood'));
     });
 
     test('statements and invoices build with a saved layout', () async {

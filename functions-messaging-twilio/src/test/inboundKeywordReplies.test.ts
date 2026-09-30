@@ -10,7 +10,7 @@ import {
 } from '../inboundKeywordReplies';
 import { TenantPhoneMatch } from '../tenantPhoneLookup';
 
-const caprock = { name: 'Caprock Storage', phone: '(806) 555-0142' };
+const oakvale = { name: 'Oakvale Storage', phone: '(806) 555-0142' };
 
 function match(overrides: Partial<TenantPhoneMatch>): TenantPhoneMatch {
   return {
@@ -79,8 +79,8 @@ test('HELP names only active tenancies, and only the texted facility on its own 
 
 test('START from a tenant names the facility, in the wording filed with the campaign', () => {
   assert.equal(
-    buildStartReply([caprock]),
-    "Caprock Storage: you're opted in to account texts about your storage unit. " +
+    buildStartReply([oakvale]),
+    "Oakvale Storage: you're opted in to account texts about your storage unit. " +
       'Msg frequency varies. Msg & data rates may apply. Reply HELP for help, STOP to opt out.',
   );
 });
@@ -94,40 +94,40 @@ test('START from a number that matches no tenant gets a generic compliant reply'
 });
 
 test('one number at two facilities is told both names', () => {
-  const reply = buildStartReply([caprock, { name: 'Keepsake Self Storage', phone: null }]);
-  assert.ok(reply.startsWith('Caprock Storage, Keepsake Self Storage:'));
+  const reply = buildStartReply([oakvale, { name: 'Pinewood Self Storage', phone: null }]);
+  assert.ok(reply.startsWith('Oakvale Storage, Pinewood Self Storage:'));
 });
 
 test('HELP names the facility and gives its phone', () => {
-  const reply = buildHelpReply([caprock]);
+  const reply = buildHelpReply([oakvale]);
   assert.equal(
     reply,
-    'Caprock Storage: account texts about your storage unit. For help call (806) 555-0142. ' +
+    'Oakvale Storage: account texts about your storage unit. For help call (806) 555-0142. ' +
       'Msg & data rates may apply. Reply STOP to opt out.',
   );
 });
 
 test("HELP uses the facility's own wording when set, still under its name", () => {
   assert.equal(
-    buildHelpReply([{ ...caprock, helpMessage: 'Call us at 806-555-0142.' }]),
-    'Caprock Storage: Call us at 806-555-0142.',
+    buildHelpReply([{ ...oakvale, helpMessage: 'Call us at 806-555-0142.' }]),
+    'Oakvale Storage: Call us at 806-555-0142.',
   );
   assert.equal(
-    buildHelpReply([{ ...caprock, helpMessage: 'Caprock Storage help: 806-555-0142.' }]),
-    'Caprock Storage help: 806-555-0142.',
+    buildHelpReply([{ ...oakvale, helpMessage: 'Oakvale Storage help: 806-555-0142.' }]),
+    'Oakvale Storage help: 806-555-0142.',
   );
 });
 
 test('HELP without a facility phone, or from an unknown number, still answers', () => {
-  assert.match(buildHelpReply([{ name: 'Caprock Storage' }]), /contact your facility directly/);
+  assert.match(buildHelpReply([{ name: 'Oakvale Storage' }]), /contact your facility directly/);
   const unknown = buildHelpReply([]);
   assert.ok(unknown.startsWith(`${PLATFORM_SENDER_NAME}:`));
   assert.match(unknown, /STOP to opt out/);
 });
 
 test('HELP for a number at two facilities lists both phones', () => {
-  const reply = buildHelpReply([caprock, { name: 'Keepsake Self Storage', phone: '903-555-0177' }]);
-  assert.match(reply, /Caprock Storage \(806\) 555-0142 or Keepsake Self Storage 903-555-0177/);
+  const reply = buildHelpReply([oakvale, { name: 'Pinewood Self Storage', phone: '903-555-0177' }]);
+  assert.match(reply, /Oakvale Storage \(806\) 555-0142 or Pinewood Self Storage 903-555-0177/);
 });
 
 test('replies fit in two SMS segments', () => {

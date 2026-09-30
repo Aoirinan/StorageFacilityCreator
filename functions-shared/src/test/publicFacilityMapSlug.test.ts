@@ -15,7 +15,7 @@ import { InMemoryFirestore, installInMemoryFirestore } from './support/inMemoryF
  * readers follow it one hop, only to a published map of the same facility.
  */
 
-const FACILITY = 'eXnWPuwuqzBVFcZWv1ZL';
+const FACILITY = 'kT4mZ8vLr2QpWx7NbY3d';
 
 function units(n: number) {
   return Array.from({ length: n }, (_, i) => ({ unitId: `u${i}`, isRentable: true }));
@@ -23,13 +23,13 @@ function units(n: number) {
 
 function seeded() {
   const inMemory = new InMemoryFirestore();
-  inMemory.seed('publicFacilityMaps/keepsakeonlinerentals', {
+  inMemory.seed('publicFacilityMaps/pinewoodonlinerentals', {
     facilityId: FACILITY,
-    facilitySlug: 'keepsakeonlinerentals',
+    facilitySlug: 'pinewoodonlinerentals',
     units: units(3),
     publicSettings: { enabled: true },
   });
-  inMemory.seed('publicFacilityMaps/storage', publicMapPointer(FACILITY, 'keepsakeonlinerentals', 'then'));
+  inMemory.seed('publicFacilityMaps/storage', publicMapPointer(FACILITY, 'pinewoodonlinerentals', 'then'));
   return inMemory;
 }
 
@@ -43,14 +43,14 @@ test('movedToSlugOf: only a non-empty string is a pointer', () => {
 });
 
 test('a published map is served where it is', async () => {
-  const map = await readPublicFacilityMap(seeded().firestore(), 'keepsakeonlinerentals');
-  assert.equal(map?.slug, 'keepsakeonlinerentals');
+  const map = await readPublicFacilityMap(seeded().firestore(), 'pinewoodonlinerentals');
+  assert.equal(map?.slug, 'pinewoodonlinerentals');
   assert.equal((map?.data.units as unknown[]).length, 3);
 });
 
 test('an old slug serves the current map, and says where it lives now', async () => {
   const map = await readPublicFacilityMap(seeded().firestore(), 'storage');
-  assert.equal(map?.slug, 'keepsakeonlinerentals');
+  assert.equal(map?.slug, 'pinewoodonlinerentals');
   assert.equal(map?.data.facilityId, FACILITY);
   assert.equal((map?.data.units as unknown[]).length, 3);
 });
@@ -80,32 +80,32 @@ test('a pointer is followed one hop only: not to another pointer, nor to itself'
 test('a pointer to a slug with no doc, or a pointer with no facility, serves nothing', async () => {
   const inMemory = seeded();
   inMemory.seed('publicFacilityMaps/dangling', publicMapPointer(FACILITY, 'gone', 'then'));
-  inMemory.seed('publicFacilityMaps/anon', { movedToSlug: 'keepsakeonlinerentals' });
+  inMemory.seed('publicFacilityMaps/anon', { movedToSlug: 'pinewoodonlinerentals' });
   const db = inMemory.firestore();
   assert.equal(await readPublicFacilityMap(db, 'dangling'), null);
   assert.equal(await readPublicFacilityMap(db, 'anon'), null);
 });
 
-test('migration plan: every other doc of the facility becomes a pointer (the Keepsake case)', () => {
+test('migration plan: every other doc of the facility becomes a pointer (the Pinewood case)', () => {
   const docs = [
-    { id: 'eXnWPuwuqzBVFcZWv1ZL', data: { facilityId: FACILITY, units: units(200) } },
-    { id: 'keepsakeonlinerentals', data: { facilityId: FACILITY, units: units(200), inventorySyncedAt: 'now' } },
-    { id: 'r6iubms3mdn7m90ss7oo', data: { facilityId: FACILITY, units: units(200) } },
+    { id: 'kT4mZ8vLr2QpWx7NbY3d', data: { facilityId: FACILITY, units: units(200) } },
+    { id: 'pinewoodonlinerentals', data: { facilityId: FACILITY, units: units(200), inventorySyncedAt: 'now' } },
+    { id: 'p3xk9qw2ntv7h5jz8mbd', data: { facilityId: FACILITY, units: units(200) } },
     { id: 'storage', data: { facilityId: FACILITY, units: units(200) } },
     { id: 'storageunitrentals', data: { facilityId: FACILITY, units: units(200) } },
     // Already pointing at the current slug: nothing to do.
-    { id: 'done', data: publicMapPointer(FACILITY, 'keepsakeonlinerentals', 'then') },
+    { id: 'done', data: publicMapPointer(FACILITY, 'pinewoodonlinerentals', 'then') },
     // Pointing at an older slug: repointed, so it is one hop from the map.
     { id: 'chained', data: publicMapPointer(FACILITY, 'storage', 'then') },
     // Another facility's doc is never touched.
     { id: 'theirs', data: { facilityId: 'other', units: units(5) } },
   ];
-  const plan = planPublicSlugPointers(FACILITY, 'keepsakeonlinerentals', docs);
+  const plan = planPublicSlugPointers(FACILITY, 'pinewoodonlinerentals', docs);
   assert.ok('changes' in plan);
   assert.deepEqual(plan.changes, [
     { slug: 'chained', was: 'pointer', unitCount: 0, movedToSlug: 'storage' },
-    { slug: 'eXnWPuwuqzBVFcZWv1ZL', was: 'map', unitCount: 200, movedToSlug: null },
-    { slug: 'r6iubms3mdn7m90ss7oo', was: 'map', unitCount: 200, movedToSlug: null },
+    { slug: 'kT4mZ8vLr2QpWx7NbY3d', was: 'map', unitCount: 200, movedToSlug: null },
+    { slug: 'p3xk9qw2ntv7h5jz8mbd', was: 'map', unitCount: 200, movedToSlug: null },
     { slug: 'storage', was: 'map', unitCount: 200, movedToSlug: null },
     { slug: 'storageunitrentals', was: 'map', unitCount: 200, movedToSlug: null },
   ]);
@@ -116,9 +116,9 @@ test('migration plan: nothing changes without a current map of the facility to p
   for (const [currentSlug, docs, reason] of [
     [null, [stale], /no mapEngine\/meta.publicSlug/],
     ['  ', [stale], /no mapEngine\/meta.publicSlug/],
-    ['keepsake', [stale], /no publicFacilityMaps\/keepsake of this facility/],
-    ['keepsake', [stale, { id: 'keepsake', data: { facilityId: 'other' } }], /no publicFacilityMaps\/keepsake/],
-    ['keepsake', [stale, { id: 'keepsake', data: publicMapPointer(FACILITY, 'storage', 'then') }], /itself a pointer/],
+    ['pinewood', [stale], /no publicFacilityMaps\/pinewood of this facility/],
+    ['pinewood', [stale, { id: 'pinewood', data: { facilityId: 'other' } }], /no publicFacilityMaps\/pinewood/],
+    ['pinewood', [stale, { id: 'pinewood', data: publicMapPointer(FACILITY, 'storage', 'then') }], /itself a pointer/],
     [FACILITY, [stale, { id: FACILITY, data: { facilityId: FACILITY, units: units(1) } }], /not lower case/],
   ] as const) {
     const plan = planPublicSlugPointers(FACILITY, currentSlug, [...docs]);
@@ -132,11 +132,11 @@ test('custom domains: an old slug resolves to its facility and the current slug'
   installInMemoryFirestore(inMemory);
   assert.deepEqual(await resolveFacilitySlugFromInput({ slug: 'Storage' }), {
     facilityId: FACILITY,
-    slug: 'keepsakeonlinerentals',
+    slug: 'pinewoodonlinerentals',
   });
-  assert.deepEqual(await resolveFacilitySlugFromInput({ slug: 'keepsakeonlinerentals' }), {
+  assert.deepEqual(await resolveFacilitySlugFromInput({ slug: 'pinewoodonlinerentals' }), {
     facilityId: FACILITY,
-    slug: 'keepsakeonlinerentals',
+    slug: 'pinewoodonlinerentals',
   });
 });
 

@@ -5,12 +5,12 @@ void main() {
   final now = DateTime(2026, 9, 14);
 
   test('an expired account trial is ignored when the facility has its own live trial', () {
-    // Keepsake on 2026-09-14: account trial ended Aug 18, facility trial runs to Sep 17.
+    // Pinewood on 2026-09-14: account trial ended Aug 18, facility trial runs to Sep 17.
     final decision = decideSubscriptionBanner(
       account: AccountSubscriptionState(status: 'trialing', trialEnd: DateTime(2026, 8, 18)),
       facilities: [
         FacilitySubscriptionState(
-          name: 'Keepsake Self Storage',
+          name: 'Pinewood Self Storage',
           perFacility: true,
           status: 'trialing',
           trialEnd: DateTime(2026, 9, 17),
@@ -177,7 +177,7 @@ test("a billing-exempt facility never nags, whatever Stripe says", () {
       account: const AccountSubscriptionState(status: "pastDue"),
       facilities: const [
         FacilitySubscriptionState(
-          name: "Keepsake Self Storage",
+          name: "Pinewood Self Storage",
           perFacility: true,
           status: "pastDue",
           billingExempt: true,
@@ -193,7 +193,7 @@ test("a billing-exempt facility never nags, whatever Stripe says", () {
       account: const AccountSubscriptionState(status: "active"),
       facilities: const [
         FacilitySubscriptionState(
-          name: "Keepsake Self Storage",
+          name: "Pinewood Self Storage",
           perFacility: true,
           status: "pastDue",
           billingExempt: true,
@@ -208,7 +208,7 @@ test("a billing-exempt facility never nags, whatever Stripe says", () {
     );
     expect(decision.show, isTrue);
     expect(decision.message, contains("Paying Facility"));
-    expect(decision.message, isNot(contains("Keepsake")));
+    expect(decision.message, isNot(contains("Pinewood")));
   });
 
   test("an exempt account is never asked to subscribe", () {

@@ -22,7 +22,7 @@ function input(patch: Record<string, unknown> = {}): Record<string, unknown> {
     sortOrder: 1,
     active: true,
     archived: false,
-    address: '12 Main St, Glendive MT',
+    address: '12 Main St, Anytown ND',
     capacity: { maxGuests: 6, bedrooms: 2, beds: 3, bathrooms: 1.5, petsAllowed: false },
     rv: null,
     times: { checkIn: '15:00', checkOut: null },

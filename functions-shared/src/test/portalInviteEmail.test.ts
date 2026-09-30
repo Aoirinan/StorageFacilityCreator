@@ -22,29 +22,29 @@ test('generated access codes are eight characters from the phone-safe alphabet',
 
 test('invite email carries link, login email, code and the autopay pitch when payments work', () => {
   const m = buildTenantPortalInviteEmail({
-    facilityName: 'Keepsake Self Storage',
+    facilityName: 'Pinewood Self Storage',
     tenantName: 'Alicia Smith',
     unitNumber: '204',
     email: 'alicia@example.com',
     accessCode: 'KHHQDKV6',
     portalUrl: 'https://app.storagefacilitycreator.com/#/tenant-portal',
-    facilityPhone: '903 715 7504',
+    facilityPhone: '701 555 0104',
     autopayAvailable: true,
   });
-  assert.equal(m.subject, 'Your Keepsake Self Storage tenant portal is ready');
+  assert.equal(m.subject, 'Your Pinewood Self Storage tenant portal is ready');
   assert.match(m.text, /^Hi Alicia,/);
   assert.match(m.text, /for unit 204/);
   assert.match(m.text, /Access code: KHHQDKV6/);
   assert.match(m.text, /Email: alicia@example.com/);
   assert.match(m.text, /turn on autopay/);
-  assert.match(m.text, /or call 903 715 7504/);
+  assert.match(m.text, /or call 701 555 0104/);
   assert.match(m.html, /KHHQDKV6/);
   assert.match(m.html, /href="https:\/\/app\.storagefacilitycreator\.com\/#\/tenant-portal"/);
 });
 
 test('reminder email restates the code and reassures the wrong recipient', () => {
   const m = buildPortalAccessCodeReminderEmail({
-    facilityName: 'Keepsake Self Storage',
+    facilityName: 'Pinewood Self Storage',
     tenantName: 'Russell Forsyth',
     unitNumber: '201',
     email: 'r@example.com',
@@ -52,7 +52,7 @@ test('reminder email restates the code and reassures the wrong recipient', () =>
     portalUrl: 'https://app.example.com/#/tenant-portal',
     autopayAvailable: true,
   });
-  assert.equal(m.subject, 'Your Keepsake Self Storage portal access code');
+  assert.equal(m.subject, 'Your Pinewood Self Storage portal access code');
   assert.match(m.text, /Access code: KHHQDKV6/);
   assert.match(m.text, /\(unit 201\)/);
   assert.match(m.text, /Your code has not changed/);

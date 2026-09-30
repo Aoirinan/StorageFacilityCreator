@@ -53,7 +53,7 @@ test('website entitlement accepts only an unexpired superadmin trial', () => {
 });
 
 test('a billing-exempt facility has the website without a subscription or trial', () => {
-  // Keepsake, the operator's own facility: its $25 subscription was cancelled
+  // Pinewood, the operator's own facility: its $25 subscription was cancelled
   // and a trial is refused for want of a paid $75 plan, so before this the
   // site could not be served at all.
   assert.equal(

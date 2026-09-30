@@ -33,7 +33,7 @@ function chicagoMidnight(y: number, m: number, d: number): Date {
 function tenant(overrides: Partial<RentReminderTenant> = {}): RentReminderTenant {
   return {
     id: 't1',
-    name: 'Alexa Rau',
+    name: 'Jamie Roe',
     phone: '406-555-0100',
     isActive: true,
     paidThrough: chicagoMidnight(2026, 9, 30), // paid through 30 Sep: up to date, Oct not paid
@@ -184,13 +184,13 @@ test('the facility local date, not the UTC date, decides the day', () => {
 
 test('the message names the facility, the unit, the amount and the date', () => {
   const body = buildRentReminderMessage({
-    facilityName: 'Caprock Storage',
-    tenantName: 'Doug Devoy',
+    facilityName: 'Oakvale Storage',
+    tenantName: 'Dana Smith',
     amount: 130,
     dueDate: { year: 2026, month: 10, day: 1 },
     unitNumber: '2',
   });
-  assert.equal(body, 'Caprock Storage: Hi Doug, a reminder that rent for unit 2 of $130.00 is due Oct 1.');
+  assert.equal(body, 'Oakvale Storage: Hi Dana, a reminder that rent for unit 2 of $130.00 is due Oct 1.');
   assert.ok(body.length < 160 - 40, 'leaves room for the STOP footer in one segment');
 });
 
@@ -245,7 +245,7 @@ test('an unknown time zone does not throw', () => {
 
 test('a tenant doc is active only when isActive is exactly true', () => {
   const doc = {
-    name: 'Alexa Rau',
+    name: 'Jamie Roe',
     phone: '406-555-0100',
     paidThrough: chicagoMidnight(2026, 9, 30),
     smsOptInDate: new Date(2026, 8, 1),
@@ -275,28 +275,28 @@ test('the text keeps the plain unit number until the facility numbers units per 
   const tenantDoc = { unitNumber: '12', unitArea: 'Complex 2' };
   const message = (facility: Record<string, unknown>) =>
     buildRentReminderMessage({
-      tenantName: 'Doug Devoy',
+      tenantName: 'Dana Smith',
       amount: 130,
       dueDate: new Date(2026, 9, 1),
       unitNumber: tenantUnitLabel(tenantDoc, facility),
     });
-  const before = 'Hi Doug, a reminder that rent for unit 12 of $130.00 is due Oct 1.';
+  const before = 'Hi Dana, a reminder that rent for unit 12 of $130.00 is due Oct 1.';
   assert.equal(message({}), before);
   assert.equal(message({ unitNumbersRepeatAcrossAreas: false }), before);
   assert.equal(
     message({ unitNumbersRepeatAcrossAreas: true }),
-    'Hi Doug, a reminder that rent for unit 12 (Complex 2) of $130.00 is due Oct 1.',
+    'Hi Dana, a reminder that rent for unit 12 (Complex 2) of $130.00 is due Oct 1.',
   );
 });
 
 test('with the setting on, a tenant with no area still gets the plain number', () => {
   const body = buildRentReminderMessage({
-    tenantName: 'Doug Devoy',
+    tenantName: 'Dana Smith',
     amount: 130,
     dueDate: new Date(2026, 9, 1),
     unitNumber: tenantUnitLabel({ unitNumber: '12', unitArea: null }, { unitNumbersRepeatAcrossAreas: true }),
   });
-  assert.equal(body, 'Hi Doug, a reminder that rent for unit 12 of $130.00 is due Oct 1.');
+  assert.equal(body, 'Hi Dana, a reminder that rent for unit 12 of $130.00 is due Oct 1.');
 });
 
 test('reminders use the facility number only with the same approvals sendSMS requires', () => {
@@ -325,8 +325,8 @@ test('reminders use the facility number only with the same approvals sendSMS req
 
 test('a tenant in arrears is told the rent and the current balance', () => {
   const body = buildRentReminderMessage({
-    facilityName: 'Caprock Storage',
-    tenantName: 'Doug Devoy',
+    facilityName: 'Oakvale Storage',
+    tenantName: 'Dana Smith',
     amount: 130,
     balance: 130,
     dueDate: { year: 2026, month: 10, day: 1 },
@@ -334,7 +334,7 @@ test('a tenant in arrears is told the rent and the current balance', () => {
   });
   assert.equal(
     body,
-    'Caprock Storage: Hi Doug, a reminder that rent for unit 2 of $130.00 is due Oct 1. Balance now: $130.00.',
+    'Oakvale Storage: Hi Dana, a reminder that rent for unit 2 of $130.00 is due Oct 1. Balance now: $130.00.',
   );
   const footer = '\n\nReply STOP to opt out. Reply HELP for help.';
   assert.ok((body + footer).length <= 306, 'two segments at most');
@@ -343,8 +343,8 @@ test('a tenant in arrears is told the rent and the current balance', () => {
 test('no balance line when nothing is owed', () => {
   for (const balance of [0, -50, null, undefined, Number.NaN, 0.001]) {
     const body = buildRentReminderMessage({
-      facilityName: 'Caprock Storage',
-      tenantName: 'Doug',
+      facilityName: 'Oakvale Storage',
+      tenantName: 'Dana',
       amount: 130,
       balance,
       dueDate: { year: 2026, month: 10, day: 1 },

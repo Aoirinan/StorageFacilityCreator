@@ -32,8 +32,8 @@ class _DeniedDoc extends Fake implements DocumentReference<Map<String, dynamic>>
           FirebaseException(plugin: 'cloud_firestore', code: 'permission-denied'));
 }
 
-const _facility = 'eXnWPuwuqzBVFcZWv1ZL';
-const _live = 'keepsakeonlinerentals';
+const _facility = 'kT4mZ8vLr2QpWx7NbY3d';
+const _live = 'pinewoodonlinerentals';
 
 Map<String, dynamic> _map(String slug,
         {String facilityId = _facility, int units = 3, Object? syncedAt}) =>
@@ -42,7 +42,7 @@ Map<String, dynamic> _map(String slug,
       'facilitySlug': slug,
       'publishedAt': Timestamp.fromDate(DateTime(2026, 9, 1)),
       if (syncedAt != null) 'inventorySyncedAt': syncedAt,
-      'publicSettings': {'enabled': true, 'facilityName': 'Keepsake'},
+      'publicSettings': {'enabled': true, 'facilityName': 'Pinewood'},
       'units': [
         for (var i = 0; i < units; i++) {'unitId': 'u$i', 'isRentable': true},
       ],
@@ -78,21 +78,21 @@ void main() {
       store.put('publicFacilityMaps/storage', _map('storage'));
 
       final slug = await FacilityMapV2Service.setPublicSlug(
-          facilityId: _facility, slug: 'Keepsake Online Rentals');
+          facilityId: _facility, slug: 'Pinewood Online Rentals');
 
-      expect(slug, 'keepsake-online-rentals');
-      expect(metaSlug(), 'keepsake-online-rentals');
+      expect(slug, 'pinewood-online-rentals');
+      expect(metaSlug(), 'pinewood-online-rentals');
       final pointer = store.data('publicFacilityMaps/storage')!;
       expect(pointer.keys, unorderedEquals(['facilityId', 'movedToSlug', 'movedAt']));
       expect(pointer['facilityId'], _facility);
-      expect(pointer['movedToSlug'], 'keepsake-online-rentals');
+      expect(pointer['movedToSlug'], 'pinewood-online-rentals');
       expect(pointer['movedAt'], FieldValue.serverTimestamp());
 
-      final carried = store.data('publicFacilityMaps/keepsake-online-rentals')!;
+      final carried = store.data('publicFacilityMaps/pinewood-online-rentals')!;
       expect(carried['facilityId'], _facility);
-      expect(carried['facilitySlug'], 'keepsake-online-rentals');
+      expect(carried['facilitySlug'], 'pinewood-online-rentals');
       expect(carried['rentalRouteTemplate'],
-          '/f/keepsake-online-rentals/rent?unitId={unitId}');
+          '/f/pinewood-online-rentals/rent?unitId={unitId}');
       expect(carried['units'], hasLength(3));
       expect(carried.containsKey('movedToSlug'), isFalse);
     });
@@ -274,11 +274,11 @@ void main() {
   });
 
   group('getPublicSlugForFacility', () {
-    void keepsakeDocs() {
+    void pinewoodDocs() {
       // As found on 2026-09-24: four old slugs, frozen, and the live one.
       for (final slug in [
         _facility,
-        'r6iubms3mdn7m90ss7oo',
+        'p3xk9qw2ntv7h5jz8mbd',
         'storage',
         'storageunitrentals',
       ]) {
@@ -289,7 +289,7 @@ void main() {
     }
 
     test('answers with the meta slug, not the first doc by id', () async {
-      keepsakeDocs();
+      pinewoodDocs();
       meta(_live);
       expect(await FacilityMapV2Service.getPublicSlugForFacility(_facility), _live);
       expect(store.queries, isEmpty);
@@ -297,18 +297,18 @@ void main() {
 
     test('with no meta, the doc written most recently, never a pointer',
         () async {
-      keepsakeDocs();
+      pinewoodDocs();
       expect(await FacilityMapV2Service.getPublicSlugForFacility(_facility), _live);
 
       store.put('publicFacilityMaps/$_facility', _pointer(_live));
       store.put('publicFacilityMaps/$_live', _pointer('storage'));
       expect(await FacilityMapV2Service.getPublicSlugForFacility(_facility),
-          'r6iubms3mdn7m90ss7oo');
+          'p3xk9qw2ntv7h5jz8mbd');
     });
 
     test('staff and the public pages, who cannot read the meta, get the query',
         () async {
-      keepsakeDocs();
+      pinewoodDocs();
       meta('storage');
       FacilityMapV2Service.overrideForTesting(
         collection: (path) =>
@@ -325,7 +325,7 @@ void main() {
     });
 
     test("a meta slug another facility's doc holds is passed over", () async {
-      keepsakeDocs();
+      pinewoodDocs();
       meta('rival');
       store.put('publicFacilityMaps/rival', _map('rival', facilityId: 'rival-facility'));
       expect(await FacilityMapV2Service.getPublicSlugForFacility(_facility), _live);
