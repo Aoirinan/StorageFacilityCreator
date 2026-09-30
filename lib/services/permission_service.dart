@@ -4,9 +4,11 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../models/permission_model.dart';
+import 'package:sfcapp/services/audit_service.dart';
 import '../services/facility_service.dart';
 import '../services/email_service.dart';
 import '../services/superadmin_service.dart';
+import 'package:sfcapp/utils/verified_email_token.dart';
 
 /// Result of creating a facility invite
 class InviteResult {
@@ -41,32 +43,42 @@ class PermissionService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
 
-  // Where this service's collections, collection groups and signed-in user
-  // come from: Firestore and Auth, unless a test points them at fakes so the
+  // Where this service's collections, collection groups, write batches,
+  // signed-in user and user lookups come from: Firestore, Auth and the
+  // lookupUserByEmail callable, unless a test points them at fakes so the
   // service's own queries and writes run.
   static CollectionReference<Map<String, dynamic>> Function(String path) _collection =
       _firestoreCollection;
   static Query<Map<String, dynamic>> Function(String collectionId) _collectionGroup =
       _firestoreCollectionGroup;
+  static WriteBatch Function() _newBatch = _firestoreBatch;
   static User? Function() _currentUser = _authCurrentUser;
+  static Future<String?> Function(String email, String facilityId) _lookupUserId =
+      _callableLookupUserId;
 
   static CollectionReference<Map<String, dynamic>> _firestoreCollection(String path) =>
       _firestore.collection(path);
   static Query<Map<String, dynamic>> _firestoreCollectionGroup(String collectionId) =>
       _firestore.collectionGroup(collectionId);
+  static WriteBatch _firestoreBatch() => _firestore.batch();
   static User? _authCurrentUser() => _auth.currentUser;
 
-  /// Serves [collection], [collectionGroup] and [currentUser] instead of
-  /// Firestore and Auth; null restores them.
+  /// Serves [collection], [collectionGroup], [batch], [currentUser] and
+  /// [findUserIdByEmail] instead of Firestore, Auth and the callable; null
+  /// restores them.
   @visibleForTesting
   static void overrideForTesting({
     CollectionReference<Map<String, dynamic>> Function(String path)? collection,
     Query<Map<String, dynamic>> Function(String collectionId)? collectionGroup,
+    WriteBatch Function()? batch,
     User? Function()? currentUser,
+    Future<String?> Function(String email, String facilityId)? findUserIdByEmail,
   }) {
     _collection = collection ?? _firestoreCollection;
     _collectionGroup = collectionGroup ?? _firestoreCollectionGroup;
+    _newBatch = batch ?? _firestoreBatch;
     _currentUser = currentUser ?? _authCurrentUser;
+    _lookupUserId = findUserIdByEmail ?? _callableLookupUserId;
   }
 
   static const String _userRolesCollection = 'user_roles';
@@ -273,7 +285,10 @@ class PermissionService {
   /// Find user ID by email using Cloud Function (for security - Phase 2)
   /// This replaces direct Firestore queries to comply with user document read restrictions.
   /// Caller must have staff access to [facilityId].
-  static Future<String?> findUserIdByEmail(String email, {required String facilityId}) async {
+  static Future<String?> findUserIdByEmail(String email, {required String facilityId}) =>
+      _lookupUserId(email, facilityId);
+
+  static Future<String?> _callableLookupUserId(String email, String facilityId) async {
     try {
       final functions = FirebaseFunctions.instance;
       final callable = functions.httpsCallable('lookupUserByEmail');
@@ -282,13 +297,14 @@ class PermissionService {
         'email': email,
         'facilityId': facilityId,
       });
-      final data = result.data as Map<String, dynamic>?;
-      
-      if (data == null || data['found'] != true) {
+      // Any map: on the web a callable's result is not always
+      // Map<String, dynamic>, and the cast threw into "not found".
+      final data = result.data;
+      if (data is! Map || data['found'] != true) {
         return null;
       }
-      
-      return data['uid'] as String?;
+      final uid = data['uid'];
+      return uid is String && uid.isNotEmpty ? uid : null;
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error finding user by email $email: $e');
@@ -497,7 +513,14 @@ class PermissionService {
 
   // Assign role to user
   /// When [fulfilledInviteId] is set (invite acceptance), Firestore rules validate against
-  /// `facilities/{facilityId}/invites/{id}` so the invitee can write without being owner yet.
+  /// `facilities/{facilityId}/invites/{id}` so the invitee can write without being owner yet,
+  /// and that invite is marked accepted by [userId].
+  ///
+  /// The role row, the facility's roles map (the one the rules read) and the
+  /// invite are one batch: all written or none. Written one after another, an
+  /// acceptance that failed after the row (a dropped connection, a closed tab)
+  /// left an active row the rules ignore and the invite still pending, and
+  /// that row made the invitee look like existing staff, so nothing retried.
   static Future<AssignRoleResult> assignRole({
     required String userId,
     required String facilityId,
@@ -513,7 +536,26 @@ class PermissionService {
       final currentUser = _currentUser();
       final isSuperAdmin = currentUser != null && SuperAdminService.isSuperAdmin(currentUser);
       print('🔐 [PermissionService.assignRole] Super admin check: $isSuperAdmin (user: ${currentUser?.email})');
-      
+
+      if (fulfilledInviteId != null &&
+          await holdsRoleAt(facilityId: facilityId, userId: userId)) {
+        // Already on the team: the invite (left over from before they joined,
+        // or from an acceptance that stopped part-way and was promoted since)
+        // is spent, and their role stays. Accepting it rewrote the role row
+        // and roles map with the invite's role, so a manager promoted since
+        // was made an employee again on their next load.
+        await _collection('facilities')
+            .doc(facilityId)
+            .collection(_facilityInvitesCollection)
+            .doc(fulfilledInviteId)
+            .update({
+          'status': 'accepted',
+          'acceptedAt': Timestamp.fromDate(DateTime.now()),
+          'acceptedBy': userId,
+        });
+        return AssignRoleResult(success: true);
+      }
+
       // Preserve owner: the facility creator retains owner role
       final facility = await FacilityService.getFacility(facilityId);
       if (facility != null && facility.ownerUid == userId) {
@@ -524,6 +566,8 @@ class PermissionService {
       print('🔄 [PermissionService.assignRole] Assigning role $roleType to user $userId for facility $facilityId');
 
       final facilityRef = _collection('facilities').doc(facilityId);
+
+      final batch = _newBatch();
 
       // Check if user already has a role for this facility
       final existingRole = await _getUserRole(userId, facilityId);
@@ -545,12 +589,34 @@ class PermissionService {
           if (userEmail != null) 'userEmail': userEmail,
           if (fulfilledInviteId != null) 'inviteId': fulfilledInviteId,
         };
-        await _collection(_userRolesCollection)
-            .doc(existingRole.id)
-            .set(payload, SetOptions(merge: true));
+        batch.set(
+          _collection(_userRolesCollection).doc(existingRole.id),
+          payload,
+          SetOptions(merge: true),
+        );
+        if (fulfilledInviteId == null) {
+          // A role change reaches every active row here, not just the first
+          // one read. The callables that charge cards take any active row
+          // (limit 1, in no set order) as access, so a second manager row (an
+          // invitee's acceptance may write several) kept a demoted viewer a
+          // manager there.
+          final activeRows = await _collection(_userRolesCollection)
+              .where('userId', isEqualTo: userId)
+              .where('facilityId', isEqualTo: facilityId)
+              .where('isActive', isEqualTo: true)
+              .get();
+          for (final doc in activeRows.docs) {
+            if (doc.id == existingRole.id) continue;
+            batch.set(doc.reference, {
+              'roleType': roleType.name,
+              'assignedBy': assignedBy,
+              'updatedAt': Timestamp.fromDate(now),
+            }, SetOptions(merge: true));
+          }
+        }
       } else {
         // Create new role assignment
-        await _collection(_userRolesCollection).add({
+        batch.set(_collection(_userRolesCollection).doc(), {
           'userId': userId,
           'facilityId': facilityId,
           'roleType': roleType.name,
@@ -574,7 +640,19 @@ class PermissionService {
       if (fulfilledInviteId != null) {
         facilityPayload['acceptingInviteId'] = fulfilledInviteId;
       }
-      await facilityRef.set(facilityPayload, SetOptions(merge: true));
+      batch.set(facilityRef, facilityPayload, SetOptions(merge: true));
+
+      if (fulfilledInviteId != null) {
+        // The rules check every write in a batch against the invite as it
+        // was before the batch, so this still counts as a pending invite for
+        // the role row and roles map above.
+        batch.update(facilityRef.collection(_facilityInvitesCollection).doc(fulfilledInviteId), {
+          'status': 'accepted',
+          'acceptedAt': Timestamp.fromDate(DateTime.now()),
+          'acceptedBy': userId,
+        });
+      }
+      await batch.commit();
 
       print('✅ [PermissionService.assignRole] Role assigned successfully');
       return AssignRoleResult(success: true);
@@ -600,6 +678,7 @@ class PermissionService {
       }
 
       final facilityRef = _collection('facilities').doc(facilityId);
+      final facility = (await facilityRef.get()).data() ?? const <String, dynamic>{};
 
       final querySnapshot = await _collection(_userRolesCollection)
           .where('userId', isEqualTo: userId)
@@ -607,28 +686,65 @@ class PermissionService {
           .where('isActive', isEqualTo: true)
           .get();
 
-      // Their pending invites here go first: one left pending gave a removed
-      // team member their access straight back through its link. If this
-      // fails nothing has been removed yet, so the failure shows and the
-      // owner can try again.
-      await _cancelPendingInvitesOf(
+      // Their pending invites here are cancelled with the rest: one left
+      // pending gave a removed team member their access straight back
+      // through its link. So are the ones they sent: a manager could invite
+      // a second login of their own, and it let them back in after removal.
+      final (:pendingInvites, :knownEmail) = await _pendingInvitesOf(
         userId: userId,
         facilityId: facilityId,
         roleDocs: querySnapshot.docs,
       );
 
+      // One batch, so a removal that fails part-way removes nothing and the
+      // owner can try again. Written one by one, a failure after the role
+      // rows left the user in the roles map the rules read, still with
+      // access, while the team screen no longer listed them.
+      final batch = _newBatch();
+      final now = Timestamp.fromDate(DateTime.now());
+      for (final invite in pendingInvites) {
+        batch.update(invite, {
+          'status': 'cancelled',
+          'cancelledAt': now,
+          'cancelledReason': 'access_removed',
+          // The rules take an owner's or manager's edit only when the invite
+          // names this facility after it. One an invitee pointed at a
+          // facility of their own (before the rules stopped that) is put
+          // back, or the whole removal was refused and they stayed.
+          'facilityId': facilityId,
+        });
+      }
       for (final doc in querySnapshot.docs) {
-        await doc.reference.set({
+        batch.set(doc.reference, {
           'isActive': false,
-          'updatedAt': Timestamp.fromDate(DateTime.now()),
+          'updatedAt': now,
         }, SetOptions(merge: true));
       }
-
-      await facilityRef.set({
+      // The legacy managers map too: the rules still grant a manager's
+      // access from it, so a manager removed only from roles kept theirs.
+      batch.set(facilityRef, {
         'roles': {
           userId: FieldValue.delete(),
         },
+        'managers': {
+          userId: FieldValue.delete(),
+        },
       }, SetOptions(merge: true));
+      // Logged in the same batch: managers may remove team members too, and
+      // the owner saw nothing of who removed whom.
+      final removal = _removalAuditEntry(
+        facilityId: facilityId,
+        facility: facility,
+        userId: userId,
+        roleDocs: querySnapshot.docs,
+        knownEmail: knownEmail,
+        invitesCancelled: pendingInvites.length,
+        at: now.toDate(),
+      );
+      if (removal != null) {
+        batch.set(facilityRef.collection('auditLogs').doc(), removal.toFirestore());
+      }
+      await batch.commit();
 
       if (kDebugMode) {
         print('✅ Role removed successfully');
@@ -642,40 +758,140 @@ class PermissionService {
     }
   }
 
-  /// Marks cancelled every pending invite at [facilityId] addressed to the
-  /// user [userId]. Invites are keyed by email, so this uses the addresses
-  /// the user is known by there: the email on their role rows ([roleDocs])
-  /// and on any invite they accepted there.
-  static Future<void> _cancelPendingInvitesOf({
+  /// The pending invites at [facilityId] that removing [userId] cancels:
+  /// those addressed to them, and those they sent. Invites are keyed by
+  /// email, so "addressed to them" goes by the addresses they are known by
+  /// there that they could not have written themselves:
+  /// - the address of each invite they accepted there (the rules matched it
+  ///   to their sign-in address when they accepted);
+  /// - the address of the invite each of their role rows ([roleDocs]) was
+  ///   written for, while it is pending (the rules let an invitee write a row
+  ///   only for an invite addressed to them);
+  /// - the userEmail of a row someone else wrote for them: one with no
+  ///   inviteId and not assigned by themselves (the owner's or a super
+  ///   admin's; an invitee writes a row only with an inviteId);
+  /// - their own verified sign-in address, when they are removing themselves
+  ///   (a support session ending).
+  /// Never the userEmail of a row written through an invite: the invitee
+  /// writes that one, and with someone else's address there had that
+  /// person's invites cancelled along with their own removal.
+  ///
+  /// Only pending ones are returned: an accepted invite is what ties an
+  /// address to a user here ([_hasAccessAt], and the next removal).
+  /// [knownEmail] is one of those addresses (for the audit log), or null.
+  static Future<
+      ({List<DocumentReference<Map<String, dynamic>>> pendingInvites, String? knownEmail})>
+      _pendingInvitesOf({
     required String userId,
     required String facilityId,
     required List<QueryDocumentSnapshot<Map<String, dynamic>>> roleDocs,
   }) async {
     final invitesRef =
         _collection('facilities').doc(facilityId).collection(_facilityInvitesCollection);
+    final self = _currentUser();
     final emails = <String>{
       for (final doc in roleDocs)
-        if (_normalizedEmail(doc.data()['userEmail']) case final email?) email,
+        if (!_writtenThroughInvite(doc.data(), userId))
+          if (_normalizedEmail(doc.data()['userEmail']) case final email?) email,
+      if (self != null && self.uid == userId && self.emailVerified)
+        if (_normalizedEmail(self.email) case final email?) email,
     };
     final accepted = await invitesRef.where('acceptedBy', isEqualTo: userId).get();
     for (final doc in accepted.docs) {
       if (_normalizedEmail(doc.data()['emailLower']) case final email?) emails.add(email);
     }
-    final cancelledAt = Timestamp.fromDate(DateTime.now());
-    for (final email in emails) {
-      final pending = await invitesRef
-          .where('emailLower', isEqualTo: email)
-          .where('status', isEqualTo: 'pending')
-          .get();
-      for (final doc in pending.docs) {
-        await doc.reference.update({
-          'status': 'cancelled',
-          'cancelledAt': cancelledAt,
-          'cancelledReason': 'access_removed',
-        });
-      }
+    // The facility's pending invites, listed rather than read by id: the
+    // rules refuse a get of an invite that no longer exists (Cancel Invite
+    // deletes it), even to the owner, and one refused read failed the whole
+    // removal, so a row naming a cancelled invite made its user unremovable.
+    final pending = (await invitesRef.where('status', isEqualTo: 'pending').get()).docs;
+    // And the address on the invite each row was written for. Before the
+    // rules made an acceptance spend its invite, a row could be written with
+    // no address and the invite left pending, and with nothing else to find
+    // it by it survived the removal and let them straight back in. Its
+    // address also finds any other pending invite to them.
+    final rowInviteIds = <String>{
+      for (final doc in roleDocs)
+        if (doc.data()['inviteId'] case final String id when id.isNotEmpty) id,
+    };
+    for (final doc in pending) {
+      if (!rowInviteIds.contains(doc.id)) continue;
+      if (_normalizedEmail(doc.data()['emailLower']) case final email?) emails.add(email);
     }
+    return (
+      pendingInvites: [
+        for (final doc in pending)
+          if (emails.contains(_normalizedEmail(doc.data()['emailLower'])) ||
+              doc.data()['invitedBy'] == userId)
+            doc.reference,
+      ],
+      knownEmail: emails.isEmpty ? null : (emails.toList()..sort()).first,
+    );
   }
+
+  /// Whether the role row [row] of [userId] may carry an address the member
+  /// wrote: one written through an invite (it names one; only an invitee's
+  /// acceptance writes that), or one they assigned themselves.
+  static bool _writtenThroughInvite(Map<String, dynamic> row, String userId) {
+    final inviteId = row['inviteId'];
+    return (inviteId is String && inviteId.isNotEmpty) || row['assignedBy'] == userId;
+  }
+
+  /// The auditLogs entry for [userId]'s removal from [facilityId] by the
+  /// signed-in user, as [AuditService] writes one (the fields
+  /// functions-shared's writeAuditLog writes, eventType and timestamp among
+  /// them, plus those the rules require). Null when the signed-in user holds
+  /// no role there: the rules take an entry only from the facility's staff,
+  /// and a super admin with no role may still remove someone.
+  static AuditLogEntry? _removalAuditEntry({
+    required String facilityId,
+    required Map<String, dynamic> facility,
+    required String userId,
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> roleDocs,
+    required String? knownEmail,
+    required int invitesCancelled,
+    required DateTime at,
+  }) {
+    final actor = _currentUser();
+    if (actor == null) return null;
+    final roles = facility['roles'];
+    final managers = facility['managers'];
+    String? mapRole(String uid) => roles is Map && roles[uid] is String ? roles[uid] as String : null;
+    bool legacyManager(String uid) => managers is Map && managers[uid] == true;
+    // Who the rules count as staff (isFacilityStaff).
+    final actorRole = facility['ownerUid'] == actor.uid
+        ? 'owner'
+        : const {'owner', 'manager', 'admin', 'employee'}.contains(mapRole(actor.uid))
+            ? mapRole(actor.uid)
+            : legacyManager(actor.uid)
+                ? 'manager'
+                : null;
+    if (actorRole == null) return null;
+    final removedRole = mapRole(userId) ??
+        (legacyManager(userId) ? 'manager' : null) ??
+        (roleDocs.isEmpty ? null : roleDocs.first.data()['roleType'] as String?);
+    return AuditLogEntry(
+      eventType: removedMemberEventType,
+      actorUid: actor.uid,
+      actorEmail: actor.email,
+      actorRole: actorRole,
+      targetType: 'user',
+      targetId: userId,
+      facilityId: facilityId,
+      before: {'role': removedRole},
+      after: {'role': null},
+      timestamp: at,
+      metadata: {
+        'removedUserId': userId,
+        if (removedRole != null) 'removedRole': removedRole,
+        if (knownEmail != null) 'removedEmail': knownEmail,
+        'invitesCancelled': invitesCancelled,
+      },
+    );
+  }
+
+  /// The audit log's event type for a team member's removal ([removeRole]).
+  static const String removedMemberEventType = 'team.memberRemoved';
 
   static String? _normalizedEmail(Object? raw) {
     if (raw is! String) return null;
@@ -802,7 +1018,15 @@ class PermissionService {
       if (currentUser == null) {
         return InviteResult(success: false, errorMessage: 'User not authenticated');
       }
-      
+
+      // Saved, and put in the email, only as the signed-in user's own verified
+      // address, which is all the rules take: the invitee is shown who sent
+      // it, and anyone can create a facility and invite any address.
+      final senderEmail = currentUser.emailVerified && invitedByEmail == currentUser.email
+          ? invitedByEmail
+          : null;
+      if (senderEmail != null) await refreshStaleEmailVerifiedClaim(currentUser);
+
       // Super admins bypass all permission checks
       final isSuperAdmin = SuperAdminService.isSuperAdmin(currentUser);
       // Always log super admin status for debugging
@@ -873,7 +1097,7 @@ class PermissionService {
             'status': 'pending',
             'invitedAt': Timestamp.fromDate(DateTime.now()),
             'invitedBy': invitedBy,
-            'invitedByEmail': invitedByEmail,
+            'invitedByEmail': senderEmail,
             'facilityName': facility?.name ?? '',
             'lastSentAt': Timestamp.fromDate(DateTime.now()),
             'facilityId': facilityId,
@@ -893,7 +1117,7 @@ class PermissionService {
         inviteId: inviteId,
         email: email,
         roleType: roleType,
-        invitedByEmail: invitedByEmail,
+        invitedByEmail: senderEmail,
       );
       
       print('📧 [PermissionService] Email result: success=${emailResult.success}, error=${emailResult.errorMessage}');
@@ -913,11 +1137,14 @@ class PermissionService {
   }
 
   /// Whether [emailLower] already has a role at [facilityId]: it is the
-  /// [inviter]'s own address, or an invite to it was accepted there by a user
-  /// who still holds a role (the facility's roles map, which [assignRole] and
-  /// [removeRole] keep, or its legacy managers map, which removeRole leaves).
-  /// Staff join through invites, so that is how an address is tied to a user
-  /// here; the role rows are not readable by every manager who may invite.
+  /// [inviter]'s own address, or it belongs to a user who holds a role there
+  /// now (its owner, or in the facility's roles map, which [assignRole] and
+  /// [removeRole] keep, or its legacy managers map). An address is tied to a
+  /// user through an invite to it accepted there, the owner's users doc
+  /// (readable by the owner and a super admin, who send the app's invites),
+  /// or else its account, looked up server-side ([findUserIdByEmail]). The
+  /// owner's own address was let through: assignRole keeps the owner role
+  /// whatever an invite says, so that invite sat pending for ever.
   static Future<bool> _hasAccessAt({
     required String facilityId,
     required String emailLower,
@@ -925,21 +1152,38 @@ class PermissionService {
   }) async {
     if (_normalizedEmail(inviter.email) == emailLower) return true;
     final facilityRef = _collection('facilities').doc(facilityId);
+    final facility = (await facilityRef.get()).data() ?? const <String, dynamic>{};
+    final roles = facility['roles'];
+    final managers = facility['managers'];
+    bool holdsRole(Object? uid) =>
+        uid is String &&
+        (uid == facility['ownerUid'] ||
+            (roles is Map && roles[uid] != null) ||
+            (managers is Map && managers[uid] == true));
+
     final accepted = await facilityRef
         .collection(_facilityInvitesCollection)
         .where('emailLower', isEqualTo: emailLower)
         .where('status', isEqualTo: 'accepted')
         .get();
-    final acceptedBy = <String>{
-      for (final doc in accepted.docs)
-        if (doc.data()['acceptedBy'] case final String uid) uid,
-    };
-    if (acceptedBy.isEmpty) return false;
-    final facility = (await facilityRef.get()).data() ?? const <String, dynamic>{};
-    final roles = facility['roles'];
-    final managers = facility['managers'];
-    return acceptedBy.any((uid) =>
-        (roles is Map && roles[uid] != null) || (managers is Map && managers[uid] == true));
+    if (accepted.docs.any((doc) => holdsRole(doc.data()['acceptedBy']))) return true;
+    final ownerUid = facility['ownerUid'];
+    if (ownerUid is String && await _emailLowerOfUser(ownerUid) == emailLower) return true;
+    // Last, as it is a round trip: null when there is no such account or the
+    // lookup failed, which leaves the invite to go ahead as before.
+    return holdsRole(await findUserIdByEmail(emailLower, facilityId: facilityId));
+  }
+
+  /// The email on `users/{uid}`, lower-cased, or null when there is none or
+  /// the caller may not read it.
+  static Future<String?> _emailLowerOfUser(String uid) async {
+    if (uid.isEmpty) return null;
+    try {
+      final data = (await _collection(_usersCollection).doc(uid).get()).data();
+      return _normalizedEmail(data?['emailLower']) ?? _normalizedEmail(data?['email']);
+    } catch (_) {
+      return null;
+    }
   }
 
   static Future<void> cancelFacilityInvite({
@@ -1062,7 +1306,7 @@ class PermissionService {
         print('   Email: $inviteEmail, Role: $roleTypeName');
       }
       
-      // Assign the role
+      // Assign the role; the same batch marks the invite accepted.
       final assigned = await assignRole(
         userId: userId,
         facilityId: facilityId,
@@ -1074,13 +1318,6 @@ class PermissionService {
       );
 
       if (assigned.success) {
-        // Mark invite as accepted
-        await inviteRef.update({
-          'status': 'accepted',
-          'acceptedAt': Timestamp.fromDate(DateTime.now()),
-          'acceptedBy': userId,
-        });
-        
         if (kDebugMode) {
           print('✅ [PermissionService] Invite fulfilled successfully: $inviteId');
         }
@@ -1108,7 +1345,6 @@ class PermissionService {
   /// Whether the invite [data] may be accepted without the invitee opening
   /// its link at [now]: pending, and sent within [inviteAutoAcceptWindow].
   /// With no send time it may not.
-  @visibleForTesting
   static bool inviteAutoAcceptable(Map<String, dynamic> data, DateTime now) {
     if (data['status'] != 'pending') return false;
     final sent = data['lastSentAt'] ?? data['invitedAt'];
@@ -1145,7 +1381,7 @@ class PermissionService {
       }
       if (invitesSnapshot.docs.isEmpty) return true;
 
-      if (!await _isNewInvitee(userId)) {
+      if (!await _isNewInvitee(userId, {for (final doc in invitesSnapshot.docs) doc.id})) {
         if (kDebugMode) {
           print('⏭️ [PermissionService] $userId already has a role or facility; '
               'their invites are accepted through the link');
@@ -1167,6 +1403,7 @@ class PermissionService {
         final invitedBy = data['invitedBy'] as String? ?? 'invite';
 
         try {
+          // Marks the invite accepted in the same batch as the role.
           final assigned = await assignRole(
             userId: userId,
             facilityId: facilityId,
@@ -1181,11 +1418,6 @@ class PermissionService {
             continue;
           }
           anyInviteAccepted = true;
-          await doc.reference.update({
-            'status': 'accepted',
-            'acceptedAt': Timestamp.fromDate(DateTime.now()),
-            'acceptedBy': userId,
-          });
 
           if (kDebugMode) {
             print('✅ [PermissionService] Auto-accepted invite for facility: $facilityId');
@@ -1209,14 +1441,74 @@ class PermissionService {
     }
   }
 
+  /// The pending invites addressed to [user]'s email, for showing them their
+  /// invitation links: whoever [fulfillPendingInvitesForUser] leaves alone
+  /// (anyone who has had a role or a facility, and invites older than
+  /// [inviteAutoAcceptWindow]) accepts through the link, and had no way to
+  /// find it in the app. Empty for an unverified email, whose invites the
+  /// rules will not list.
+  static Future<List<FacilityInvite>> pendingInvitesFor(User user) async {
+    final emailLower = user.emailVerified ? _normalizedEmail(user.email) : null;
+    if (emailLower == null) return const [];
+    await refreshStaleEmailVerifiedClaim(user);
+    final snapshot = await _collectionGroup(_facilityInvitesCollection)
+        .where('emailLower', isEqualTo: emailLower)
+        .where('status', isEqualTo: 'pending')
+        .get();
+    final invites = [
+      for (final doc in snapshot.docs)
+        if (doc.reference.parent.parent case final facility?)
+          FacilityInvite.fromFirestore(doc: doc, facilityId: facility.id),
+    ];
+    // Not one to a facility they are on already (left over from before they
+    // joined): it offered a manager "Join X as Employee", and opening it
+    // rewrote their role with the invite's.
+    final onTeam = await Future.wait([
+      for (final invite in invites) holdsRoleAt(facilityId: invite.facilityId, userId: user.uid),
+    ]);
+    return [
+      for (var i = 0; i < invites.length; i++)
+        if (!onTeam[i]) invites[i],
+    ];
+  }
+
+  /// Whether [userId] holds a role at [facilityId] now: its owner, or in its
+  /// roles or legacy managers map (what the rules read). False when the
+  /// facility cannot be read, which is what the rules do to anyone without
+  /// one.
+  static Future<bool> holdsRoleAt({
+    required String facilityId,
+    required String userId,
+  }) async {
+    try {
+      final facility = (await _collection('facilities').doc(facilityId).get()).data();
+      if (facility == null) return false;
+      final roles = facility['roles'];
+      final managers = facility['managers'];
+      return facility['ownerUid'] == userId ||
+          (roles is Map && roles[userId] != null) ||
+          (managers is Map && managers[userId] == true);
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// No role row for [userId] at any facility, active or not, and no
-  /// facility of their own.
-  static Future<bool> _isNewInvitee(String userId) async {
+  /// facility of their own. An active row written for one of
+  /// [pendingInviteIds] does not count: that is an acceptance that stopped
+  /// part-way before [assignRole] wrote everything in one batch (the row, but
+  /// not the roles map or the invite), and treating it as a role left the
+  /// invitee locked out with nothing to retry it.
+  static Future<bool> _isNewInvitee(String userId, Set<String> pendingInviteIds) async {
     final results = await Future.wait([
-      _collection(_userRolesCollection).where('userId', isEqualTo: userId).limit(1).get(),
+      // Not limit(1): the first row may be a half-accepted one, and a row
+      // after it a real role. Bounded all the same.
+      _collection(_userRolesCollection).where('userId', isEqualTo: userId).limit(20).get(),
       _collection('facilities').where('ownerUid', isEqualTo: userId).limit(1).get(),
     ]);
-    return results.every((snapshot) => snapshot.docs.isEmpty);
+    final onlyHalfAccepted = results[0].docs.every((doc) =>
+        doc.data()['isActive'] == true && pendingInviteIds.contains(doc.data()['inviteId']));
+    return onlyHalfAccepted && results[1].docs.isEmpty;
   }
 
   static Future<EmailSendResult> _sendInviteEmail({
@@ -1461,6 +1753,16 @@ class FacilityInvite {
   final String? acceptedBy;
   final DateTime? lastSentAt;
 
+  /// The facility's name when the invite was written (for the invitee, who
+  /// cannot read the facility until they join).
+  final String? facilityName;
+
+  /// Whether [PermissionService.fulfillPendingInvitesForUser] may accept it
+  /// without the link, as of when it was read. Pending but not this: it is
+  /// older than [PermissionService.inviteAutoAcceptWindow] and only its link
+  /// accepts it.
+  final bool autoAcceptable;
+
   const FacilityInvite({
     required this.id,
     required this.facilityId,
@@ -1474,6 +1776,8 @@ class FacilityInvite {
     this.acceptedAt,
     this.acceptedBy,
     this.lastSentAt,
+    this.facilityName,
+    this.autoAcceptable = false,
   });
 
   bool get isPending => status == 'pending';
@@ -1498,6 +1802,8 @@ class FacilityInvite {
       acceptedAt: (data['acceptedAt'] as Timestamp?)?.toDate(),
       acceptedBy: data['acceptedBy'] as String?,
       lastSentAt: (data['lastSentAt'] as Timestamp?)?.toDate(),
+      facilityName: data['facilityName'] as String?,
+      autoAcceptable: PermissionService.inviteAutoAcceptable(data, DateTime.now()),
     );
   }
 }

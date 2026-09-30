@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:convert';
@@ -30,6 +30,45 @@ void _debugLogPMS(String location, String message, Map<String, dynamic> data, St
 
 class PermissionManagementScreen extends ConsumerStatefulWidget {
   const PermissionManagementScreen({super.key});
+
+  /// What the team screen tells the inviter about [result] for [email]:
+  /// sent; not sent at all (refused, or not written), so there is nothing to
+  /// resend; or saved with the email failing. A refusal used to read "Invite
+  /// created but email failed to send", pointing at a resend that did not
+  /// exist.
+  @visibleForTesting
+  static SnackBar inviteOutcomeSnackBar({required InviteResult result, required String email}) {
+    if (result.success) {
+      return SnackBar(
+        content: Text('Invitation sent to $email. They will receive an email with instructions to join.'),
+        backgroundColor: AppTheme.success,
+        duration: const Duration(seconds: 4),
+      );
+    }
+    if (!result.inviteSaved) {
+      return SnackBar(
+        content: Text('Invitation not sent. ${result.errorMessage ?? 'Unknown error'}'),
+        backgroundColor: AppTheme.error,
+        duration: const Duration(seconds: 8),
+      );
+    }
+    final errorMsg = result.errorMessage ?? 'Unknown error';
+    return SnackBar(
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Invite created but email failed to send.', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 4),
+          Text('Error: $errorMsg', style: const TextStyle(fontSize: 12)),
+          const SizedBox(height: 4),
+          const Text('You can resend it from the pending invites section.', style: TextStyle(fontSize: 12)),
+        ],
+      ),
+      backgroundColor: AppTheme.warning,
+      duration: const Duration(seconds: 10),
+    );
+  }
 
   @override
   ConsumerState<PermissionManagementScreen> createState() => _PermissionManagementScreenState();
@@ -872,47 +911,14 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
                 
                 setState(() => isSubmitting = false);
                 Navigator.of(dialogContext).pop();
-                
-                if (result.success) {
-                  ScaffoldMessenger.of(pageContext).showSnackBar(
-                    SnackBar(
-                      content: Text('Invitation sent to $email. They will receive an email with instructions to join.'),
-                      backgroundColor: AppTheme.success,
-                      duration: const Duration(seconds: 4),
-                    ),
-                  );
-                } else if (!result.inviteSaved) {
-                  // Refused or not written: there is no invite to resend.
-                  if (!pageContext.mounted) return;
-                  ScaffoldMessenger.of(pageContext).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                          'Invitation not sent. ${result.errorMessage ?? 'Unknown error'}'),
-                      backgroundColor: AppTheme.error,
-                      duration: const Duration(seconds: 8),
-                    ),
-                  );
-                } else {
-                  final errorMsg = result.errorMessage ?? 'Unknown error';
-                  print('❌ [PermissionManagementScreen] Invite creation failed: $errorMsg');
-                  ScaffoldMessenger.of(pageContext).showSnackBar(
-                    SnackBar(
-                      content: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('Invite created but email failed to send.', style: TextStyle(fontWeight: FontWeight.bold)),
-                          const SizedBox(height: 4),
-                          Text('Error: $errorMsg', style: const TextStyle(fontSize: 12)),
-                          const SizedBox(height: 4),
-                          const Text('You can resend it from the pending invites section.', style: TextStyle(fontSize: 12)),
-                        ],
-                      ),
-                      backgroundColor: AppTheme.warning,
-                      duration: const Duration(seconds: 10),
-                    ),
-                  );
+
+                if (!result.success) {
+                  debugPrint('❌ [PermissionManagementScreen] Invite not sent: ${result.errorMessage}');
                 }
+                if (!pageContext.mounted) return;
+                ScaffoldMessenger.of(pageContext).showSnackBar(
+                  PermissionManagementScreen.inviteOutcomeSnackBar(result: result, email: email),
+                );
                 // Try to reload users, but don't fail if it errors
                 try {
                   await _loadFacilityUsers();

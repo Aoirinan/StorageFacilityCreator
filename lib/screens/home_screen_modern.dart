@@ -48,6 +48,7 @@ import '../services/superadmin_service.dart';
 import 'package:sfcapp/models/paid_subscription.dart';
 import 'home_screen_modern_helper.dart';
 import '../widgets/keyboard_scrollable.dart';
+import 'package:sfcapp/widgets/pending_invitations_card.dart';
 import '../utils/error_message_helper.dart';
 import '../services/facility_stats_service.dart';
 import '../services/dashboard_owner_tips_service.dart';
@@ -534,6 +535,8 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Invitations waiting on their link (see PendingInvitationsCard).
+          PendingInvitationsCard(user: widget.user),
           // Welcome section (includes "Create your first facility" CTA when empty)
           _buildWelcomeSection(),
           const SizedBox(height: 16),
