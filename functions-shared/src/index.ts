@@ -366,5 +366,8 @@ export {
   unitNotOfferedOnlineReason,
 } from './units/onlineRental';
 
+export type { ClaimableUnit } from './units/tenantClaims';
+export { unitIdsClaimedByActiveTenants } from './units/tenantClaims';
+
 export type { UnitLabelOptions, UnitLabelStyle } from './units/unitLabel';
 export { formatUnitLabel, tenantUnitLabel, unitLabelsIncludeArea } from './units/unitLabel';

@@ -7,6 +7,7 @@ import 'package:sfcapp/models/facility_map_v2_models.dart';
 import 'package:sfcapp/models/facility_public_settings_model.dart';
 import 'package:sfcapp/models/map_shape_model.dart';
 import 'package:sfcapp/models/permission_model.dart';
+import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/facility_public_service.dart';
 import 'package:sfcapp/services/map_layout_service.dart';
@@ -15,6 +16,8 @@ import 'package:sfcapp/services/permission_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/utils/firestore_field_read.dart';
+import 'package:sfcapp/utils/unit_areas.dart';
+import 'package:sfcapp/utils/unit_number.dart';
 
 /// The website URL name asked for is another facility's storefront.
 class PublicSlugTakenException implements UserFacingException {
@@ -165,7 +168,7 @@ class FacilityMapV2Service {
         await FacilityPublicService.getPublicSettingsOrThrow(facilityId);
     // Throws too. On a failed read this saw no tenants, so a unit taken only
     // through an active tenant's unit number was published as rentable.
-    final claimedUnits = await readTenantClaimedUnitNumbersOrThrow(facilityId);
+    final activeTenants = await readActiveTenantsOrThrow(facilityId);
 
     final meta = await getOrCreateMeta(facilityId);
     final facilitySnap =
@@ -232,7 +235,7 @@ class FacilityMapV2Service {
       facilityId: facilityId,
       units: units,
       publicSettings: publicSettings,
-      tenantClaimedUnitNumbers: claimedUnits,
+      activeTenants: activeTenants,
     );
     final snapshot = _buildPublicSnapshot(
       facilityId: facilityId,
@@ -645,20 +648,19 @@ class FacilityMapV2Service {
           String facilityId) =>
       _fetchActiveUnitsOrdered(facilityId);
 
-  /// The unit numbers active tenants hold (trimmed, lower-cased), which
-  /// mark a unit taken even when its own doc was never set to occupied.
-  /// Throws when they cannot all be read, so a publish cannot mistake a
-  /// failed or partial read for a facility with fewer tenants.
+  /// The facility's active tenant docs (`isActive` exactly true), as
+  /// stored, for [unitIdsClaimedByActiveTenants]. Throws when they cannot
+  /// all be read, so a publish cannot mistake a failed or partial read for a
+  /// facility with fewer tenants: past the cap, a tenant holding a unit could
+  /// be missing and the unit listed as rentable.
   ///
-  /// The claims syncPublicFacilityMapInventoryForFacility makes on the
-  /// server, so the two writers of publicFacilityMaps/{slug}.units agree:
-  /// only tenants whose `isActive` is exactly true, and a unit number read
-  /// from the raw doc. This parsed every tenant into a TenantModel, which
-  /// throws on a unit number stored as a number (the server reads 101 as
-  /// '101') and on any odd field unrelated to the claim, and read every
-  /// tenant under a cap that was reported but still published a partial
-  /// list of claims.
-  static Future<Set<String>> readTenantClaimedUnitNumbersOrThrow(
+  /// Raw docs, as syncPublicFacilityMapInventoryForFacility reads them, so
+  /// the two writers of publicFacilityMaps/{slug}.units agree. Parsing every
+  /// tenant into a TenantModel threw on a unit number stored as a number
+  /// (the server reads 101 as '101') and on any odd field unrelated to the
+  /// claim, and since the publish refuses a failed tenant read, one such doc
+  /// would stop the facility's website from publishing at all.
+  static Future<List<Map<String, dynamic>>> readActiveTenantsOrThrow(
       String facilityId) async {
     const cap = FacilitySubcollections.readLimit;
     final snapshot =
@@ -667,10 +669,7 @@ class FacilityMapV2Service {
       throw StateError('Facility $facilityId has at least $cap active tenants; '
           'the public map cannot be published from a partial list of them.');
     }
-    return {
-      for (final doc in snapshot.docs)
-        if (tenantClaimedUnitNumber(doc.data()) case final n?) n,
-    };
+    return [for (final doc in snapshot.docs) doc.data()];
   }
 
   /// The unit number a tenant doc claims, as the server's
@@ -699,11 +698,69 @@ class FacilityMapV2Service {
     return n.isEmpty ? null : n;
   }
 
+  /// Ids of the [units] (the live ones the map is published from) that the
+  /// [activeTenants] (tenant docs) hold although the unit doc does not say
+  /// so: dashboard tenants whose unit was never set to occupied.
+  ///
+  /// Unit id first, as TenantService's lookups read a tenant's unit: a
+  /// tenant whose `unitId` names one of [units] holds that unit and no
+  /// other. Otherwise their unit number ([tenantClaimedUnitNumber]) names
+  /// every unit so numbered or, when none is numbered so now, every unit
+  /// renumbered from it (`legacyUnitNumber`); with a `unitArea`, only those
+  /// in that area ([unitAreaKey]) when one is there. This matched every
+  /// tenant's number against every unit's, so where numbers repeat across
+  /// areas a tenant in Complex 3's unit 12 took Complex 2's unit 12 off the
+  /// public map too.
+  ///
+  /// PARITY: unitIdsClaimedByActiveTenants in
+  /// functions-shared/src/units/tenantClaims.ts, which the server's inventory
+  /// sync uses; both run test/fixtures/public_map_units.json.
+  static Set<String> unitIdsClaimedByActiveTenants(
+    Iterable<Map<String, dynamic>> activeTenants,
+    Iterable<UnitModel> units,
+  ) {
+    final ids = <String>{};
+    final byNumber = <String, List<UnitModel>>{};
+    final byLegacyNumber = <String, List<UnitModel>>{};
+    for (final unit in units) {
+      ids.add(unit.id);
+      final number = unitNumberKey(unit.unitNumber);
+      if (number.isNotEmpty) (byNumber[number] ??= []).add(unit);
+      final legacy = unit.legacyUnitNumber;
+      if (legacy != null) {
+        (byLegacyNumber[unitNumberKey(legacy)] ??= []).add(unit);
+      }
+    }
+
+    final claimed = <String>{};
+    for (final tenant in activeTenants) {
+      if (!TenantModel.isActiveField(tenant['isActive'])) continue;
+      final unitId = TenantModel.textField(tenant['unitId']);
+      if (unitId != null && ids.contains(unitId)) {
+        claimed.add(unitId);
+        continue;
+      }
+      final number = tenantClaimedUnitNumber(tenant);
+      if (number == null) continue;
+      var named = byNumber[number] ?? byLegacyNumber[number] ?? const [];
+      final area = unitAreaKey(tenant['unitArea']);
+      if (area != null) {
+        final inArea = [
+          for (final u in named)
+            if (unitAreaKey(u.area) == area) u
+        ];
+        if (inArea.isNotEmpty) named = inArea;
+      }
+      claimed.addAll(named.map((u) => u.id));
+    }
+    return claimed;
+  }
+
   /// Builds the anonymous-safe `units` payload for [publicFacilityMaps] documents.
   static List<Map<String, dynamic>> buildPublicUnitInventoryMaps({
     required List<UnitModel> units,
     required FacilityPublicSettings? publicSettings,
-    Set<String> tenantClaimedUnitNumbers = const <String>{},
+    Set<String> tenantClaimedUnitIds = const <String>{},
   }) {
     final showPublicPricing = publicSettings?.publicPricingEnabled ?? true;
     final showUnitNumbers = publicSettings?.publicUnitNumbersEnabled ?? true;
@@ -729,11 +786,9 @@ class FacilityMapV2Service {
       final isPubliclyEnabledType = enabledPublicUnitTypes.isEmpty ||
           enabledPublicUnitTypes.contains(unitType);
 
-      final unitNumNorm = unit.unitNumber.trim().toLowerCase();
       final hasTenantLink =
           unit.tenantId != null && unit.tenantId!.trim().isNotEmpty;
-      final claimedByActiveTenant =
-          tenantClaimedUnitNumbers.contains(unitNumNorm);
+      final claimedByActiveTenant = tenantClaimedUnitIds.contains(unit.id);
       // The online rental holds (createPublicReservationHold,
       // createTenantPortalAdditionalUnitHold) and createPublicMoveInCheckout
       // accept a unit whose stored status lower-cases to 'available' or
@@ -816,19 +871,22 @@ class FacilityMapV2Service {
   /// inventory sync writes them: the list ([buildPublicUnitInventoryMaps])
   /// trimmed to fit ([fitUnitsToDocument]), how many units there were, and
   /// how many were left out. Both the publish and the refresh write these,
-  /// so neither leaves the other's counts behind.
+  /// so neither leaves the other's counts behind. [activeTenants]
+  /// ([readActiveTenantsOrThrow]) holding a unit the unit doc does not show
+  /// ([unitIdsClaimedByActiveTenants]) mark it rented.
   static ({List<Map<String, dynamic>> units, int unitsTotal, int unitsOmitted})
       publicUnitInventory({
     required String facilityId,
     required List<UnitModel> units,
     required FacilityPublicSettings? publicSettings,
-    Set<String> tenantClaimedUnitNumbers = const <String>{},
+    Iterable<Map<String, dynamic>> activeTenants = const [],
     int maxBytes = maxPublishedUnitsBytes,
   }) {
     final all = buildPublicUnitInventoryMaps(
       units: units,
       publicSettings: publicSettings,
-      tenantClaimedUnitNumbers: tenantClaimedUnitNumbers,
+      tenantClaimedUnitIds:
+          unitIdsClaimedByActiveTenants(activeTenants, units),
     );
     final fitted = fitUnitsToDocument(all, maxBytes: maxBytes);
     if (fitted.omitted > 0) {
@@ -878,13 +936,12 @@ class FacilityMapV2Service {
       final units = await _fetchActiveUnitsOrdered(facilityId);
       // Throws and skips the refresh too, rather than list a unit taken only
       // through an active tenant's unit number as rentable.
-      final claimedUnits =
-          await readTenantClaimedUnitNumbersOrThrow(facilityId);
+      final activeTenants = await readActiveTenantsOrThrow(facilityId);
       final inventory = publicUnitInventory(
         facilityId: facilityId,
         units: units,
         publicSettings: publicSettings,
-        tenantClaimedUnitNumbers: claimedUnits,
+        activeTenants: activeTenants,
       );
 
       await publicRef.update({

@@ -6,6 +6,7 @@ import {
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
   isUnlistedUnit,
+  unitIdsClaimedByActiveTenants,
 } from '@sfc/functions-shared';
 import { movedToSlugOf } from '@sfc/functions-shared';
 
@@ -146,28 +147,24 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
 
   // Every tenant, not a sample: one missing tenant is one unit advertised as free that is not.
   const tenantDocs = await readEveryDoc(db.collection(`facilities/${facilityId}/tenants`));
-  const tenantClaimed = new Set<string>();
-  for (const tdoc of tenantDocs) {
-    const td = tdoc.data();
-    // Active means `isActive` exactly true, as in the app's TenantModel, the
-    // stats function and every server job. This skipped only `=== false`, so
-    // a doc with no isActive claimed its unit here but not in the app's own
-    // publish (FacilityMapV2Service), and the two writers of this list
-    // disagreed about that unit.
-    if (td.isActive !== true) continue;
-    const n = String(td.unitNumber || '').trim().toLowerCase();
-    if (n.length > 0) tenantClaimed.add(n);
-  }
-
   const unitDocs = await readEveryDoc(db.collection(`facilities/${facilityId}/units`));
+  // The app's unit read (UnitService.readFacilityUnits) and the stats
+  // function keep a unit only when `(archived ?? false) === false`; this
+  // kept a stray non-boolean such as 'true' that the app's publish drops.
+  const liveUnitDocs = unitDocs.filter((doc) => !isArchivedForOnlineRental(doc.data()));
+  // Active means `isActive` exactly true, as in the app's TenantModel, the
+  // stats function and every server job. A tenant's unitId names their unit
+  // before their unit number does: numbers repeat across areas, and a plain
+  // number match marked Complex 2's unit 12 rented for a tenant in Complex 3's.
+  const tenantClaimed = unitIdsClaimedByActiveTenants(
+    tenantDocs.map((tdoc) => tdoc.data()),
+    liveUnitDocs.map((doc) => ({ id: doc.id, data: doc.data() })),
+  );
+
   const units: Record<string, any>[] = [];
 
-  for (const doc of unitDocs) {
+  for (const doc of liveUnitDocs) {
     const d = doc.data();
-    // The app's unit read (UnitService.readFacilityUnits) and the stats
-    // function keep a unit only when `(archived ?? false) === false`; this
-    // kept a stray non-boolean such as 'true' that the app's publish drops.
-    if (isArchivedForOnlineRental(d)) continue;
 
     const unitType = String(d.unitType || '');
     const categorySlug = slugify(unitType);
@@ -184,10 +181,9 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
     // published the stored value, so an imported 101 went out as a number here and as '101' from
     // the app's publish, and a missing one as undefined, which Firestore rejects.
     const unum = String(d.unitNumber ?? '');
-    const unitNumNorm = unum.trim().toLowerCase();
     const hasTenantLink =
       typeof d.tenantId === 'string' && String(d.tenantId).trim() !== '';
-    const claimedByActiveTenant = tenantClaimed.has(unitNumNorm);
+    const claimedByActiveTenant = tenantClaimed.has(doc.id);
     const statusAllowsRental = st === 'available' || st === 'reserved';
     const publicListingEnabled = !isUnlistedUnit(d);
     // The online rental callables rent only what isUnitOfferedOnline allows:

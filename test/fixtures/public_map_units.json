@@ -1,7 +1,8 @@
 {
   "_about": [
     "What the two writers of publicFacilityMaps/{slug}.units must both publish for the same unit and tenant docs, with default public settings.",
-    "The app side runs each case through the public map's unit and tenant reads and FacilityMapV2Service.buildPublicUnitInventoryMaps (test/public_map_units_parity_test.dart).",
+    "The app side runs each case through FacilityMapV2Service.refreshPublicMapInventoryFromLiveUnits, with its unit and tenant reads (test/public_map_units_parity_test.dart).",
+    "Tenant claims follow unitIdsClaimedByActiveTenants (functions-shared/src/units/tenantClaims.ts and FacilityMapV2Service): an active tenant's unitId first, then their unit number (legacyUnitNumber when no unit has it now), narrowed to their unitArea.",
     "The server side runs each case through syncPublicFacilityMapInventoryForFacility (functions-public-website/src/test/publicFacilityMapInventorySync.test.ts).",
     "expected is keyed by unit doc id and lists every unit that is published; a unit left out of it must not be published. Each entry names the published fields compared for that unit.",
     "isRentable must be false for any unit the online rental callables refuse (isUnitOfferedOnline in functions-shared, and a status that lower-cases to 'available' or 'reserved'), or the site offers a unit the hold then turns down."
@@ -213,23 +214,101 @@
       }
     },
     {
+      "name": "a tenant's unitId names their unit, not another area's unit with the same number",
+      "units": [
+        { "id": "c2-12", "data": { "unitNumber": "12", "area": "Complex 2", "status": "available", "unitType": "standard" } },
+        { "id": "c3-12", "data": { "unitNumber": "12", "area": "Complex 3", "status": "available", "unitType": "standard" } },
+        { "id": "c2-14", "data": { "unitNumber": "14", "area": "Complex 2", "status": "available", "unitType": "standard" } },
+        { "id": "c3-14", "data": { "unitNumber": "14", "area": "Complex 3", "status": "available", "unitType": "standard" } }
+      ],
+      "tenants": [
+        { "id": "t12", "data": { "name": "Al", "isActive": true, "unitNumber": "12", "unitId": "c3-12", "unitArea": "Complex 3" } },
+        { "id": "t14", "data": { "name": "Bo", "isActive": true, "unitNumber": "14", "unitId": " c2-14 " } },
+        { "id": "gone", "data": { "name": "Cy", "isActive": false, "unitNumber": "12", "unitId": "c2-12" } }
+      ],
+      "expected": {
+        "c2-12": { "isRentable": true, "status": "available" },
+        "c3-12": { "isRentable": false, "status": "rented" },
+        "c2-14": { "isRentable": false, "status": "rented" },
+        "c3-14": { "isRentable": true, "status": "available" }
+      }
+    },
+    {
+      "name": "with no unitId, a unit number several units have claims all of them unless the tenant's area picks one",
+      "units": [
+        { "id": "a-5", "data": { "unitNumber": "5", "area": "Complex 2", "status": "available", "unitType": "standard" } },
+        { "id": "b-5", "data": { "unitNumber": "5", "area": "Complex 3", "status": "available", "unitType": "standard" } },
+        { "id": "a-7", "data": { "unitNumber": "7", "area": "Complex 2", "status": "available", "unitType": "standard" } },
+        { "id": "b-7", "data": { "unitNumber": "7", "area": "Complex 3", "status": "available", "unitType": "standard" } },
+        { "id": "a-9", "data": { "unitNumber": "9", "area": "Complex 2", "status": "available", "unitType": "standard" } },
+        { "id": "b-9", "data": { "unitNumber": "9", "area": "Complex 3", "status": "available", "unitType": "standard" } }
+      ],
+      "tenants": [
+        { "id": "legacy", "data": { "name": "Al", "isActive": true, "unitNumber": "5" } },
+        { "id": "stale-id", "data": { "name": "Bo", "isActive": true, "unitNumber": "7", "unitId": "deleted-unit", "unitArea": "  complex   3 " } },
+        { "id": "no-such-area", "data": { "name": "Cy", "isActive": true, "unitNumber": "9", "unitId": "deleted-unit", "unitArea": "Complex 9" } }
+      ],
+      "expected": {
+        "a-5": { "isRentable": false, "status": "rented" },
+        "b-5": { "isRentable": false, "status": "rented" },
+        "a-7": { "isRentable": true, "status": "available" },
+        "b-7": { "isRentable": false, "status": "rented" },
+        "a-9": { "isRentable": false, "status": "rented" },
+        "b-9": { "isRentable": false, "status": "rented" }
+      }
+    },
+    {
+      "name": "a tenant's old unit number claims the unit renumbered from it only when no unit has that number now",
+      "units": [
+        { "id": "renumbered", "data": { "unitNumber": "C2-12", "legacyUnitNumber": "12", "area": "Complex 2", "status": "available", "unitType": "standard" } },
+        { "id": "still-14", "data": { "unitNumber": "14", "status": "available", "unitType": "standard" } },
+        { "id": "was-14", "data": { "unitNumber": "C3-14", "legacyUnitNumber": " 14 ", "area": "Complex 3", "status": "available", "unitType": "standard" } }
+      ],
+      "tenants": [
+        { "id": "t12", "data": { "name": "Al", "isActive": true, "unitNumber": "12" } },
+        { "id": "t14", "data": { "name": "Bo", "isActive": true, "unitNumber": "14" } }
+      ],
+      "expected": {
+        "renumbered": { "isRentable": false, "status": "rented" },
+        "still-14": { "isRentable": false, "status": "rented" },
+        "was-14": { "isRentable": true, "status": "available" }
+      }
+    },
+    {
+      "name": "a unitId naming an archived unit falls back to the unit number, as one naming no unit does",
+      "units": [
+        { "id": "old", "data": { "unitNumber": "20", "area": "Complex 2", "status": "occupied", "unitType": "standard", "archived": true } },
+        { "id": "new", "data": { "unitNumber": "20", "area": "Complex 3", "status": "available", "unitType": "standard" } }
+      ],
+      "tenants": [
+        { "id": "t20", "data": { "name": "Al", "isActive": true, "unitNumber": "20", "unitId": "old", "unitArea": "Complex 2" } }
+      ],
+      "expected": {
+        "new": { "isRentable": false, "status": "rented" }
+      }
+    },
+    {
       "name": "a tenant's unit number claims its unit as the server reads it, whatever else the tenant doc holds",
       "units": [
         { "id": "u101", "data": { "unitNumber": "101", "status": "available", "unitType": "standard" } },
         { "id": "c2", "data": { "unitNumber": "C2", "status": "available", "unitType": "standard" } },
         { "id": "u0", "data": { "unitNumber": "0", "status": "available", "unitType": "standard" } },
-        { "id": "c3", "data": { "unitNumber": "C3", "status": "available", "unitType": "standard" } }
+        { "id": "c3", "data": { "unitNumber": "C3", "status": "available", "unitType": "standard" } },
+        { "id": "c4", "data": { "unitNumber": "C4", "status": "available", "unitType": "standard" } }
       ],
       "tenants": [
         { "id": "number", "data": { "name": "Al", "isActive": true, "unitNumber": 101 } },
-        { "id": "odd-fields", "data": { "name": "Bo", "isActive": true, "unitNumber": "C2", "monthlyRate": "ninety", "createdAt": "yesterday", "vehicles": "truck" } },
-        { "id": "zero", "data": { "name": "Cy", "isActive": true, "unitNumber": 0 } }
+        { "id": "odd-fields", "data": { "name": "Bo", "isActive": true, "unitNumber": "C2", "monthlyRate": "ninety", "createdAt": "yesterday", "vehicles": "truck", "unitId": 7 } },
+        { "id": "zero", "data": { "name": "Cy", "isActive": true, "unitNumber": 0 } },
+        { "id": "map", "data": { "name": "Di", "isActive": true, "unitNumber": { "n": "C3" } } },
+        { "id": "truthy", "data": { "name": "Ed", "isActive": "true", "unitNumber": "C4" } }
       ],
       "expected": {
         "u101": { "isRentable": false, "status": "rented" },
         "c2": { "isRentable": false, "status": "rented" },
         "u0": { "isRentable": true, "status": "available" },
-        "c3": { "isRentable": true, "status": "available" }
+        "c3": { "isRentable": true, "status": "available" },
+        "c4": { "isRentable": true, "status": "available" }
       }
     }
   ]
