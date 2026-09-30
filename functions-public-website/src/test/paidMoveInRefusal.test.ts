@@ -245,7 +245,7 @@ function assertRefundRecorded(
     // The owner is not left to find out from their Stripe balance.
     assert.match(String(alert.message), /Stripe does not return its processing fee on a refund\./);
   } else {
-    assert.match(String(alert.message), new RegExp(`Refund payment ${PI} in your Stripe dashboard`));
+    assert.match(String(alert.message), new RegExp(`[Rr]efund payment ${PI} in your Stripe dashboard`));
   }
 }
 
@@ -414,28 +414,49 @@ test('a paid completion retried after its refund refunds nothing more and adds n
   assertRefundRecorded(inMemory, 'unit-taken', 'refunded', paidCents);
 });
 
-test('a failed automatic refund tells the owner to refund by hand, and a retry refunds it once', async () => {
+test('a failed automatic refund is retried by the sweep when it is due, with its own key, and refunded once', async () => {
   const inMemory = new InMemoryFirestore();
   const paidCents = seedPaidRental(inMemory);
   inMemory.seed(UNIT_PATH, { ...inMemory.read(UNIT_PATH), status: 'occupied' });
   const stub: StripeStub = { refundError: { message: 'Stripe is down' } };
-  const { complete, calls } = loadPublicMoveIn(inMemory, paidCents, stub);
+  const { complete, calls, sweep } = loadPublicMoveIn(inMemory, paidCents, stub);
 
   await assert.rejects(() => complete(), refundedWith(/rented or taken out of service/, false));
 
   assertRefundRecorded(inMemory, 'unit-taken', 'failed', paidCents);
-  assert.match(String(inMemory.read(REFUND_ALERT_PATH)?.message), /automatic refund failed \(Stripe is down\)/);
+  const failed = String(inMemory.read(REFUND_ALERT_PATH)?.message);
+  assert.match(failed, /automatic refund failed \(Stripe is down\) and will be tried again automatically, up to 4 times/);
+  const record = (inMemory.read(USE_PATH) as Record<string, any>).refund;
+  assert.equal(record.attempts, 1);
+  assert.ok(record.retryAt.toMillis() > Date.now() + 14 * 60 * 1000, 'retried no sooner than 15 minutes on');
 
-  // The owner read the alert; then the renter tried again, with Stripe back.
-  inMemory.seed(REFUND_ALERT_PATH, { ...inMemory.read(REFUND_ALERT_PATH), readAt: Timestamp.now() });
+  // The renter tries again at once, with Stripe back: not due, so Stripe is
+  // not asked again (a renter pressing again cannot use up the retries).
   stub.refundError = null;
-  await assert.rejects(() => complete(), refundedWith(/rented or taken out of service/));
+  await assert.rejects(() => complete(), refundedWith(/rented or taken out of service/, false));
+  assert.equal(calls.refunds.length, 1);
+
+  // The owner read the alert; the retry falls due and the sweep makes it.
+  inMemory.seed(REFUND_ALERT_PATH, { ...inMemory.read(REFUND_ALERT_PATH), readAt: Timestamp.now() });
+  inMemory.seed(USE_PATH, {
+    ...inMemory.read(USE_PATH),
+    refund: { ...record, retryAt: Timestamp.fromMillis(Date.now() - 1000) },
+  });
+  await sweep();
 
   assert.equal(calls.refunds.length, 2);
-  calls.refunds.forEach(assertRefundCall);
+  assertRefundCall(calls.refunds[0]);
+  // Its own key: Stripe answers a repeated key with the first request's
+  // failure for a day. A refund already made is refused as already refunded.
+  assert.equal(calls.refunds[1].options.idempotencyKey, `public_move_in_refund_${PI}_attempt_2`);
+  assert.equal(calls.refunds[1].params.amount, undefined);
   assertRefundRecorded(inMemory, 'unit-taken', 'refunded', paidCents);
+  assert.equal((inMemory.read(USE_PATH) as Record<string, any>).refund.retryAt, null);
   // Merged into the alert, not in place of what it said.
   assert.equal((inMemory.read(REFUND_ALERT_PATH) as Record<string, any>).metadata.reason, 'unit-taken');
+
+  await sweep();
+  assert.equal(calls.refunds.length, 2);
 });
 
 test('a refund Stripe has already made is recorded as refunded, not failed', async () => {
@@ -782,12 +803,16 @@ test('a refund Stripe made but nobody recorded is finished by the sweep, with th
   const inMemory = new InMemoryFirestore();
   const paidCents = seedPaidRental(inMemory);
   inMemory.seed(UNIT_PATH, { ...inMemory.read(UNIT_PATH), status: 'occupied' });
-  // The instance fails after Stripe refunds, before the outcome is written.
-  inMemory.writeErrorsOutsideTransactions.set('publicMoveInPayments', new Error('deadline exceeded'));
+  // The instance fails after Stripe refunds, before the outcome is written:
+  // the transaction that records it (it reads only the payment's record).
+  let outcomeFails = true;
+  inMemory.beforeCommit = ({ readPaths }) => {
+    if (outcomeFails && readPaths.length === 1 && readPaths[0] === USE_PATH) throw new Error('deadline exceeded');
+  };
   const { complete, calls, sweep } = loadPublicMoveIn(inMemory, paidCents);
 
   await assert.rejects(() => complete(), refundedWith(/rented or taken out of service/));
-  inMemory.writeErrorsOutsideTransactions.delete('publicMoveInPayments');
+  outcomeFails = false;
 
   assert.equal((inMemory.read(USE_PATH) as Record<string, any>).refund.status, 'pending');
   // Before: 'The payment is being refunded to them automatically', for good.

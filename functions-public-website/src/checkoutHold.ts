@@ -1,4 +1,13 @@
 import * as admin from 'firebase-admin';
+import {
+  CHECKOUT_SESSION_EXPIRES_FIELD,
+  FINISH_AFTER_PAYMENT_MINUTES,
+  readHoldersReservation as readHoldersReservationIn,
+  recordPaidPublicMoveInCheckout,
+  timestampToDate,
+  unitHoldRef as unitHoldRefIn,
+} from '@sfc/functions-shared';
+import type { PaidCheckoutOutcome } from '@sfc/functions-shared';
 
 /**
  * How long a reservation's hold lasts once the renter goes to pay.
@@ -10,10 +19,41 @@ import * as admin from 'firebase-admin';
  * could be held and rented by someone else meanwhile.
  *
  * So checkout gives the Checkout Session a short expiry and extends the hold
- * just past it; once Stripe shows the session paid, confirming it gives the
- * renter the time to finish. A renter who paid can still finish after a hold
- * has lapsed if the unit has not been taken.
+ * just past it. Once the session is paid, the Connect webhook holds the unit
+ * for the payer until PAID_HOLD_MAX_HOURS after payment, and confirming it
+ * gives the renter FINISH_AFTER_PAYMENT_MINUTES, never past that
+ * (functions-shared publicMoveInPaidCheckout.ts). A renter who paid can still
+ * finish after a hold has lapsed if the unit has not been taken.
  */
+
+// Shared with the Connect webhook (functions-integrations), which records a
+// paid session by the same rules.
+export {
+  CHECKOUT_PAID_AT_FIELD,
+  CHECKOUT_PAID_FIELD,
+  CHECKOUT_RETURN_WINDOW_MS,
+  CHECKOUT_SESSION_EXPIRES_FIELD,
+  FINISH_AFTER_PAYMENT_MINUTES,
+  PAID_HOLD_MAX_HOURS,
+  checkoutMayHaveBeenPaid,
+  holderMayBePaying,
+  laterExpiry,
+  paidHoldCap,
+  timestampToDate,
+} from '@sfc/functions-shared';
+
+/** The map hold doc of a unit: one per unit, naming the reservation that holds it. */
+export function unitHoldRef(facilityId: string, unitId: string): admin.firestore.DocumentReference {
+  return unitHoldRefIn(admin.firestore(), facilityId, unitId);
+}
+
+/** The reservation named by a hold doc, read in [tx]; undefined when the hold names none or it is gone. */
+export function readHoldersReservation(
+  tx: admin.firestore.Transaction,
+  hold: Record<string, unknown> | null,
+): Promise<Record<string, unknown> | undefined> {
+  return readHoldersReservationIn(admin.firestore(), tx, hold);
+}
 
 /** Stripe allows 30 minutes to 24 hours; the margin covers clock skew and latency. */
 export const CHECKOUT_SESSION_MINUTES = 35;
@@ -25,9 +65,6 @@ export const CHECKOUT_SESSION_MINUTES = 35;
  * full hour kept the unit from everyone else on nobody's money.
  */
 export const RETURN_AFTER_CHECKOUT_MINUTES = 10;
-
-/** Time, once the payment is confirmed, to fill in the form and sign. */
-export const FINISH_AFTER_PAYMENT_MINUTES = 60;
 
 /**
  * No checkout extends a hold past this, counted from when the unit was held,
@@ -41,96 +78,9 @@ export const CHECKOUT_RUN_OUT_MESSAGE =
 
 const MINUTE_MS = 60 * 1000;
 
-/** A Firestore Timestamp's Date, or null for anything else (missing, a pending server timestamp). */
-export function timestampToDate(value: unknown): Date | null {
-  if (value && typeof (value as { toDate?: unknown }).toDate === 'function') {
-    return (value as { toDate: () => Date }).toDate();
-  }
-  return null;
-}
-
-/** The later of an existing expiry and a new one: an extension never shortens a hold. */
-export function laterExpiry(existing: unknown, proposed: Date): Date {
-  const current = timestampToDate(existing);
-  return current && current > proposed ? current : proposed;
-}
-
 /** Whether [value] is a Timestamp at exactly [date]. */
 function isInstant(value: unknown, date: Date): boolean {
   return timestampToDate(value)?.getTime() === date.getTime();
-}
-
-/** Whether a hold doc keeps its unit from anyone but its own reservation now. */
-function isLiveHold(hold: Record<string, unknown> | null | undefined, now: Date): boolean {
-  const heldUntil = timestampToDate(hold?.expiresAt);
-  return heldUntil != null && heldUntil > now;
-}
-
-/**
- * How long a reservation whose checkout has started stays loadable after its
- * hold runs out. A Checkout Session could be paid for 24 hours, and a hold
- * lasts at most 15 minutes, so a renter slow on the Stripe page came back paid
- * to "Reservation not found or has expired", with no way to finish or be
- * refunded.
- */
-export const CHECKOUT_RETURN_WINDOW_MS = 24 * 60 * 60 * 1000;
-
-/** Whether [reservation] went to checkout within CHECKOUT_RETURN_WINDOW_MS, so it may have been paid. */
-export function checkoutMayHaveBeenPaid(reservation: Record<string, unknown> | undefined): boolean {
-  const started = reservation?.checkoutUpdatedAt as { toMillis?: () => number } | undefined;
-  return typeof started?.toMillis === 'function' &&
-    Date.now() - started.toMillis() < CHECKOUT_RETURN_WINDOW_MS;
-}
-
-/**
- * On the reservation: the latest a Checkout Session of its checkout can be
- * paid until. Checkout writes it before Stripe is asked (the new session's
- * expiry, never earlier than one it may hand back) and narrows it to the
- * session it hands back; a refund that leaves the reservation open sets it to
- * the refund's time, as its paid session can take nothing more.
- */
-export const CHECKOUT_SESSION_EXPIRES_FIELD = 'checkoutSessionExpiresAt';
-
-/**
- * On the reservation: the PaymentIntent that confirming a paid Checkout
- * Session found (holdForPaidCheckout). Removed when a refund of it leaves the
- * reservation open.
- */
-export const CHECKOUT_PAID_FIELD = 'checkoutPaidPaymentIntentId';
-
-/**
- * Whether [holder], the reservation whose live hold is on a unit (undefined
- * when its doc is gone), may be paying for it at [now]: still open, gone to
- * checkout, and either confirmed paid or with a Checkout Session still
- * payable. A renter who has paid and whose own hold ran out gives the unit up
- * only to such a holder. One who has not gone to pay has paid nothing:
- * refunding the paid renter for them left the unit empty when they walked
- * away, and told the renter it had been rented. Nor has one whose session
- * expired unpaid, in the minutes their hold outlasts it, or one refunded for
- * changed charges who has not started paying again: both were counted as
- * paying for a day.
- */
-export function holderMayBePaying(holder: Record<string, unknown> | undefined, now: Date = new Date()): boolean {
-  if (!holder || (holder.status !== 'pending' && holder.status !== 'confirmed')) return false;
-  if (!checkoutMayHaveBeenPaid(holder)) return false;
-  const paidWith = holder[CHECKOUT_PAID_FIELD];
-  if (typeof paidWith === 'string' && paidWith.trim() !== '') return true;
-  const payableUntil = timestampToDate(holder[CHECKOUT_SESSION_EXPIRES_FIELD]);
-  // Went to checkout before the expiry was recorded: its session may be
-  // payable for the day checkoutMayHaveBeenPaid allows.
-  if (!payableUntil) return true;
-  return payableUntil > now;
-}
-
-/** The reservation named by a hold doc, read in [tx]; undefined when the hold names none or it is gone. */
-export async function readHoldersReservation(
-  tx: admin.firestore.Transaction,
-  hold: Record<string, unknown> | null,
-): Promise<Record<string, unknown> | undefined> {
-  const holderId = typeof hold?.reservationId === 'string' ? hold.reservationId.trim() : '';
-  if (!holderId || holderId.includes('/')) return undefined;
-  const snap = await tx.get(admin.firestore().collection('publicReservations').doc(holderId));
-  return snap.exists ? (snap.data() as Record<string, unknown>) : undefined;
 }
 
 /**
@@ -148,17 +98,6 @@ export function checkoutHoldWindow(
     return null;
   }
   return { sessionExpiresAt, holdUntil };
-}
-
-/** The map hold doc of a unit: one per unit, naming the reservation that holds it. */
-export function unitHoldRef(facilityId: string, unitId: string): admin.firestore.DocumentReference {
-  return admin.firestore()
-    .collection('facilities')
-    .doc(facilityId)
-    .collection('mapEngine')
-    .doc('activeHolds')
-    .collection('items')
-    .doc(unitId);
 }
 
 /**
@@ -270,71 +209,33 @@ export async function narrowCheckoutSessionExpiry(params: {
 /**
  * Gives a renter whose Checkout Session Stripe shows paid the time to finish
  * moving in: the reservation and the unit's hold last until
- * FINISH_AFTER_PAYMENT_MINUTES from [now]. The unit is held again if its hold
- * lapsed or went, since after the Stripe redirect the renter re-enters the
- * whole form, and another renter could hold the unit meanwhile. Over another
- * reservation's live hold only when that one has not gone to pay
- * (holderMayBePaying): this renter has paid, and that one's checkout is then
- * refused before it takes any money. A holder who may be paying keeps the
- * unit, and completion refunds this renter if they still hold it then.
+ * FINISH_AFTER_PAYMENT_MINUTES from [now], but never past PAID_HOLD_MAX_HOURS
+ * after the payment. Each confirmation re-held the unit for another hour
+ * before, with no end, so a renter who kept reopening the link kept the unit
+ * off the market for good. The unit is held again if its hold lapsed or went,
+ * since after the Stripe redirect the renter re-enters the whole form. Over
+ * another reservation's live hold only when that one has not gone to pay
+ * (holderMayBePaying).
  *
- * 'held', 'held-by-another', or 'closed' for a reservation no longer open
- * (completed or cancelled: completion decides what the payment is for).
+ * Records the payment for the sweep too (functions-shared
+ * recordPaidPublicMoveInCheckout, shared with the Connect webhook), so a
+ * renter who confirms and then walks away is still refunded or finished.
  */
 export async function holdForPaidCheckout(params: {
-  reservationRef: admin.firestore.DocumentReference;
   facilityId: string;
   reservationId: string;
   /** The payment the paid session took: while it holds the unit, the renter counts as paying (holderMayBePaying). */
   paymentIntentId: string;
+  checkoutSessionId: string;
+  connectAccountId: string;
+  amountCents: number | null;
+  /** When it was paid, as best known: the earliest time recorded is kept. */
+  paidAt: Date;
   now: Date;
-}): Promise<'held' | 'held-by-another' | 'closed'> {
-  const { reservationRef, facilityId, reservationId, paymentIntentId, now } = params;
-  const finishBy = new Date(now.getTime() + FINISH_AFTER_PAYMENT_MINUTES * MINUTE_MS);
-  return admin.firestore().runTransaction(async (tx) => {
-    const reservationSnap = await tx.get(reservationRef);
-    const reservation = (reservationSnap.data() || {}) as Record<string, any>;
-    // Marked expired only because its hold lapsed: this renter has paid, so
-    // it is open again for them to finish (getPublicReservationByToken still
-    // finds it while the payment is unfinished).
-    const expired = reservation.status === 'expired';
-    if (
-      !reservationSnap.exists ||
-      (reservation.status !== 'pending' && reservation.status !== 'confirmed' && !expired)
-    ) {
-      return 'closed' as const;
-    }
-    const unitId = String(reservation.unitId || '').trim();
-    const holdRef = unitId ? unitHoldRef(facilityId, unitId) : null;
-    const holdSnap = holdRef ? await tx.get(holdRef) : null;
-    const hold = (holdSnap?.data() || null) as Record<string, any> | null;
-    const ownHold = hold?.reservationId === reservationId;
-    if (hold && !ownHold && isLiveHold(hold, now) && holderMayBePaying(await readHoldersReservation(tx, hold), now)) {
-      return 'held-by-another' as const;
-    }
-
-    tx.update(reservationRef, {
-      ...(expired ? { status: 'pending' } : {}),
-      expiresAt: admin.firestore.Timestamp.fromDate(laterExpiry(reservation.expiresAt, finishBy)),
-      [CHECKOUT_PAID_FIELD]: paymentIntentId,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    if (holdRef && ownHold) {
-      tx.update(holdRef, {
-        expiresAt: admin.firestore.Timestamp.fromDate(laterExpiry(hold?.expiresAt, finishBy)),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-    } else if (holdRef) {
-      tx.set(holdRef, {
-        facilityId,
-        unitId,
-        reservationId,
-        status: 'pending',
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        expiresAt: admin.firestore.Timestamp.fromDate(finishBy),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-    }
-    return 'held' as const;
+}): Promise<PaidCheckoutOutcome> {
+  return recordPaidPublicMoveInCheckout(admin.firestore(), {
+    ...params,
+    holdMinutes: FINISH_AFTER_PAYMENT_MINUTES,
+    recordedBy: 'confirmPublicMoveInCheckout',
   });
 }

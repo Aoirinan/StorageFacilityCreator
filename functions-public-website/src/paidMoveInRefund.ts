@@ -1,17 +1,23 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-import { getStripeClient } from '@sfc/functions-shared';
+import { PUBLIC_MOVE_IN_PAYMENTS_COLLECTION, getStripeClient, timestampToDate } from '@sfc/functions-shared';
 import { ONLINE_MOVE_IN_REVIEW_TYPE } from './onlineMoveInReview';
 import { resolveMoveInPaymentStripeAccountId } from './moveInPayment';
-import { CHECKOUT_PAID_FIELD, CHECKOUT_SESSION_EXPIRES_FIELD } from './checkoutHold';
+import {
+  CHECKOUT_PAID_AT_FIELD,
+  CHECKOUT_PAID_FIELD,
+  CHECKOUT_SESSION_EXPIRES_FIELD,
+  PAID_HOLD_MAX_HOURS,
+} from './checkoutHold';
 
 /**
  * One document per PaymentIntent that has completed an online move-in, or
  * that was refunded because it could not, keyed by the PaymentIntent id. Top
  * level rather than under the facility, so a connected account shared by two
- * facilities cannot spend one payment at each.
+ * facilities cannot spend one payment at each. (Named in functions-shared, as
+ * the Connect webhook reads it too.)
  */
-export const PUBLIC_MOVE_IN_PAYMENTS_COLLECTION = 'publicMoveInPayments';
+export { PUBLIC_MOVE_IN_PAYMENTS_COLLECTION };
 
 export const PAYMENT_ALREADY_USED_MESSAGE =
   'This payment has already been used to complete a move-in. Contact the facility.';
@@ -33,7 +39,10 @@ export type PaidMoveInRefusal =
   | 'do-not-rent'
   | 'reservation-closed'
   | 'charges-changed'
-  | 'portal-link';
+  | 'portal-link'
+  // Paid, and did not finish the move-in form within PAID_HOLD_MAX_HOURS
+  // (the sweep, unfinishedPaidMoveInSweep.ts).
+  | 'not-finished';
 
 /** Said to the renter. Kept clear of "not currently available", which the move-in page replaces with its own text. */
 const RENTER_TEXT: Record<PaidMoveInRefusal, string> = {
@@ -48,6 +57,7 @@ const RENTER_TEXT: Record<PaidMoveInRefusal, string> = {
   'charges-changed':
     'The move-in charges changed while you were paying. Refresh the page to see the new amount before paying again.',
   'portal-link': 'This move-in could not be linked to your tenant portal account.',
+  'not-finished': `This move-in was not finished within ${PAID_HOLD_MAX_HOURS} hours of paying, so it was cancelled.`,
 };
 
 /** Said to the owner, after "was not moved in because". */
@@ -59,6 +69,7 @@ const OWNER_TEXT: Record<PaidMoveInRefusal, string> = {
   'reservation-closed': 'their reservation had already been completed or cancelled',
   'charges-changed': 'the move-in charges changed while they were paying',
   'portal-link': 'their tenant portal account did not match the one they rented from',
+  'not-finished': `they did not finish moving in online within ${PAID_HOLD_MAX_HOURS} hours of paying`,
 };
 
 /**
@@ -89,6 +100,12 @@ type RefundState = 'pending' | 'refunded' | 'failed';
 
 /** What the one-use record holds about a refund. */
 interface RefundRecord {
+  /**
+   * 'pending': decided, and either Stripe not yet asked (no refundId) or
+   * Stripe's refund not final (refundId, stripeStatus). 'refunded' is final
+   * and never overwritten. 'failed': retried by the sweep at retryAt, up to
+   * MAX_REFUND_ATTEMPTS requests in all.
+   */
   status: RefundState;
   refusal: PaidMoveInRefusal;
   unitId: string | null;
@@ -96,6 +113,31 @@ interface RefundRecord {
   renterName: string;
   refundId?: string | null;
   error?: string | null;
+  /** Stripe's status of refundId while it is not final ('pending', 'requires_action'). */
+  stripeStatus?: string | null;
+  /** Refund requests made to Stripe so far. */
+  attempts?: number;
+  /** When the sweep next retries a failed refund; null once refunded or out of attempts. */
+  retryAt?: admin.firestore.Timestamp | null;
+}
+
+/**
+ * Refund requests made for one payment before the sweep stops and leaves the
+ * refund to the owner. Stripe keeps a failed request's answer under its
+ * idempotency key for a day, so each retry has its own key
+ * (refundIdempotencyKey). A refund Stripe did make is not made again: each
+ * request refunds the whole payment, and Stripe refuses one already refunded
+ * (charge_already_refunded), which is recorded as refunded.
+ */
+export const MAX_REFUND_ATTEMPTS = 4;
+
+/** Minutes after failed request n (1-based) before the sweep tries again. */
+const RETRY_AFTER_MINUTES = [15, 60, 6 * 60];
+
+/** The first request's key, as before; each retry has its own, so Stripe really tries again. */
+export function refundIdempotencyKey(paymentIntentId: string, attempt: number): string {
+  const base = `public_move_in_refund_${paymentIntentId}`;
+  return attempt <= 1 ? base : `${base}_attempt_${attempt}`;
 }
 
 /** The owner pays for an automatic refund: Stripe keeps its fee on the original payment. */
@@ -140,14 +182,25 @@ function ownerMessage(
   state: RefundState,
   paymentIntentId: string,
   error?: string | null,
+  progress: { stripePending?: boolean; attempts?: number; willRetry?: boolean } = {},
 ): string {
   const head =
     `${ctx.renterName} paid ${dollars(amountCents)} online for unit ${ctx.unitNumber}, ` +
     `but was not moved in because ${OWNER_TEXT[refusal]}.`;
   if (state === 'refunded') return `${head} The payment was refunded to them automatically. ${STRIPE_FEE_NOTE}`;
   if (state === 'failed') {
-    return `${head} The automatic refund failed (${error || 'unknown error'}). ` +
+    if (progress.willRetry) {
+      return `${head} The automatic refund failed (${error || 'unknown error'}) and will be tried again ` +
+        `automatically, up to ${MAX_REFUND_ATTEMPTS} times in all. If this alert still says it failed after that, ` +
+        `refund payment ${paymentIntentId} in your Stripe dashboard.`;
+    }
+    const tries = (progress.attempts ?? 0) > 1 ? ` ${progress.attempts} times` : '';
+    return `${head} The automatic refund failed${tries} (${error || 'unknown error'}). ` +
       `Refund payment ${paymentIntentId} in your Stripe dashboard.`;
+  }
+  if (progress.stripePending) {
+    return `${head} Stripe has accepted the refund and shows it as pending; this alert will say when it has ` +
+      `gone through. ${STRIPE_FEE_NOTE}`;
   }
   // Written before Stripe is asked, so it cannot promise the refund: an
   // instance that dies in between leaves it here until the sweep
@@ -161,10 +214,13 @@ function renterError(
   amountCents: number,
   state: RefundState,
   paymentIntentId: string,
+  refundStarted = false,
 ): functions.https.HttpsError {
   const suffix = state === 'refunded'
     ? ` Your payment of ${dollars(amountCents)} has been refunded to your card; it can take 5 to 10 business days to appear.`
-    : ` The facility has been told and will refund your payment of ${dollars(amountCents)}.`;
+    : state === 'pending' && refundStarted
+      ? ` Your payment of ${dollars(amountCents)} is being refunded to your card; it can take 5 to 10 business days to appear.`
+      : ` The facility has been told and will refund your payment of ${dollars(amountCents)}.`;
   return new functions.https.HttpsError('failed-precondition', `${RENTER_TEXT[refusal]}${suffix}`, {
     refunded: state === 'refunded',
     paymentIntentId,
@@ -228,17 +284,35 @@ export async function paymentOwnership(
   }
 }
 
+/** What Stripe said to one refund request. */
+type RefundAnswer =
+  | { state: 'refunded'; refundId: string | null }
+  | { state: 'pending'; refundId: string; stripeStatus: string }
+  | { state: 'failed'; refundId: string | null; error: string };
+
+/** Stripe's refund status, as a record's state. A refund object with no status is taken as made. */
+function answerOf(refund: { id?: string | null; status?: string | null; failure_reason?: string | null }): RefundAnswer {
+  const refundId = refund.id || null;
+  const status = String(refund.status || 'succeeded');
+  if (status === 'succeeded') return { state: 'refunded', refundId };
+  if ((status === 'pending' || status === 'requires_action') && refundId) {
+    return { state: 'pending', refundId, stripeStatus: status };
+  }
+  return { state: 'failed', refundId, error: `Stripe ${status}${refund.failure_reason ? `: ${refund.failure_reason}` : ''}` };
+}
+
 /**
- * Refunds the whole payment on the facility's connected account. The
- * idempotency key is the PaymentIntent's, so a retried completion cannot
- * refund twice; Stripe forgets keys after a day, when a second attempt is
- * refused as already refunded instead.
+ * Refunds the whole payment on the connected account that holds it. Request
+ * [attempt]'s idempotency key (refundIdempotencyKey) makes a retried request
+ * of the same attempt one refund; a later attempt's request is refused by
+ * Stripe as already refunded if an earlier one was made.
  */
 async function issueRefund(
   ctx: Pick<PaidMoveInContext, 'facilityId' | 'connectAccountId' | 'reservationId'>,
   paymentIntentId: string,
   refusal: PaidMoveInRefusal,
-): Promise<{ state: 'refunded'; refundId: string | null } | { state: 'failed'; error: string }> {
+  attempt: number,
+): Promise<RefundAnswer> {
   try {
     const refund = await getStripeClient().refunds.create(
       {
@@ -250,9 +324,9 @@ async function issueRefund(
           refusal,
         },
       },
-      { stripeAccount: ctx.connectAccountId, idempotencyKey: `public_move_in_refund_${paymentIntentId}` },
+      { stripeAccount: ctx.connectAccountId, idempotencyKey: refundIdempotencyKey(paymentIntentId, attempt) },
     );
-    return { state: 'refunded', refundId: refund.id || null };
+    return answerOf(refund);
   } catch (err: any) {
     if (err?.code === 'charge_already_refunded') return { state: 'refunded', refundId: null };
     functions.logger.error('Public move-in: automatic refund failed', {
@@ -260,56 +334,146 @@ async function issueRefund(
       reservationId: ctx.reservationId,
       paymentIntentId,
       refusal,
+      attempt,
       error: err?.message || String(err),
     });
-    return { state: 'failed', error: String(err?.message || err || 'unknown error').slice(0, 300) };
+    return { state: 'failed', refundId: null, error: String(err?.message || err || 'unknown error').slice(0, 300) };
   }
 }
 
-/** Issues (or re-issues) the refund a record holds, records how it went and tells the renter. */
+/**
+ * What asking Stripe now changes about [refund], or null when there is
+ * nothing to ask: refunded already; a failed one out of attempts, or not yet
+ * due (retryAt); or a refund Stripe still shows pending, or could not be read.
+ * A refund Stripe has (refundId) and has not finished is looked up, not asked
+ * for again: Stripe answers a repeated request with its first answer.
+ */
+async function askStripe(
+  ctx: Pick<PaidMoveInContext, 'facilityId' | 'connectAccountId' | 'reservationId'>,
+  paymentIntentId: string,
+  refund: RefundRecord,
+  now: Date,
+): Promise<Partial<RefundRecord> | null> {
+  const attempts = Number(refund.attempts) || (refund.status === 'failed' ? 1 : 0);
+  let answer: RefundAnswer;
+  let attempt = attempts;
+  if (refund.status === 'refunded') return null;
+  if (refund.status === 'pending' && refund.refundId) {
+    try {
+      const current = await getStripeClient().refunds.retrieve(refund.refundId, {}, { stripeAccount: ctx.connectAccountId });
+      answer = answerOf(current);
+    } catch (err: any) {
+      functions.logger.warn('Public move-in: could not look up a pending refund', {
+        facilityId: ctx.facilityId,
+        paymentIntentId,
+        refundId: refund.refundId,
+        error: err?.message || String(err),
+      });
+      return null;
+    }
+    if (answer.state === 'pending') return null;
+  } else {
+    if (refund.status === 'failed') {
+      const due = timestampToDate(refund.retryAt);
+      if (attempts >= MAX_REFUND_ATTEMPTS || !due || due > now) return null;
+    }
+    attempt = attempts + 1;
+    answer = await issueRefund(ctx, paymentIntentId, refund.refusal, attempt);
+  }
+  if (answer.state === 'refunded') {
+    return { status: 'refunded', refundId: answer.refundId, error: null, stripeStatus: null, attempts: attempt, retryAt: null };
+  }
+  if (answer.state === 'pending') {
+    return {
+      status: 'pending',
+      refundId: answer.refundId,
+      error: null,
+      stripeStatus: answer.stripeStatus,
+      attempts: attempt,
+      retryAt: null,
+    };
+  }
+  const retryMinutes = RETRY_AFTER_MINUTES[attempt - 1];
+  return {
+    status: 'failed',
+    refundId: answer.refundId,
+    error: answer.error,
+    stripeStatus: null,
+    attempts: attempt,
+    retryAt: attempt < MAX_REFUND_ATTEMPTS && retryMinutes
+      ? admin.firestore.Timestamp.fromMillis(now.getTime() + retryMinutes * 60 * 1000)
+      : null,
+  };
+}
+
+/**
+ * Asks Stripe for (or about) the refund a record holds, records how it went
+ * and tells the renter. The outcome is written in a transaction that reads
+ * the record first: a refund another finisher recorded as made is never
+ * overwritten (a request that failed here after one that succeeded there
+ * wrote 'failed' over 'refunded' before, and told the owner to refund by hand
+ * a payment already refunded), nor is a later attempt's outcome.
+ */
 async function finishRefund(
   ctx: Pick<PaidMoveInContext, 'facilityId' | 'connectAccountId' | 'reservationId'>,
   paymentIntentId: string,
   amountCents: number,
   refund: RefundRecord,
+  now: Date = new Date(),
 ): Promise<never> {
-  let state: RefundState = refund.status;
-  let error = refund.error ?? null;
-  if (state !== 'refunded') {
-    const outcome = await issueRefund(ctx, paymentIntentId, refund.refusal);
-    state = outcome.state;
-    error = outcome.state === 'failed' ? outcome.error : null;
-    const refundId = outcome.state === 'refunded' ? outcome.refundId : null;
+  let stored: RefundRecord = refund;
+  const change = await askStripe(ctx, paymentIntentId, refund, now);
+  if (change) {
+    const next: RefundRecord = { ...refund, ...change };
     try {
-      await paymentUseRef(paymentIntentId).set(
-        {
-          refund: { ...refund, status: state, refundId, error },
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true },
-      );
-      await alertRef(ctx.facilityId, refundAlertId(paymentIntentId)).set(
-        {
-          message: ownerMessage(refund, refund.refusal, amountCents, state, paymentIntentId, error),
-          metadata: { refundStatus: state, refundId },
-          // Shown again even if read: the outcome says whether the owner has
-          // a refund to make by hand, or no longer has one.
-          readAt: null,
-        },
-        { merge: true },
-      );
+      stored = await admin.firestore().runTransaction(async (tx): Promise<RefundRecord> => {
+        const snap = await tx.get(paymentUseRef(paymentIntentId));
+        const current = ((snap.data() || {}) as Record<string, any>).refund as RefundRecord | undefined;
+        if (!current) return next;
+        if (current.status === 'refunded') return current;
+        if ((Number(current.attempts) || 0) > (Number(next.attempts) || 0)) return current;
+        const merged: RefundRecord = { ...current, ...change };
+        tx.set(
+          paymentUseRef(paymentIntentId),
+          { refund: merged, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+          { merge: true },
+        );
+        const changed = current.status !== merged.status ||
+          (current.refundId ?? null) !== (merged.refundId ?? null) ||
+          (current.attempts ?? 0) !== (merged.attempts ?? 0);
+        if (changed) {
+          tx.set(
+            alertRef(ctx.facilityId, refundAlertId(paymentIntentId)),
+            {
+              message: ownerMessage(merged, merged.refusal, amountCents, merged.status, paymentIntentId, merged.error, {
+                stripePending: merged.status === 'pending' && Boolean(merged.refundId),
+                attempts: merged.attempts,
+                willRetry: merged.status === 'failed' && merged.retryAt != null,
+              }),
+              metadata: { refundStatus: merged.status, refundId: merged.refundId ?? null },
+              // Shown again even if read: the outcome says whether the owner
+              // has a refund to make by hand, or no longer has one.
+              readAt: null,
+            },
+            { merge: true },
+          );
+        }
+        return merged;
+      });
     } catch (err: any) {
       // The decision and the alert were written first, so a failure here
-      // leaves the record 'pending' and the next completion retries it.
+      // leaves the record as it was, and the next completion or the sweep
+      // asks Stripe again (with the same attempt's key).
+      stored = next;
       functions.logger.error('Public move-in: could not record a refund outcome', {
         facilityId: ctx.facilityId,
         paymentIntentId,
-        state,
+        state: next.status,
         error: err?.message || String(err),
       });
     }
   }
-  throw renterError(refund.refusal, amountCents, state, paymentIntentId);
+  throw renterError(stored.refusal, amountCents, stored.status, paymentIntentId, Boolean(stored.refundId));
 }
 
 /**
@@ -457,7 +621,10 @@ export async function refusePaidMoveIn(params: PaidMoveInContext & {
       tx.update(reservationRef, {
         [CHECKOUT_SESSION_EXPIRES_FIELD]: admin.firestore.Timestamp.now(),
         ...(reservation[CHECKOUT_PAID_FIELD] === payment.paymentIntentId
-          ? { [CHECKOUT_PAID_FIELD]: admin.firestore.FieldValue.delete() }
+          ? {
+            [CHECKOUT_PAID_FIELD]: admin.firestore.FieldValue.delete(),
+            [CHECKOUT_PAID_AT_FIELD]: admin.firestore.FieldValue.delete(),
+          }
           : {}),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
@@ -485,22 +652,29 @@ export async function refusePaidMoveIn(params: PaidMoveInContext & {
  * Finishes a refund already decided for [paymentIntentId] (its one-use record
  * holds `refund`): a completion retried after the instance died between the
  * decision and Stripe, or after Stripe failed, refunds it then.
+ *
+ * On the account the record names, which is the one that took the payment:
+ * [ctx]'s (the facility's account now) only for a record written before
+ * records kept it. The facility's current account refunded nothing, or the
+ * wrong payment, once the owner had moved to another Stripe account.
  */
 export async function resumePaidMoveInRefund(
   ctx: Pick<PaidMoveInContext, 'facilityId' | 'connectAccountId'>,
   paymentIntentId: string,
   record: Record<string, any>,
+  now: Date = new Date(),
 ): Promise<never> {
   const refund = record.refund as RefundRecord;
   return finishRefund(
     {
       facilityId: String(record.facilityId || ctx.facilityId),
-      connectAccountId: ctx.connectAccountId,
+      connectAccountId: String(record.connectAccountId || '').trim() || ctx.connectAccountId,
       reservationId: String(record.reservationId || ''),
     },
     paymentIntentId,
     Number(record.amountReceivedCents) || 0,
     refund,
+    now,
   );
 }
 
@@ -516,31 +690,50 @@ export const STALLED_REFUND_MINUTES = 15;
 const STALLED_REFUND_BATCH = 50;
 
 /**
- * Finishes refunds decided but never made. Before, only the renter trying
- * again finished one: a renter who gave up was never refunded, and the
- * owner's alert still said the refund was under way. Same idempotency key as
- * the first attempt, so a refund Stripe did make is not made again.
+ * Finishes refunds decided but never made, looks again at refunds Stripe
+ * showed pending, and retries failed ones that are due. Before, only the
+ * renter trying again finished one: a renter who gave up was never refunded,
+ * and the owner's alert still said the refund was under way; a failed one
+ * waited for the owner.
  *
  * Only refunds already stalled are read, oldest first (index: refund.status,
  * createdAt in firestore.indexes.json). Read unordered and unfiltered, a
  * batch could fill with refunds too recent to finish, and older stalled ones
- * behind them waited for good.
+ * behind them waited for good. Failed refunds are read by refund.retryAt,
+ * which is set only while one has attempts left, so one given up on leaves
+ * the query (a single-field index, which Firestore keeps by default).
  */
 export async function sweepStalledMoveInRefunds(now: Date): Promise<{ finished: number; skipped: number }> {
   const stalledBefore = admin.firestore.Timestamp.fromMillis(now.getTime() - STALLED_REFUND_MINUTES * 60 * 1000);
-  const snap = await admin.firestore()
-    .collection(PUBLIC_MOVE_IN_PAYMENTS_COLLECTION)
-    .where('refund.status', '==', 'pending')
-    .where('createdAt', '<=', stalledBefore)
-    .orderBy('createdAt', 'asc')
-    .limit(STALLED_REFUND_BATCH)
-    .get();
+  const collection = admin.firestore().collection(PUBLIC_MOVE_IN_PAYMENTS_COLLECTION);
+  const [stalled, retries] = await Promise.all([
+    collection
+      .where('refund.status', '==', 'pending')
+      .where('createdAt', '<=', stalledBefore)
+      .orderBy('createdAt', 'asc')
+      .limit(STALLED_REFUND_BATCH)
+      .get(),
+    collection
+      .where('refund.retryAt', '<=', admin.firestore.Timestamp.fromDate(now))
+      .orderBy('refund.retryAt', 'asc')
+      .limit(STALLED_REFUND_BATCH)
+      .get(),
+  ]);
   let finished = 0;
   let skipped = 0;
-  for (const doc of snap.docs) {
+  const seen = new Set<string>();
+  for (const doc of [...stalled.docs, ...retries.docs]) {
+    if (seen.has(doc.id)) continue;
+    seen.add(doc.id);
     const record = (doc.data() || {}) as Record<string, any>;
-    const decidedAt = typeof record.createdAt?.toMillis === 'function' ? Number(record.createdAt.toMillis()) : null;
-    if (decidedAt == null || now.getTime() - decidedAt < STALLED_REFUND_MINUTES * 60 * 1000) {
+    const refund = (record.refund || {}) as Partial<RefundRecord>;
+    if (refund.status === 'pending') {
+      const decidedAt = typeof record.createdAt?.toMillis === 'function' ? Number(record.createdAt.toMillis()) : null;
+      if (decidedAt == null || now.getTime() - decidedAt < STALLED_REFUND_MINUTES * 60 * 1000) {
+        skipped += 1;
+        continue;
+      }
+    } else if (refund.status !== 'failed') {
       skipped += 1;
       continue;
     }
@@ -560,7 +753,7 @@ export async function sweepStalledMoveInRefunds(now: Date): Promise<{ finished: 
       continue;
     }
     try {
-      await resumePaidMoveInRefund({ facilityId, connectAccountId }, doc.id, record);
+      await resumePaidMoveInRefund({ facilityId, connectAccountId }, doc.id, record, now);
     } catch (err: unknown) {
       // It ends by throwing the renter's error, once the outcome is recorded.
       if (!(err instanceof functions.https.HttpsError)) {

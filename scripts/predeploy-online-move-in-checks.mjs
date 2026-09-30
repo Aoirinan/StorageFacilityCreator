@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
  * READ-ONLY pre-deploy counts for the online move-in changes in
- * functions-public-website (paid renters moved in or refunded, short
- * Checkout Sessions, the stalled-refund sweep; one Checkout Session per
- * reservation comes with fix/public-move-in-checkout-once). It only reads:
- * no set, update, delete or batch is made anywhere below.
+ * functions-public-website and functions-integrations (paid renters moved in
+ * or refunded, one Checkout Session per reservation, paid sessions recorded
+ * by the Connect webhook, and the 15-minute sweep that finishes refunds and
+ * settles unfinished paid move-ins). It only reads: no set, update, delete or
+ * batch is made anywhere below.
  *
  * What it reports:
  *   1. Units whose status is available or reserved but which still carry a
@@ -14,11 +15,17 @@
  *      'pending', with their age. The new resumeStalledMoveInRefunds sweep
  *      will finish any older than 15 minutes on its first run.
  *   3. Open reservations whose checkout started within the last 24 hours
- *      and that have no checkoutSessionId (recorded only once
- *      fix/public-move-in-checkout-once is deployed, so before it, every
- *      one): their Checkout Sessions were made before this deploy, stay
- *      payable for 24 hours and carry untagged payments. Consider expiring
- *      them in the Stripe dashboard.
+ *      and that have no checkoutSessionId: checkouts made by the checkout on
+ *      main, which does not record its session on the reservation. Main
+ *      already gives each session a 35-minute expiry and tags its
+ *      PaymentIntent with the reservation, so none of them can still be paid
+ *      an hour after the deploy, and a renter who paid one and comes back is
+ *      moved in or refunded. But with no session recorded, the sweep's look
+ *      for paid sessions nobody reported cannot find one, and the webhook
+ *      records only payments made once functions-integrations is deployed:
+ *      a renter who paid one of these before the deploy and never came back
+ *      is found by nothing. Check each in the Stripe dashboard (the payment's
+ *      metadata names the reservation).
  *
  * Usage (Application Default Credentials with read access to the project):
  *   gcloud auth application-default login

@@ -11,7 +11,6 @@ import {
   getStripeClient,
   isArchivedForOnlineRental,
   isInternalUseUnit,
-  isUnitHeldByTenant,
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
   readActiveTenantUnitClaims,
@@ -41,6 +40,7 @@ import { resolveSmsConsentFields } from './smsConsent';
 import { assertOnlineRentalNotOnDnrList } from './dnrScreening';
 import { resolveMoveInPaymentStripeAccountId } from './moveInPayment';
 import { assertFacilityHasTenantCapacity } from './tenantCapacity';
+import { unitIsTaken } from './unitTaken';
 import {
   CHECKOUT_ATTEMPT_FIELD,
   CHECKOUT_PAID_FIELD,
@@ -381,19 +381,23 @@ async function assertFacilityTakesOnlineRentals(facilityId: string): Promise<Rec
 }
 
 /**
- * Someone else has the unit [unitId] ([unit] is its doc), or the owner has it
- * out of service: a status other than available or reserved (a missing one is
- * let through, as move-in always has), a link to a tenant, or an active
- * tenant who claims it ([claims], from readActiveTenantUnitClaims: by their
- * unitId, or with none by number in their area). The public map shows the
- * last two as rented. Renting it would overwrite that tenant or that status,
- * or put a second tenant in the unit, so it is refused before payment and
- * refunded after.
+ * Whether checkout must refuse the unit [unitId] ([unit] its doc, null when
+ * gone): not available or reserved, not offered online, of a type the owner
+ * does not rent online ([enabledUnitTypes]), or taken (unitIsTaken). The
+ * tenants' claims are read ([readClaims]) only for a unit that passes the
+ * rest. Same test and refusal as both holds.
  */
-function unitIsTaken(unitId: string, unit: Record<string, unknown>, claims: ActiveTenantUnitClaims): boolean {
+async function unitCannotBeRentedOnline(
+  unitId: string,
+  unit: Record<string, unknown> | null,
+  enabledUnitTypes: string[],
+  readClaims: () => Promise<ActiveTenantUnitClaims>,
+): Promise<boolean> {
+  if (!unit) return true;
   const status = String(unit.status || '').toLowerCase();
-  if (status && status !== 'available' && status !== 'reserved') return true;
-  return isUnitHeldByTenant(unitId, unit, claims);
+  if (status !== 'available' && status !== 'reserved') return true;
+  if (!isUnitOfferedOnline(unit) || !isUnitTypeOfferedOnline(unit, enabledUnitTypes)) return true;
+  return unitIsTaken(unitId, unit, await readClaims());
 }
 
 /** A doc's text field trimmed, or null when it is not a string or is blank (TenantModel.textField). */
@@ -807,26 +811,22 @@ export const createPublicMoveInCheckout = functions
   // them first. Same test and refusal as both holds, including a tenant's
   // link or claim, which the public map shows as rented; trimmed as
   // loadPublicMoveInChargeQuote does, so the unit checked is the unit priced.
+  // Checked here first so a refused renter is not screened and priced, and
+  // again in the transaction below, which decides.
   const reservedUnitId = String(reservation.unitId || '').trim();
-  if (reservedUnitId) {
-    const [unitSnap, publicSettings] = await Promise.all([
-      admin.firestore()
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('units')
-        .doc(reservedUnitId)
-        .get(),
-      readPublicSettings(facilityId),
-    ]);
-    const unitData = unitSnap.exists ? (unitSnap.data() as Record<string, any>) : null;
-    const unitStatus = String(unitData?.status || '').toLowerCase();
-    if (
-      !unitData ||
-      (unitStatus !== 'available' && unitStatus !== 'reserved') ||
-      !isUnitOfferedOnline(unitData) ||
-      !isUnitTypeOfferedOnline(unitData, enabledOnlineUnitTypes(publicSettings)) ||
-      unitIsTaken(reservedUnitId, unitData, await readActiveTenantUnitClaims(facilityTenants(facilityId)))
-    ) {
+  const reservedUnitRef = reservedUnitId
+    ? admin.firestore().collection('facilities').doc(facilityId).collection('units').doc(reservedUnitId)
+    : null;
+  let checkoutUnitTypes: string[] = [];
+  if (reservedUnitRef) {
+    const [unitSnap, publicSettings] = await Promise.all([reservedUnitRef.get(), readPublicSettings(facilityId)]);
+    checkoutUnitTypes = enabledOnlineUnitTypes(publicSettings);
+    if (await unitCannotBeRentedOnline(
+      reservedUnitId,
+      unitSnap.exists ? (unitSnap.data() as Record<string, unknown>) : null,
+      checkoutUnitTypes,
+      () => readActiveTenantUnitClaims(facilityTenants(facilityId)),
+    )) {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
     }
   }
@@ -899,6 +899,22 @@ export const createPublicMoveInCheckout = functions
     const current = (currentSnap.data() || {}) as Record<string, any>;
     if (current.status !== 'pending' && current.status !== 'confirmed') {
       throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
+    }
+    // The unit and its tenants, read again here: checked only before the
+    // transaction, a unit another renter completed onto (or the owner
+    // rented) in between still got a payable session, and completion then
+    // refunded this renter after taking their money. Read here, a change to
+    // either before the commit makes the transaction run again.
+    if (reservedUnitRef) {
+      const unitSnap = await tx.get(reservedUnitRef);
+      if (await unitCannotBeRentedOnline(
+        reservedUnitId,
+        unitSnap.exists ? (unitSnap.data() as Record<string, unknown>) : null,
+        checkoutUnitTypes,
+        () => readActiveTenantUnitClaims(facilityTenants(facilityId), tx),
+      )) {
+        throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
+      }
     }
 
     let hold: Record<string, any> | null = null;
@@ -1122,6 +1138,26 @@ export const createPublicMoveInCheckout = functions
 }));
 
 /**
+ * When a paid Checkout Session was paid, as near as it says: its
+ * PaymentIntent's creation when expanded, else the session's own creation
+ * (both no later than the payment), else [now]. Early rather than late, so
+ * the cap on how long the payer keeps the unit (PAID_HOLD_MAX_HOURS) is
+ * never stretched.
+ */
+function paidAtOf(
+  session: { created?: number | null; payment_intent?: unknown },
+  now: Date,
+): Date {
+  const intentCreated = (session.payment_intent as { created?: unknown } | null | undefined)?.created;
+  const seconds = typeof intentCreated === 'number' ? intentCreated
+    : typeof session.created === 'number' ? session.created
+      : null;
+  if (seconds == null || !Number.isFinite(seconds)) return now;
+  const at = new Date(seconds * 1000);
+  return at < now ? at : now;
+}
+
+/**
  * Confirm Stripe Checkout payment result for public move-in.
  */
 export const confirmPublicMoveInCheckout = functions
@@ -1251,23 +1287,30 @@ export const confirmPublicMoveInCheckout = functions
 
   // Paid: the renter now re-enters the whole form (Stripe's redirect reloads
   // the page), so the unit is held for them again, whether or not the
-  // checkout's hold has lapsed. Not claimed over the live hold of another
-  // renter who may be paying for it; completion refunds this renter if that
-  // one still has the unit then. A failure here does not stop them:
+  // checkout's hold has lapsed, for an hour but never past
+  // PAID_HOLD_MAX_HOURS after payment. Not claimed over the live hold of
+  // another renter who may be paying for it; completion refunds this renter
+  // if that one still has the unit then. Recorded for the sweep as well, as
+  // the Connect webhook records it. A failure here does not stop them:
   // completion checks the unit itself.
   try {
+    const now = new Date();
     const unitHold = await holdForPaidCheckout({
-      reservationRef,
       facilityId,
       reservationId: String(reservationId),
       paymentIntentId,
-      now: new Date(),
+      checkoutSessionId: session.id,
+      connectAccountId,
+      amountCents: typeof session.amount_total === 'number' ? session.amount_total : null,
+      paidAt: paidAtOf(session, now),
+      now,
     });
-    if (unitHold === 'held-by-another') {
-      functions.logger.warn('confirmPublicMoveInCheckout: a paid renter\'s unit is held by another reservation', {
+    if (unitHold !== 'held') {
+      functions.logger.warn('confirmPublicMoveInCheckout: a paid renter\'s unit was not held for them', {
         facilityId,
         reservationId: String(reservationId),
         paymentIntentId,
+        outcome: unitHold,
       });
     }
   } catch (err: any) {
