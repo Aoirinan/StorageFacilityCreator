@@ -22,7 +22,7 @@ jobs:
       - name: firestore.rules matches firestore-rules-src/
         run: node scripts/build_firestore_rules.cjs --check
       - name: Backfill and migration script planners
-        run: node --test scripts/backfill-tenant-unit-id.test.mjs scripts/renumber-units-by-area.test.mjs scripts/audit-prorated-tenant-rates.test.mjs
+        run: node --test scripts/backfill-tenant-unit-id.test.mjs scripts/renumber-units-by-area.test.mjs scripts/audit-prorated-tenant-rates.test.mjs scripts/audit-transfer-credit-signs.test.mjs
       # Stays code never touches tenants, units, ledgers, payments or
       # invoices, and never sends anything; the self-test proves the check
       # still catches each planted violation.

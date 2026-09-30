@@ -25,6 +25,20 @@ class TransferRefusedException implements UserFacingException {
   String toString() => message;
 }
 
+/// One ledger entry a completed transfer posts. [amount] is signed the way
+/// the ledger stores it: negative for the credit, positive for the charge.
+/// [kind] is the entry's `metadata.type` ('transfer_refund' for the credit,
+/// 'transfer_charge' for the charge; scripts/audit-transfer-credit-signs.mjs
+/// finds the credits by it).
+typedef TransferLedgerLine = ({
+  LedgerEntryType type,
+  double amount,
+  String description,
+  String unitId,
+  String unitNumber,
+  String kind,
+});
+
 /// Service for managing unit transfers
 class TransferService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -272,21 +286,18 @@ class TransferService {
   }
 
   /// The ledger rows a completed transfer posts: the old unit's unused days
-  /// as a credit, negative, and the new unit's as a charge. The credit was
-  /// posted positive, and a tenant's balance is the plain sum of posted
-  /// amounts (what autopay collects), so a transfer charged the old unit's
-  /// unused days on top of the new unit's instead of netting them, as the
-  /// screen showed.
+  /// (transfer day to month end) as a credit, negative, then the new unit's
+  /// as a charge. Either is left out when its amount is zero.
+  ///
+  /// A tenant's balance is the signed sum of their posted amounts
+  /// (LedgerService.getLedgerBalance, sumPostedLedgerEntries; what autopay
+  /// collects): charges are stored positive, payments and credits negative.
+  /// The credit used to be posted positive, so a transfer charged the old
+  /// unit's unused days on top of the new unit's instead of netting them,
+  /// and the two entries summed to fromUnit + toUnit rather than
+  /// [TransferModel.netAmount], the net the screen showed.
   @visibleForTesting
-  static List<
-      ({
-        LedgerEntryType type,
-        double amount,
-        String description,
-        String unitId,
-        String unitNumber,
-        String kind,
-      })> transferLedgerRows(TransferModel transfer) => [
+  static List<TransferLedgerLine> transferLedgerRows(TransferModel transfer) => [
         if (transfer.fromUnitProratedRent > 0)
           (
             type: LedgerEntryType.credit,
