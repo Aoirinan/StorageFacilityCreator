@@ -25,6 +25,15 @@ class TransferRefusedException implements UserFacingException {
   String toString() => message;
 }
 
+/// One ledger entry a completed transfer posts. [amount] is signed the way
+/// the ledger stores it: negative for the credit, positive for the charge.
+typedef TransferLedgerLine = ({
+  LedgerEntryType type,
+  double amount,
+  String description,
+  Map<String, dynamic> metadata,
+});
+
 /// Service for managing unit transfers
 class TransferService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -251,6 +260,50 @@ class TransferService {
     }
   }
 
+  /// The ledger entries completing [transfer] posts: a credit for the
+  /// from-unit's rent from transfer day to month end, then a charge for the
+  /// to-unit's. Either is left out when its amount is zero.
+  ///
+  /// A tenant's balance is the signed sum of their posted amounts
+  /// (LedgerService.getLedgerBalance, sumPostedLedgerEntries): charges are
+  /// stored positive, payments and credits negative. The transfer credit
+  /// used to be written positive, so leaving a unit with $30 of rent to
+  /// give back put the tenant $30 further into debt instead of $30 ahead,
+  /// and the two entries summed to fromUnit + toUnit rather than
+  /// [TransferModel.netAmount]. Every balance reader (statements, the
+  /// tenant's balance, the delinquency list, payment history) adds the
+  /// signed amounts, so the credit has to be stored negative.
+  static List<TransferLedgerLine> ledgerLines(TransferModel transfer) {
+    final lines = <TransferLedgerLine>[];
+    if (transfer.fromUnitProratedRent > 0) {
+      lines.add((
+        type: LedgerEntryType.credit,
+        amount: -transfer.fromUnitProratedRent,
+        description: 'Transfer refund: ${transfer.fromUnitNumber} (prorated)',
+        metadata: {
+          'transferId': transfer.id,
+          'unitId': transfer.fromUnitId,
+          'unitNumber': transfer.fromUnitNumber,
+          'type': 'transfer_refund',
+        },
+      ));
+    }
+    if (transfer.toUnitProratedRent > 0) {
+      lines.add((
+        type: LedgerEntryType.rentCharge,
+        amount: transfer.toUnitProratedRent,
+        description: 'Transfer charge: ${transfer.toUnitNumber} (prorated)',
+        metadata: {
+          'transferId': transfer.id,
+          'unitId': transfer.toUnitId,
+          'unitNumber': transfer.toUnitNumber,
+          'type': 'transfer_charge',
+        },
+      ));
+    }
+    return lines;
+  }
+
   /// Complete a transfer
   static Future<void> completeTransfer({
     required String facilityId,
@@ -302,47 +355,19 @@ class TransferService {
 
       // Create ledger entries
       final ledgerEntryIds = <String>[];
-
-      // Refund from old unit (if positive)
-      if (transfer.fromUnitProratedRent > 0) {
-        final refundEntry = await LedgerService.createLedgerEntry(
+      for (final line in ledgerLines(transfer)) {
+        final entry = await LedgerService.createLedgerEntry(
           tenantId: transfer.tenantId,
           facilityId: facilityId,
-          type: LedgerEntryType.credit,
-          amount: transfer.fromUnitProratedRent,
-          description: 'Transfer refund: ${transfer.fromUnitNumber} (prorated)',
+          type: line.type,
+          amount: line.amount,
+          description: line.description,
           entryDate: transfer.transferDate,
           dueDate: transfer.transferDate,
           status: LedgerEntryStatus.posted,
-          metadata: {
-            'transferId': transferId,
-            'unitId': transfer.fromUnitId,
-            'unitNumber': transfer.fromUnitNumber,
-            'type': 'transfer_refund',
-          },
+          metadata: line.metadata,
         );
-        ledgerEntryIds.add(refundEntry.id);
-      }
-
-      // Charge for new unit
-      if (transfer.toUnitProratedRent > 0) {
-        final chargeEntry = await LedgerService.createLedgerEntry(
-          tenantId: transfer.tenantId,
-          facilityId: facilityId,
-          type: LedgerEntryType.rentCharge,
-          amount: transfer.toUnitProratedRent,
-          description: 'Transfer charge: ${transfer.toUnitNumber} (prorated)',
-          entryDate: transfer.transferDate,
-          dueDate: transfer.transferDate,
-          status: LedgerEntryStatus.posted,
-          metadata: {
-            'transferId': transferId,
-            'unitId': transfer.toUnitId,
-            'unitNumber': transfer.toUnitNumber,
-            'type': 'transfer_charge',
-          },
-        );
-        ledgerEntryIds.add(chargeEntry.id);
+        ledgerEntryIds.add(entry.id);
       }
 
       // Update units
