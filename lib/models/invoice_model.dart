@@ -178,6 +178,13 @@ class InvoiceModel {
   bool get isOverdue => isOverdueAt(DateTime.now());
   int get daysOverdue => daysOverdueAt(DateTime.now());
 
+  /// "1 day overdue", "3 days overdue", as of today.
+  String get daysOverdueLabel => overdueDaysText(daysOverdue);
+
+  /// "1 day overdue", "3 days overdue".
+  static String overdueDaysText(int days) =>
+      '$days ${days == 1 ? 'day' : 'days'} overdue';
+
   /// Whether this invoice is overdue on [now]'s calendar day: it went to the
   /// tenant (sent, or the older stored "overdue" status), money is still owed
   /// on it, and it was due on a day before today.

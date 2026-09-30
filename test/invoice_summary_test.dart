@@ -41,6 +41,11 @@ int _chip(List<InvoiceModel> invoices, InvoiceStatus? filter) => invoices
     .length;
 
 void main() {
+  test('overdue days read singular for one day', () {
+    expect(InvoiceModel.overdueDaysText(1), '1 day overdue');
+    expect(InvoiceModel.overdueDaysText(3), '3 days overdue');
+  });
+
   group('isOverdueAt', () {
     test('a draft is never overdue, however late its due date', () {
       final draft = _invoice(InvoiceStatus.draft, due: DateTime(2026, 6, 1));

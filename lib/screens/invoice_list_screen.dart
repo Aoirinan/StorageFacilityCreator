@@ -591,7 +591,7 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
                       Padding(
                         padding: const EdgeInsets.only(top: 6),
                         child: Text(
-                          '${invoice.daysOverdue} days overdue',
+                          invoice.daysOverdueLabel,
                           style: Theme.of(context).textTheme.bodySmall?.copyWith(
                             color: AppTheme.error,
                             fontWeight: FontWeight.w500,
@@ -691,7 +691,7 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
                               borderRadius: BorderRadius.circular(4),
                             ),
                             child: Text(
-                              '${invoice.daysOverdue} days overdue',
+                              invoice.daysOverdueLabel,
                               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                                 color: AppTheme.error,
                                 fontWeight: FontWeight.w500,
