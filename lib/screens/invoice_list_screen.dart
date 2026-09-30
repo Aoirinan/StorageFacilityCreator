@@ -5,7 +5,6 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import '../models/invoice_model.dart';
 import '../providers/invoice_provider.dart';
-import '../providers/late_logic_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/facility_provider.dart';
 import '../providers/active_facility_provider.dart';
@@ -16,6 +15,8 @@ import '../services/facility_creator_account_service.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
 import '../utils/breakpoints.dart';
+import 'package:sfcapp/utils/invoice_summary.dart';
+import 'package:sfcapp/widgets/invoice_summary_cards.dart';
 import 'invoice_detail_screen.dart';
 
 class InvoiceListScreen extends ConsumerStatefulWidget {
@@ -325,65 +326,12 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
     final invoicesAsync = ref.watch(invoicesForFacilityProvider(_selectedFacilityId));
 
     return invoicesAsync.when(
-      data: (invoices) {
-        // Include tenant-based overdue (from Delinquency) so Billing aligns when no invoices exist
-        final tenantsOverdueAsync = ref.watch(tenantsWithOverdueProvider(_selectedFacilityId));
-        // Voided invoices are in the list so they can be reviewed under the
-        // Voided filter, but they are not money: counting them here would
-        // inflate every headline figure on the screen.
-        final live =
-            invoices.where((i) => i.status != InvoiceStatus.voided).toList();
-        final overdueInvoices = live.where((i) => i.isOverdue).length;
-        final overdueTenants = tenantsOverdueAsync.whenOrNull(data: (d) => d)?.length ?? 0;
-        final overdue = overdueInvoices > overdueTenants ? overdueInvoices : overdueTenants;
-
-        final total = live.length;
-        final paid = live.where((i) => i.status == InvoiceStatus.paid).length;
-        final totalAmount = live.fold(0.0, (sum, i) => sum + i.total);
-        final unpaidAmount = live.where((i) => i.balance > 0).fold(0.0, (sum, i) => sum + i.balance);
-
-        final isPhone = MediaQuery.of(context).size.width < Breakpoints.xs;
-        return Container(
-          padding: EdgeInsets.all(isPhone ? 12 : 16),
-          decoration: BoxDecoration(
-            color: AppTheme.backgroundLight,
-            border: Border(
-              bottom: BorderSide(color: AppTheme.borderLight),
-            ),
-          ),
-          child: isPhone
-              ? Column(
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(child: _buildStatCard('Total', total.toString(), Icons.receipt)),
-                        const SizedBox(width: 6),
-                        Expanded(child: _buildStatCard('Paid', paid.toString(), Icons.check_circle, AppTheme.success)),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        Expanded(child: _buildStatCard('Overdue Invoices', overdue.toString(), Icons.warning, AppTheme.error)),
-                        const SizedBox(width: 6),
-                        Expanded(child: _buildStatCard('Unpaid', '\$${unpaidAmount.toStringAsFixed(2)}', Icons.attach_money, AppTheme.warning)),
-                      ],
-                    ),
-                  ],
-                )
-              : Row(
-                  children: [
-                    _buildStatCard('Total Invoices', total.toString(), Icons.receipt),
-                    const SizedBox(width: 16),
-                    _buildStatCard('Paid', paid.toString(), Icons.check_circle, AppTheme.success),
-                    const SizedBox(width: 16),
-                    _buildStatCard('Overdue Invoices', overdue.toString(), Icons.warning, AppTheme.error),
-                    const SizedBox(width: 16),
-                    _buildStatCard('Unpaid Amount', '\$${unpaidAmount.toStringAsFixed(2)}', Icons.attach_money, AppTheme.warning),
-                  ],
-                ),
-        );
-      },
+      // Invoices only, counted the way the chips below filter them (see
+      // InvoiceSummary). Tenants late on rent are on the Past due tab; mixing
+      // them in here once showed "Overdue 5" on a facility with two drafts.
+      data: (invoices) => InvoiceSummaryCards(
+        summary: InvoiceSummary.of(invoices, now: DateTime.now()),
+      ),
       loading: () => const Padding(
         padding: EdgeInsets.all(16.0),
         child: Center(child: CircularProgressIndicator()),
@@ -391,51 +339,6 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
       error: (error, stack) => Padding(
         padding: const EdgeInsets.all(16.0),
         child: Text('Error loading stats: $error', style: TextStyle(color: AppTheme.error)),
-      ),
-    );
-  }
-
-  Widget _buildStatCard(String label, String value, IconData icon, [Color? color]) {
-    final isPhone = MediaQuery.of(context).size.width < Breakpoints.xs;
-    return Expanded(
-      child: Card(
-        child: Padding(
-          padding: EdgeInsets.all(isPhone ? 8 : 12),
-          child: Row(
-            children: [
-              Icon(icon, color: color ?? AppTheme.primaryBlue, size: isPhone ? 20 : 24),
-              SizedBox(width: isPhone ? 8 : 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      label,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: AppTheme.textSecondary,
-                        fontSize: isPhone ? 11 : null,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 1,
-                    ),
-                    SizedBox(height: isPhone ? 2 : 4),
-                    Text(
-                      value,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: color ?? AppTheme.textPrimary,
-                        fontSize: isPhone ? 14 : null,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 1,
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }
@@ -467,18 +370,14 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
     return invoicesAsync.when(
       data: (invoices) {
         // Apply filters
-        var filteredInvoices = invoices;
-        
-        if (_statusFilter != null) {
-          filteredInvoices = filteredInvoices.where((i) => i.status == _statusFilter).toList();
-        } else {
-          // "All" means all live invoices. Voided ones are reachable through
-          // their own chip, where an operator goes looking for them on
-          // purpose, rather than mixed into the working list.
-          filteredInvoices = filteredInvoices
-              .where((i) => i.status != InvoiceStatus.voided)
-              .toList();
-        }
+        // "All" means all live invoices. Voided ones are reachable through
+        // their own chip, where an operator goes looking for them on purpose,
+        // rather than mixed into the working list. "Overdue" lists what the
+        // Overdue card counts (see invoiceMatchesStatusFilter).
+        final now = DateTime.now();
+        var filteredInvoices = invoices
+            .where((i) => invoiceMatchesStatusFilter(i, _statusFilter, now: now))
+            .toList();
         
         if (_searchQuery.isNotEmpty) {
           filteredInvoices = filteredInvoices.where((invoice) {
