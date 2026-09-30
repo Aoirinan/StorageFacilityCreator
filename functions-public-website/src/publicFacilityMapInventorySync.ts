@@ -1,11 +1,15 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import {
+  activeTenantUnitClaims,
   enabledOnlineUnitTypes,
+  hasTenantLink,
   isArchivedForOnlineRental,
+  isUnitClaimedByActiveTenant,
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
   isUnlistedUnit,
+  unitTypeOf,
 } from '@sfc/functions-shared';
 import { movedToSlugOf } from '@sfc/functions-shared';
 
@@ -23,6 +27,10 @@ const INVENTORY_KEYS = [
   'isActive',
   'publicListingEnabled',
   'internalUse',
+  // Which tenant claims the unit: an id-less tenant's number in the unit's
+  // area, or its number before a renumbering (isUnitClaimedByActiveTenant).
+  'area',
+  'legacyUnitNumber',
 ];
 
 function slugify(raw: string): string {
@@ -146,18 +154,14 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
 
   // Every tenant, not a sample: one missing tenant is one unit advertised as free that is not.
   const tenantDocs = await readEveryDoc(db.collection(`facilities/${facilityId}/tenants`));
-  const tenantClaimed = new Set<string>();
-  for (const tdoc of tenantDocs) {
-    const td = tdoc.data();
-    // Active means `isActive` exactly true, as in the app's TenantModel, the
-    // stats function and every server job. This skipped only `=== false`, so
-    // a doc with no isActive claimed its unit here but not in the app's own
-    // publish (FacilityMapV2Service), and the two writers of this list
-    // disagreed about that unit.
-    if (td.isActive !== true) continue;
-    const n = String(td.unitNumber || '').trim().toLowerCase();
-    if (n.length > 0) tenantClaimed.add(n);
-  }
+  // Active means `isActive` exactly true, as in the app's TenantModel, the
+  // stats function and every server job. This skipped only `=== false`, so
+  // a doc with no isActive claimed its unit here but not in the app's own
+  // publish (FacilityMapV2Service), and the two writers of this list
+  // disagreed about that unit. Shared with the online rental callables,
+  // which refuse a unit this marks rented. By unitId where the tenant has one,
+  // so a unit number repeated in another area is not taken with it.
+  const tenantClaims = activeTenantUnitClaims(tenantDocs.map((tdoc) => tdoc.data()));
 
   const unitDocs = await readEveryDoc(db.collection(`facilities/${facilityId}/units`));
   const units: Record<string, any>[] = [];
@@ -169,7 +173,9 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
     // kept a stray non-boolean such as 'true' that the app's publish drops.
     if (isArchivedForOnlineRental(d)) continue;
 
-    const unitType = String(d.unitType || '');
+    // As the app's UnitModel reads it (missing is 'standard'), so both writers
+    // publish the same type and the same rentable flag for it.
+    const unitType = unitTypeOf(d);
     const categorySlug = slugify(unitType);
     const isPubliclyEnabledType = isUnitTypeOfferedOnline(d, enabledTypes);
     // The online rental holds rent a unit whose String(status || '') lower-cases
@@ -184,10 +190,8 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
     // published the stored value, so an imported 101 went out as a number here and as '101' from
     // the app's publish, and a missing one as undefined, which Firestore rejects.
     const unum = String(d.unitNumber ?? '');
-    const unitNumNorm = unum.trim().toLowerCase();
-    const hasTenantLink =
-      typeof d.tenantId === 'string' && String(d.tenantId).trim() !== '';
-    const claimedByActiveTenant = tenantClaimed.has(unitNumNorm);
+    const linkedToTenant = hasTenantLink(d);
+    const claimedByActiveTenant = isUnitClaimedByActiveTenant(doc.id, d, tenantClaims);
     const statusAllowsRental = st === 'available' || st === 'reserved';
     const publicListingEnabled = !isUnlistedUnit(d);
     // The online rental callables rent only what isUnitOfferedOnline allows:
@@ -197,13 +201,13 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
     const offeredOnline = isUnitOfferedOnline(d);
     const isRentable =
       statusAllowsRental &&
-      !hasTenantLink &&
+      !linkedToTenant &&
       !claimedByActiveTenant &&
       isPubliclyEnabledType &&
       offeredOnline;
     const publicStatus = !offeredOnline
       ? 'unavailable'
-      : hasTenantLink || claimedByActiveTenant
+      : linkedToTenant || claimedByActiveTenant
       ? 'rented'
       : statusToPublicStatus(st);
 
@@ -291,7 +295,8 @@ export const syncPublicFacilityMapInventoryOnUnitWrite = functions.firestore
     }
   });
 
-const TENANT_INVENTORY_KEYS = ['isActive', 'unitNumber'];
+// unitId and unitArea decide which unit a tenant claims (activeTenantUnitClaims).
+const TENANT_INVENTORY_KEYS = ['isActive', 'unitNumber', 'unitId', 'unitArea'];
 
 /** When staff creates/moves tenants without updating the unit doc, refresh public inventory. */
 export const syncPublicFacilityMapInventoryOnTenantWrite = functions.firestore

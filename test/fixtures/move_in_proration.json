@@ -1,0 +1,34 @@
+{
+  "_about": [
+    "Prorated first-month rent for an online move-in, which the move-in page and the server must both price to the cent: the page sends its total and createPublicMoveInCheckout refuses one that differs from its own.",
+    "at is the instant priced from: a renter's chosen move-in date, or, with none chosen, the moment checkout runs. Each case is priced from the UTC calendar date of that instant; the time of day does not matter.",
+    "days is the move-in day through the last day of its month, both counted; amount is monthlyRate / daysInMonth * days, rounded to cents from the exact value (Dart's toStringAsFixed(2), JavaScript's toFixed(2)).",
+    "The app side runs each case through ProrateService (test/move_in_proration_parity_test.dart), both as a chosen date parsed from its ISO string and as a no-date move-in priced at that moment on the browser's own clock.",
+    "The server side runs each case through calculateProratedRent and computePublicMoveInCharges (functions-public-website/src/test/moveInCharges.test.ts).",
+    "Invented rates and dates only."
+  ],
+  "cases": [
+    { "name": "mid-month at midnight UTC bills the 15th through the 30th", "monthlyRate": 100, "at": "2026-09-15T00:00:00Z", "daysInMonth": 30, "days": 16, "amount": 53.33 },
+    { "name": "mid-month at 20:00 UTC bills the same 16 days", "monthlyRate": 100, "at": "2026-09-15T20:00:00Z", "daysInMonth": 30, "days": 16, "amount": 53.33 },
+    { "name": "the last millisecond of the day still bills that day", "monthlyRate": 100, "at": "2026-09-15T23:59:59.999Z", "daysInMonth": 30, "days": 16, "amount": 53.33 },
+    { "name": "the last day of a 30-day month at 20:00 bills one day, not nothing", "monthlyRate": 100, "at": "2026-09-30T20:00:00Z", "daysInMonth": 30, "days": 1, "amount": 3.33 },
+    { "name": "the last day of a 31-day month at 20:00 bills one day", "monthlyRate": 310, "at": "2026-10-31T20:00:00Z", "daysInMonth": 31, "days": 1, "amount": 10.00 },
+    { "name": "the last day of the year bills one day of December", "monthlyRate": 100, "at": "2026-12-31T23:00:00Z", "daysInMonth": 31, "days": 1, "amount": 3.23 },
+    { "name": "the first day at midnight bills the whole month", "monthlyRate": 100, "at": "2026-09-01T00:00:00Z", "daysInMonth": 30, "days": 30, "amount": 100.00 },
+    { "name": "the first day at 20:00 bills the whole month", "monthlyRate": 100, "at": "2026-10-01T20:00:00Z", "daysInMonth": 31, "days": 31, "amount": 100.00 },
+    { "name": "February in a common year is 28 days", "monthlyRate": 280, "at": "2026-02-01T12:00:00Z", "daysInMonth": 28, "days": 28, "amount": 280.00 },
+    { "name": "28 February in a common year bills one day", "monthlyRate": 280, "at": "2026-02-28T20:00:00Z", "daysInMonth": 28, "days": 1, "amount": 10.00 },
+    { "name": "February in a leap year is 29 days", "monthlyRate": 290, "at": "2028-02-01T09:00:00Z", "daysInMonth": 29, "days": 29, "amount": 290.00 },
+    { "name": "mid-February in a leap year bills the 15th through the 29th", "monthlyRate": 290, "at": "2028-02-15T20:00:00Z", "daysInMonth": 29, "days": 15, "amount": 150.00 },
+    { "name": "29 February bills one day", "monthlyRate": 290, "at": "2028-02-29T21:00:00Z", "daysInMonth": 29, "days": 1, "amount": 10.00 },
+    { "name": "a month with a daylight-saving change bills whole days", "monthlyRate": 310, "at": "2026-03-08T12:00:00Z", "daysInMonth": 31, "days": 24, "amount": 240.00 },
+    { "name": "the first of a daylight-saving month bills the whole month", "monthlyRate": 310, "at": "2026-03-01T06:00:00Z", "daysInMonth": 31, "days": 31, "amount": 310.00 },
+    { "name": "8pm on 15 Sep in US Central is 16 Sep in UTC, so 16-30 Sep is billed", "monthlyRate": 100, "at": "2026-09-16T01:00:00Z", "daysInMonth": 30, "days": 15, "amount": 50.00 },
+    { "name": "the same moment written with its UTC offset prices the same", "monthlyRate": 100, "at": "2026-09-15T20:00:00-05:00", "daysInMonth": 30, "days": 15, "amount": 50.00 },
+    { "name": "10pm on 30 Sep in US Pacific is 1 Oct in UTC, so all of October is billed", "monthlyRate": 100, "at": "2026-09-30T22:00:00-07:00", "daysInMonth": 31, "days": 31, "amount": 100.00 },
+    { "name": "a half cent rounds from the exact value: 10.01 / 30 * 15 is 5.00", "monthlyRate": 10.01, "at": "2026-09-16T00:00:00Z", "daysInMonth": 30, "days": 15, "amount": 5.00 },
+    { "name": "a half cent rounds from the exact value: 10.01 / 28 * 2 is 0.71", "monthlyRate": 10.01, "at": "2026-02-27T15:00:00Z", "daysInMonth": 28, "days": 2, "amount": 0.71 },
+    { "name": "a rate with cents over part of a month", "monthlyRate": 89.95, "at": "2026-11-17T18:30:00Z", "daysInMonth": 30, "days": 14, "amount": 41.98 },
+    { "name": "a rate too small to come to a cent for one day bills nothing", "monthlyRate": 0.1, "at": "2026-09-30T12:00:00Z", "daysInMonth": 30, "days": 1, "amount": 0.00 }
+  ]
+}

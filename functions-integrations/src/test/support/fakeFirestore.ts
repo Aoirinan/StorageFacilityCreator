@@ -1,8 +1,8 @@
 /**
  * In-memory stand-in for the slice of the Admin Firestore API the platform checkout
- * and subscription webhook code uses: doc get/update/set, equality `where` queries,
- * and transactions. Server timestamps become a fixed fake Timestamp; FieldValue.delete
- * removes the field. Not a general emulator.
+ * and subscription webhook code uses: doc get/update/set, subcollections, equality
+ * `where` queries, and transactions. Server timestamps become a fixed fake Timestamp;
+ * FieldValue.delete removes the field. Not a general emulator.
  */
 import * as admin from 'firebase-admin';
 
@@ -73,6 +73,10 @@ class FakeDocRef {
   async set(fields: Data, options?: { merge?: boolean }): Promise<void> {
     const base = options?.merge ? this.firestore.read(this.path) ?? {} : {};
     this.firestore.write(this.path, applyFields(base, fields));
+  }
+  /** A subcollection of this doc (facilities/{id}/mapEngine/...). */
+  collection(name: string): FakeCollection {
+    return new FakeCollection(this.firestore, `${this.path}/${name}`);
   }
 }
 

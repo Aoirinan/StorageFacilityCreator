@@ -47,10 +47,12 @@ export async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<S
   switch (event.type) {
     case 'checkout.session.completed': {
       const session = event.data.object as Stripe.Checkout.Session;
-      // Public payment-link sessions live on the facility's connected account;
-      // completing one checks that account against the facility's.
+      // Public payment-link and online move-in sessions live on the
+      // facility's connected account, which the event carries, not the
+      // object; completing one checks that account against the facility's.
+      // event.created is when Stripe saw the session complete.
       const connectedAccountId = (event as any).account as string | undefined;
-      await handleCheckoutCompleted(session, connectedAccountId, event.id);
+      await handleCheckoutCompleted(session, connectedAccountId, event.created, event.id);
       break;
     }
     case 'customer.subscription.created':

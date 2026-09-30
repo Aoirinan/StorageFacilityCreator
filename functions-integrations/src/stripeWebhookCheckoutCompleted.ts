@@ -16,6 +16,7 @@ import {
 } from './stripeWebhookSubscriptionInternal';
 import { reconcileAccountSubscription } from './accountSubscriptionReconcile';
 import { recordStripeEventRefusal, refusalReasonFor } from './connectedAccountGuard';
+import { PUBLIC_MOVE_IN_CHECKOUT_TYPE, handlePublicMoveInCheckoutCompleted } from './stripeWebhookPublicMoveIn';
 
 /**
  * Did this completed platform checkout carry the owner's free month? Read from the
@@ -40,13 +41,23 @@ export function platformOfferUsageFromCheckoutSession(session: Stripe.Checkout.S
 }
 
 /**
- * [connectedAccountId] is the event's `account`: set when the session lives
- * on a facility's connected account (public payment links), absent for the
- * platform's own subscription checkouts.
+ * checkout.session.completed, from either destination. [connectedAccountId]
+ * is the event's `account`: set when the session lives on a facility's
+ * connected account (public payment links, online move-ins, tenant
+ * checkouts), absent for the platform's own subscription checkouts.
+ *
+ * A public payment link session is completed by completePublicLinkPayment;
+ * an online move-in session (metadata type public_move_in) goes to
+ * handlePublicMoveInCheckoutCompleted; any other connected-account session is
+ * left to its own handler; every other session is a platform checkout
+ * (subscriptions, the website add-on, the owner's free month), as before.
+ * [eventCreatedSeconds]: when Stripe saw the session complete. [eventId]:
+ * the event's id, recorded with a refused link checkout.
  */
 export async function handleCheckoutCompleted(
   session: Stripe.Checkout.Session,
   connectedAccountId?: string,
+  eventCreatedSeconds?: number,
   eventId?: string,
 ) {
   // Public payment links are tenant payments on the facility's connected
@@ -94,13 +105,23 @@ export async function handleCheckoutCompleted(
     return;
   }
 
+  // A paid online move-in: recorded and the unit held for the payer. Checked
+  // before the connected-account return below, since these sessions live on
+  // the facility's connected account; the handler checks that account
+  // against the reservation's and the facility's, and ignores one on the
+  // platform account.
+  if (session.metadata?.type === PUBLIC_MOVE_IN_CHECKOUT_TYPE) {
+    await handlePublicMoveInCheckoutCompleted(session, connectedAccountId, eventCreatedSeconds);
+    return;
+  }
+
   // Owner subscription checkouts live on the platform account. One from a
   // connected account carries whatever metadata its owner wrote (accountId,
   // facilityId), and this path adds that facility to that owner account.
   if (connectedAccountId) {
-    // Tenant portal payments, online move-ins and tenant payment checkouts
-    // also complete on connected accounts, and are recorded elsewhere (their
-    // payment_intent.succeeded, the move-in flow). Only one that looks like
+    // Tenant portal payments and tenant payment checkouts also complete on
+    // connected accounts, and are recorded elsewhere (their
+    // payment_intent.succeeded). Only one that looks like
     // an owner subscription is worth an error: at error level, every tenant
     // payment raised an alert once the Connect endpoint sent these.
     const looksLikeSubscription = session.mode === 'subscription' || !!session.metadata?.accountId;
