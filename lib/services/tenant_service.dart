@@ -5,9 +5,11 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
+import 'package:sfcapp/models/address_model.dart';
 import 'package:sfcapp/models/invoice_model.dart';
 import 'package:sfcapp/models/ledger_entry_model.dart';
 import 'package:sfcapp/models/payment_model.dart';
+import 'package:sfcapp/models/security_deposit_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/audit_service.dart';
@@ -812,11 +814,18 @@ class TenantService {
     // The tenant refused texts (the CSV import's "no" / "stop"): recorded
     // as their own opt-out, which staff cannot reverse.
     bool smsRefused = false,
+    // A deposit taken with the move-in, held for the tenant (its status,
+    // who recorded it and when are set here). Kept off the ledger: see
+    // SecurityDeposit.
+    SecurityDeposit? securityDeposit,
   }) async {
     try {
       final user = _auth.currentUser;
       if (user == null) {
         throw Exception('Not signed in');
+      }
+      if (securityDeposit != null && securityDeposit.amount <= 0) {
+        throw Exception('Enter a security deposit amount above \$0.');
       }
 
       // Check facility tenant limit (hard cap on active tenants)
@@ -886,6 +895,15 @@ class TenantService {
           'smsConsentRecordedBy': user.uid,
           if (smsConsentMethod != null) 'smsConsentMethod': smsConsentMethod.value,
         },
+        if (securityDeposit != null)
+          'securityDeposit': securityDeposit
+              .copyWith(
+                status: SecurityDepositStatus.held,
+                recordedAt: DateTime.now(),
+                recordedBy: user.uid,
+                updatedAt: DateTime.now(),
+              )
+              .toMap(),
       };
 
       if (kDebugMode) {
@@ -940,6 +958,8 @@ class TenantService {
         metadata: {
           'leadSource': leadSource,
           'portalEnabled': portalEnabled,
+          if (securityDeposit != null)
+            'securityDepositAmount': securityDeposit.amount,
         },
       );
 
@@ -1578,6 +1598,43 @@ class TenantService {
       }
       rethrow;
     }
+  }
+
+  /// The tenant page's Edit Mailing Address. Writes the tenant's whole
+  /// [addresses] array (replaceMailingAddress has already swapped or dropped
+  /// the mailing entry and kept the rest) and updatedAt, with the audit row
+  /// [updateTenant] writes. Only these two fields, so a save here cannot
+  /// undo a contact edit made meanwhile. [records], [effects] and
+  /// [actingUid] are for tests.
+  static Future<void> setMailingAddress({
+    required String facilityId,
+    required String tenantId,
+    required List<Address> addresses,
+    TenantRecordsStore? records,
+    TenantUpdateEffects? effects,
+    String? actingUid,
+  }) async {
+    final uid = actingUid ?? _auth.currentUser?.uid;
+    if (uid == null) {
+      throw Exception('Not signed in');
+    }
+    final store = records ?? _records(facilityId);
+    final fx = effects ?? const TenantUpdateEffects();
+
+    final fields = <String, dynamic>{
+      'addresses': [for (final a in addresses) a.toMap()],
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+    final beforeData = await store.tenant(tenantId);
+    await store.updateTenant(tenantId, fields);
+    final afterData = await store.tenant(tenantId);
+    await fx.audit(
+      facilityId: facilityId,
+      tenantId: tenantId,
+      before: beforeData != null ? Map<String, dynamic>.from(beforeData) : null,
+      after: afterData != null ? Map<String, dynamic>.from(afterData) : null,
+      metadata: {'fieldsChanged': fields.keys.toList()},
+    );
   }
 
   /// Move-in of [unitNumber] for an existing tenant (MoveInService). Links

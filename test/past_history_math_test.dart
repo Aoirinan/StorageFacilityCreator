@@ -6,6 +6,7 @@ import 'package:sfcapp/models/payment_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/providers/ledger_provider.dart';
 import 'package:sfcapp/screens/tenant_past_history_dialog.dart';
+import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/past_history_math.dart';
 
 // All names are made up. The owner's case: moved in 2026-02-10 at $80 a
@@ -520,6 +521,117 @@ void main() {
     // Four $20 outdoor spaces, one $80 rate on the tenant.
     final p = proposeHistoryCharges(moveIn: DateTime(2026, 6, 1), monthlyRate: 80, existing: const [], today: _today);
     expect(p.charges.every((c) => c.amount == 80), isTrue);
+  });
+
+  group('amounts typed off the rate', () {
+    // A person renting two units, entered at their combined $144 on a record
+    // whose rate is one unit's $72. Nothing said the months were double.
+    List<ProposedHistoryCharge> months(List<double> amounts, {int day = 1}) => [
+          for (final (i, a) in amounts.indexed)
+            ProposedHistoryCharge(year: 2026, month: 4 + i, day: i == 0 ? day : 1, amount: a),
+        ];
+
+    test('every month at the rate: nothing to say', () {
+      expect(historyAmountsOffRate(charges: months([72, 72, 72]), monthlyRate: 72), isEmpty);
+    });
+
+    test('the combined rent on every month is reported once', () {
+      expect(historyAmountsOffRate(charges: months([144, 144, 144], day: 18), monthlyRate: 72), [144]);
+      expect(historyAmountsOffRate(charges: months([144, 144, 216]), monthlyRate: 72), [144, 216]);
+    });
+
+    test('a prorated first month is expected; a lower month dated the 1st is not', () {
+      expect(historyAmountsOffRate(charges: months([31.2, 72, 72], day: 18), monthlyRate: 72), isEmpty);
+      expect(historyAmountsOffRate(charges: months([31.2, 72, 72]), monthlyRate: 72), [31.2]);
+      expect(historyAmountsOffRate(charges: months([72, 60, 72]), monthlyRate: 72), [60]);
+    });
+
+    test('unticked months, blank amounts and a record with no rate are not compared', () {
+      final c = months([144, 144]);
+      c[0].included = false;
+      expect(historyAmountsOffRate(charges: c, monthlyRate: 72), [144]);
+      c[1].amount = 0;
+      expect(historyAmountsOffRate(charges: c, monthlyRate: 72), isEmpty);
+      expect(historyAmountsOffRate(charges: months([144]), monthlyRate: 0), isEmpty);
+    });
+
+    test('compared to the cent', () {
+      expect(historyAmountsOffRate(charges: months([72.004, 72]), monthlyRate: 72), isEmpty);
+      expect(historyAmountsOffRate(charges: months([72.01, 72]), monthlyRate: 72), [72.01]);
+    });
+  });
+
+  testWidgets('a month typed above the rate warns that the rate may be one unit\'s, without blocking the save',
+      (tester) async {
+    await _pumpDialog(tester, const []);
+    await tester.tap(find.text('Choose move-in date *'));
+    await tester.pumpAndSettle();
+    // The picker opens on today, 9/28/2026.
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle();
+    expect(find.text('September 2026 (from 9/28)'), findsOneWidget);
+    expect(find.textContaining('this tenant\'s rate of'), findsNothing);
+
+    final amount = find.descendant(
+      of: find.byKey(const ValueKey('history-charge-2026-9')),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(amount, '160');
+    await tester.pumpAndSettle();
+    // The other unit is usually on a duplicate copy of the tenant, so the
+    // copy has to name Unassign before Assign (Assign Tenant alone stops on
+    // "occupied"), say that Unassign switches that copy off with its ledger
+    // kept, and that the rate only follows when it matched the unit already
+    // held; otherwise the owner is asked to check it.
+    final warning = find.text('\$160.00 is more than this tenant\'s rate of \$80.00. '
+        'Do they rent another unit? Add it to this tenant first: open the other unit (Units › Unit List). '
+        'If it shows a second copy of this tenant, choose Unassign Tenant there (that copy is switched off '
+        'once it holds no unit; anything already entered on it stays there), then Assign Tenant and pick '
+        'this tenant. Their rate becomes the total when it matched the rate of the unit they already hold; '
+        'otherwise you are asked to check it under Edit Tenant.');
+    expect(warning, findsOneWidget);
+    expect(tester.widget<Text>(warning).style?.color, AppTheme.warning);
+    // A warning only: ticking the confirm box still lets the owner save.
+    await tester.tap(find.text('I checked these months, amounts and dates against my records'));
+    await tester.pumpAndSettle();
+    final save = tester.widget<FilledButton>(
+        find.byWidgetPredicate((w) => w is FilledButton && find.descendant(of: find.byWidget(w), matching: find.text('Save history')).evaluate().isNotEmpty));
+    expect(save.onPressed, isNotNull);
+
+    // Below the rate on a mid-month move-in: a proration, nothing to say.
+    await tester.enterText(amount, '8');
+    await tester.pumpAndSettle();
+    expect(find.textContaining('this tenant\'s rate of'), findsNothing);
+  });
+
+  testWidgets('a month dated the 1st typed below the rate is named without the multi-unit warning', (tester) async {
+    // Rent was lower before a raise, or a month was discounted: the helper
+    // text invites the change, so it must not read as a two-unit mistake.
+    await _pumpDialog(tester, const []);
+    await tester.tap(find.text('Choose move-in date *'));
+    await tester.pumpAndSettle();
+    // The picker opens on September 2026; move in on the 1st.
+    await tester.tap(find.text('1'));
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle();
+    expect(find.text('September 2026'), findsOneWidget);
+
+    final amount = find.descendant(
+      of: find.byKey(const ValueKey('history-charge-2026-9')),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(amount, '40');
+    await tester.pumpAndSettle();
+    final note = find.text('\$40.00 is not this tenant\'s rate of \$80.00. Fine if the rent was different then.');
+    expect(note, findsOneWidget);
+    expect(tester.widget<Text>(note).style?.color, AppTheme.textSecondary);
+    expect(find.textContaining('Do they rent another unit?'), findsNothing);
+
+    // Above the rate on the same month is still the two-unit case.
+    await tester.enterText(amount, '160');
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Do they rent another unit?'), findsOneWidget);
+    expect(find.textContaining('Fine if the rent was different then'), findsNothing);
   });
 
   group('payment dates', () {

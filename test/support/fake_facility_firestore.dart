@@ -27,6 +27,10 @@ class FakeFacilityFirestore extends Fake implements FirebaseFirestore {
   /// Transactions that committed.
   var commits = 0;
 
+  /// Behave like Flutter web: an error thrown inside a transaction handler
+  /// comes back as an opaque error, its type and message lost.
+  var boxHandlerErrors = false;
+
   FakeCollection sub(String name) => subcollections.putIfAbsent(
       name, () => FakeCollection(<FakeDoc>[], log: FakeQueryLog(), firestore: this));
 
@@ -51,9 +55,21 @@ class FakeFacilityFirestore extends Fake implements FirebaseFirestore {
     int maxAttempts = 5,
   }) async {
     final txn = _FakeTransaction();
-    final result = await transactionHandler(txn);
-    for (final (ref, fields) in txn.writes) {
-      await ref.update(fields);
+    final T result;
+    try {
+      result = await transactionHandler(txn);
+    } catch (e) {
+      if (!boxHandlerErrors) rethrow;
+      throw Exception('Dart exception thrown from converted Future. Use the '
+          "properties 'error' to fetch the boxed error and 'stack' to "
+          'recover the stack trace.');
+    }
+    for (final (op, ref, fields) in txn.writes) {
+      if (op == 'set') {
+        await ref.set(fields);
+      } else {
+        await ref.update(fields);
+      }
     }
     commits++;
     return result;
@@ -91,8 +107,12 @@ class _FacilityDoc extends Fake
 }
 
 class _FakeTransaction extends Fake implements Transaction {
-  final writes =
-      <(DocumentReference<Map<String, dynamic>>, Map<String, dynamic>)>[];
+  /// ('set' or 'update', the doc, the data), in order.
+  final writes = <(
+    String,
+    DocumentReference<Map<String, dynamic>>,
+    Map<String, dynamic>
+  )>[];
 
   @override
   Future<DocumentSnapshot<T>> get<T extends Object?>(
@@ -103,9 +123,21 @@ class _FakeTransaction extends Fake implements Transaction {
   }
 
   @override
+  Transaction set<T>(DocumentReference<T> documentReference, T data,
+      [SetOptions? options]) {
+    writes.add((
+      'set',
+      documentReference as DocumentReference<Map<String, dynamic>>,
+      data as Map<String, dynamic>,
+    ));
+    return this;
+  }
+
+  @override
   Transaction update(
       DocumentReference documentReference, Map<String, dynamic> data) {
     writes.add((
+      'update',
       documentReference as DocumentReference<Map<String, dynamic>>,
       data,
     ));

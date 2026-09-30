@@ -48,6 +48,20 @@ class InvoiceNotRecordedException implements UserFacingException {
   String toString() => message;
 }
 
+/// What a tenant's invoices that have not been voided already cover.
+class LiveInvoiceCoverage {
+  const LiveInvoiceCoverage({
+    required this.ledgerEntryIds,
+    required this.balance,
+  });
+
+  /// Every ledger entry id on one of them.
+  final Set<String> ledgerEntryIds;
+
+  /// What the open ones (not paid either) still ask the tenant for.
+  final double balance;
+}
+
 /// Service for managing invoices
 class InvoiceService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -89,7 +103,7 @@ class InvoiceService {
     }
   }
 
-  /// Ledger entry ids already covered by an invoice that has not been voided.
+  /// What a tenant's invoices that have not been voided already cover.
   ///
   /// Public so the Generate Invoice preview can apply the same rule the
   /// generation applies. When they disagreed, the dialog promised to bill a
@@ -98,7 +112,7 @@ class InvoiceService {
   ///
   /// A voided invoice releases its charges deliberately: voiding is how an
   /// operator corrects a mistaken invoice, and the charge still needs billing.
-  static Future<Set<String>> ledgerEntryIdsOnLiveInvoices({
+  static Future<LiveInvoiceCoverage> liveInvoiceCoverage({
     required String facilityId,
     required String tenantId,
   }) async {
@@ -110,21 +124,29 @@ class InvoiceService {
         .get();
 
     final covered = <String>{};
+    var balance = 0.0;
     for (final doc in snapshot.docs) {
       final data = doc.data();
-      if ((data['status'] as String?) == InvoiceStatus.voided.name) continue;
+      final status = data['status'] as String?;
+      if (status == InvoiceStatus.voided.name) continue;
       final ids = (data['ledgerEntryIds'] as List<dynamic>? ?? const [])
           .whereType<String>();
       covered.addAll(ids);
+      // A paid invoice keeps its charges but asks for nothing more.
+      if (status == InvoiceStatus.paid.name) continue;
+      balance += ((data['balance'] as num?) ?? 0).toDouble();
     }
-    return covered;
+    return LiveInvoiceCoverage(ledgerEntryIds: covered, balance: balance);
   }
 
-  /// Generate invoice from unpaid ledger entries
+  /// Generate an invoice for what the tenant's ledger says they still owe.
+  ///
+  /// [ledgerEntryIds] narrows it to charges the operator saw in the preview;
+  /// nothing outside the balance is billed either way.
   static Future<InvoiceModel> generateInvoiceFromLedger({
     required String tenantId,
     required String facilityId,
-    List<String>? ledgerEntryIds, // If null, includes all unpaid charges
+    List<String>? ledgerEntryIds,
     DateTime? issueDate,
     DateTime? dueDate,
     double? taxRate,
@@ -144,7 +166,8 @@ class InvoiceService {
       final facility = await FacilityService.getFacility(facilityId);
       if (facility == null) throw Exception('Facility not found');
 
-      // Get unpaid ledger entries
+      // Newest first, and enough of them: selection walks from the newest
+      // charge and stops once the balance is covered.
       final allEntries = await LedgerService.getLedgerEntries(
         tenantId: tenantId,
         facilityId: facilityId,
@@ -153,40 +176,50 @@ class InvoiceService {
       // Charges already sitting on an invoice that has not been voided are
       // off the table: without this the same rent can be put on a second
       // invoice, which is how a tenant ends up billed twice for one month.
-      final idsOnLiveInvoices = await ledgerEntryIdsOnLiveInvoices(
+      // And what those invoices still ask for comes off what may be billed.
+      final coverage = await liveInvoiceCoverage(
         facilityId: facilityId,
         tenantId: tenantId,
       );
 
-      final selectableIds = selectableChargeIds(
-        charges: allEntries.map((e) => SelectableCharge(
-              id: e.id,
-              isCharge: e.isCharge,
-              isActive: e.isActive,
-              amount: e.amount,
-              allocatedAmount: (e.metadata?['allocatedAmount'] as num?)?.toDouble(),
-              isCardDispute: e.isCardDispute,
-            )),
-        idsOnLiveInvoices: idsOnLiveInvoices,
+      // The server's uncapped sum of posted entries: the same figure the
+      // ledger's Current Balance shows. The entries above are capped for
+      // display, and a balance must never be a partial sum.
+      final ledgerBalance = await LedgerService.getLedgerBalance(
+        tenantId: tenantId,
+        facilityId: facilityId,
+      );
+
+      final lines = openChargesForInvoice(
+        charges: allEntries.map(SelectableCharge.fromLedgerEntry),
+        idsOnLiveInvoices: coverage.ledgerEntryIds,
+        ledgerBalance: ledgerBalance,
+        liveInvoiceBalance: coverage.balance,
         onlyThese: (ledgerEntryIds != null && ledgerEntryIds.isNotEmpty)
             ? ledgerEntryIds
             : null,
-      ).toSet();
+      );
 
-      final entriesToInvoice =
-          allEntries.where((e) => selectableIds.contains(e.id)).toList();
-
-      if (entriesToInvoice.isEmpty) {
-        throw Exception('No unpaid charges to invoice');
+      if (lines.isEmpty) {
+        // The same words the ledger's dialog uses for this case.
+        throw Exception(nothingToInvoiceMessage(
+          ledgerBalance: ledgerBalance,
+          liveInvoiceBalance: coverage.balance,
+        ));
       }
 
-      // Convert ledger entries to invoice line items
-      final lineItems = entriesToInvoice.map((entry) {
+      final entriesById = {for (final e in allEntries) e.id: e};
+      final entriesToInvoice =
+          lines.map((line) => entriesById[line.id]!).toList();
+
+      // One line per charge taken; the oldest may be for part of it.
+      final lineItems = lines.map((line) {
+        final entry = entriesById[line.id]!;
         return InvoiceLineItem(
           id: entry.id,
           type: _mapLedgerTypeToInvoiceType(entry.type),
-          description: entry.description ?? entry.typeDisplayName,
-          amount: entry.amount - ((entry.metadata?['allocatedAmount'] as num?)?.toDouble() ?? 0.0),
+          description: line.description,
+          amount: line.amount,
           dueDate: entry.dueDate,
           metadata: {
             'ledgerEntryId': entry.id,
@@ -733,14 +766,16 @@ class InvoiceService {
   }
 
   /// Emails the invoice to its tenant, attaching its PDF first if it has
-  /// none, and only then marks it sent.
+  /// none, and only then marks it sent. Returns the invoice as it now stands,
+  /// so the page showing it can show that without another read (one that
+  /// failed after the email went would report a sent invoice as not sent).
   ///
   /// It used to mark the invoice sent first and email only when it had a PDF
   /// and the tenant an email address, and return normally otherwise. An
   /// invoice from the ledger's Generate Invoice has no PDF until "Attach PDF
   /// copy", so Send on one said "Invoice sent successfully" and marked it
   /// Sent with nothing emailed.
-  static Future<void> sendInvoice({
+  static Future<InvoiceModel> sendInvoice({
     required String facilityId,
     required String invoiceId,
   }) async {
@@ -771,6 +806,7 @@ class InvoiceService {
         throw Exception('Facility not found');
       }
 
+      var pdfUrl = invoice.pdfUrl;
       await deliverInvoice(
         invoice: invoice,
         tenant: tenant,
@@ -781,13 +817,14 @@ class InvoiceService {
             tenant: tenant,
             facility: facility,
           );
-          final pdfUrl = await uploadInvoicePDF(
+          final url = await uploadInvoicePDF(
             facilityId: facilityId,
             invoiceId: invoiceId,
             pdfData: pdfData,
           );
-          await invoiceRef.update({'pdfUrl': pdfUrl});
-          return pdfUrl;
+          await invoiceRef.update({'pdfUrl': url});
+          pdfUrl = url;
+          return url;
         },
         sendEmail: (email) => EmailService.sendEmail(
           to: email.to,
@@ -805,6 +842,12 @@ class InvoiceService {
       if (kDebugMode) {
         print('✅ [Invoice] Invoice sent: $invoiceId to ${tenant.email}');
       }
+
+      return invoice.copyWith(
+        status: InvoiceStatus.sent,
+        sentAt: DateTime.now(),
+        pdfUrl: pdfUrl,
+      );
     } catch (e) {
       if (kDebugMode) {
         print('❌ [Invoice] Error sending invoice: $e');

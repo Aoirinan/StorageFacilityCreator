@@ -92,3 +92,33 @@ test('updated: tenant autopay under a deleted tenant is not recreated; a live te
   assert.equal(billing.autopayEnabled, true);
   assert.equal(billing.stripeSubscriptionId, 'sub_1');
 });
+
+test('deleted in the free month: the account drops the dead subscription id even when Stripe cannot be asked', { skip: skipWithoutEmulator }, async () => {
+  const db = emulatorDb();
+  const trialEnd = new Date(Date.now() + 20 * 24 * 60 * 60 * 1000);
+  // Invented data. No Stripe key here, so the reconcile pass's Stripe check fails: the
+  // case where the pointer used to stay behind.
+  await db.doc('facilityCreatorAccounts/acct-free-month').set({
+    ownerUid: 'uid-free-month',
+    subscriptionStatus: 'trialing',
+    stripeSubscriptionId: 'sub_1',
+    subscriptionTrialEnd: trialEnd,
+  });
+  await db.doc('facilityCreatorAccounts/acct-newer').set({
+    ownerUid: 'uid-newer',
+    subscriptionStatus: 'trialing',
+    stripeSubscriptionId: 'sub_newer',
+    subscriptionTrialEnd: trialEnd,
+  });
+
+  await handleSubscriptionDeleted(subscription({ accountId: 'acct-free-month' }));
+  const account = (await db.doc('facilityCreatorAccounts/acct-free-month').get()).data()!;
+  assert.equal(account.stripeSubscriptionId, null);
+  assert.equal(account.stripeSubscriptionIdClearedFrom, 'sub_1');
+  // Rolled back onto its trial (its end is ahead), with no card behind it.
+  assert.equal(account.subscriptionStatus, 'trialing');
+
+  // An event for an older subscription does not clear a pointer to another one.
+  await handleSubscriptionDeleted(subscription({ accountId: 'acct-newer' }));
+  assert.equal((await db.doc('facilityCreatorAccounts/acct-newer').get()).get('stripeSubscriptionId'), 'sub_newer');
+});

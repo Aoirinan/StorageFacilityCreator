@@ -225,7 +225,10 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
       if (account == null) {
         return false;
       }
-      return account.hasPremiumAccess;
+      if (account.hasPremiumAccess) return true;
+      // Per-facility billing: the subscription can be on a facility.
+      final facilities = await FacilityService.getUserFacilities(includeArchived: false);
+      return DnrTermsService.hasPremiumAccess(account, facilities);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error checking premium access: $e');

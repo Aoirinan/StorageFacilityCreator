@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:sfcapp/models/paid_subscription.dart';
 
 /// Subscription status enum
 enum SubscriptionStatus {
@@ -233,9 +234,54 @@ class FacilityCreatorAccountModel {
   }
 
   // Helper getters
-  bool get hasActiveSubscription =>
-      subscriptionStatus == SubscriptionStatus.active;
-  bool get hasTrial => subscriptionStatus == SubscriptionStatus.trialing;
+
+  /// A Stripe subscription id is recorded on the account (live or not).
+  /// Such an account is billed by Stripe: the app trial is never granted,
+  /// approved or extended on top of it.
+  bool get hasStripeSubscription =>
+      (stripeSubscriptionId ?? '').trim().isNotEmpty;
+
+  /// `trialing` with a Stripe subscription behind it whose
+  /// [subscriptionTrialEnd] (plus [cardTrialGrace]) is still ahead: the owner
+  /// subscribed with a card and is in the free time before the first charge
+  /// (the first free month is Stripe trial time). Counts as a paid
+  /// subscription everywhere, like [SubscriptionStatus.active]; see
+  /// [hasPaidOrCardTrialSubscription]. Past that, or with no trial end, the
+  /// record is stale ([hasStaleCardBackedTrial]) and the account reads as
+  /// [hasTrial] again (expired once the trial end has passed).
+  bool get hasCardBackedTrial =>
+      subscriptionStatus == SubscriptionStatus.trialing &&
+      hasPaidOrCardTrialSubscription(
+        status: subscriptionStatus.name,
+        stripeSubscriptionId: stripeSubscriptionId,
+        trialEnd: subscriptionTrialEnd,
+      );
+
+  /// `trialing` with a Stripe subscription id that no longer counts as paid
+  /// ([hasCardBackedTrial] is false): its trial end is long past, or was
+  /// never recorded. A super admin can revoke it; nothing extends it.
+  bool get hasStaleCardBackedTrial =>
+      subscriptionStatus == SubscriptionStatus.trialing &&
+      hasStripeSubscription &&
+      !hasCardBackedTrial;
+
+  /// A paid subscription on this account: `active`, or [hasCardBackedTrial].
+  /// Per-facility subscriptions are not on the account; see
+  /// [ownerHasPaidOrCardTrialSubscription].
+  bool get hasActiveSubscription => hasPaidOrCardTrialSubscription(
+        status: subscriptionStatus.name,
+        stripeSubscriptionId: stripeSubscriptionId,
+        trialEnd: subscriptionTrialEnd,
+      );
+
+  /// The trial limits apply: `trialing` and not [hasCardBackedTrial]. That is
+  /// the unpaid app trial (`trialing` with no Stripe subscription, as
+  /// `startTrial` and the super admin approve/grant actions write it), and a
+  /// stale card-backed record ([hasStaleCardBackedTrial]). It is limited (one
+  /// facility, the trial email cap, no DNR) and expires at
+  /// [subscriptionTrialEnd].
+  bool get hasTrial =>
+      subscriptionStatus == SubscriptionStatus.trialing && !hasCardBackedTrial;
   bool get isSubscriptionActive =>
       subscriptionStatus == SubscriptionStatus.active ||
       subscriptionStatus == SubscriptionStatus.trialing;
@@ -271,11 +317,11 @@ class FacilityCreatorAccountModel {
   }
 
   /// Check if user has access to premium features (DNR, etc.)
-  /// Only active subscriptions have access - trials do not
+  /// Only paid subscriptions have access, including the card-backed free
+  /// month ([hasCardBackedTrial]); the unpaid app trial does not.
+  /// Per-facility subscriptions count too: see the DNR screen.
   /// Note: Superadmins bypass this check (handled in UI layer)
-  bool get hasPremiumAccess {
-    return subscriptionStatus == SubscriptionStatus.active;
-  }
+  bool get hasPremiumAccess => hasActiveSubscription;
 
   /// Permanent tenant delete (vs archive) requires paid active or a non-expired trial.
   /// Stricter than [canAccessPlatform] (excludes past-due grace and cancelled access windows).

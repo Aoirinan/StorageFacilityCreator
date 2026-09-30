@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
+import 'package:intl/intl.dart';
 import 'package:sfcapp/models/contract_model.dart';
 import 'package:sfcapp/models/invoice_line_item_model.dart';
 import 'package:sfcapp/models/ledger_entry_model.dart'
@@ -531,7 +532,10 @@ class MoveOutService {
         'tenantId': tenantId,
         'contractId': contractId,
         'unitId': unitId,
-        'moveOutDate': moveOutDate.toIso8601String(),
+        'moveOutDate': moveOutDay(moveOutDate),
+        // The net of the lines (fees plus prorated rent, a credit when the
+        // month was already billed) and the credit left after them. The
+        // server posts the refund only when processRefund is true.
         'moveOutCharges': calculation.newCharges,
         'moveOutRefund': calculation.refundAmount,
         'moveOutNotes': moveOutNotes,
@@ -566,10 +570,23 @@ class MoveOutService {
     }
   }
 
+  /// The move-out date as processMoveOut takes it: the calendar day the
+  /// owner picked, 'yyyy-MM-dd', which the server dates at noon UTC.
+  ///
+  /// This sent [DateTime.toIso8601String], local midnight with no offset.
+  /// Node reads a zoneless time as UTC, so an owner in a US time zone who
+  /// picked the 23rd had the contract, the unit and the ledger dated the
+  /// evening of the 22nd.
+  @visibleForTesting
+  static String moveOutDay(DateTime moveOutDate) =>
+      DateFormat('yyyy-MM-dd').format(moveOutDate);
+
   /// What processMoveOut answered, for the screen. A move-out that had
   /// already been completed (a retry after a dropped connection) charged
   /// and freed nothing this time: its charges are not shown as posted
-  /// again, and the owner is told. The tenant's new rent, or a request to
+  /// again, and the owner is told. The refund is shown only when the
+  /// server posted one (`refundPosted`): with Process Refund off the
+  /// credit stays on the ledger. The tenant's new rent, or a request to
   /// check it, comes with the result.
   @visibleForTesting
   static MoveOutResult moveOutResultFromServer(
@@ -582,7 +599,9 @@ class MoveOutService {
     return MoveOutResult(
       success: data['success'] == true,
       charges: repeat ? null : calculation.newCharges,
-      refund: repeat ? null : calculation.refundAmount,
+      refund: !repeat && data['refundPosted'] == true
+          ? calculation.refundAmount
+          : null,
       notice: text(data['rentNotice']),
       warning: repeat ? text(data['message']) : text(data['rentWarning']),
     );

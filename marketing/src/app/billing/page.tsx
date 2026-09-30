@@ -35,7 +35,7 @@ export default function BillingPage() {
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">Trial Period</h2>
           <p className="text-slate-600 mt-2">
-            New subscriptions start with a {TRIAL_LINE}. For the first 30 days you are not charged. When the trial ends, your first monthly invoice is discounted to $0. Your first charge of ${PRICE_MONTHLY} per facility occurs at the start of the following month. A payment method is collected at signup so service continues without interruption; you can cancel at any time before the first charge and owe nothing. Trial terms are confirmed at signup and may change for future signups.
+            New subscriptions start with a {TRIAL_LINE}. For the first 30 days you are not charged, and the month after the trial is free as well: it is added to your trial when you subscribe. Your first charge of ${PRICE_MONTHLY} per facility occurs when that free month ends. A payment method is collected at signup so service continues without interruption; you can cancel at any time before the first charge and owe nothing. Trial terms are confirmed at signup and may change for future signups.
           </p>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">Billing Cycle and Renewal</h2>

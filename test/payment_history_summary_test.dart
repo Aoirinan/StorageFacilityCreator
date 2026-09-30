@@ -154,4 +154,20 @@ void main() {
     await pump(tester, paidThroughAugust, [dispute, _entry('september', LedgerEntryType.rentCharge, 50)]);
     expect(_monthColor(tester, '2026-09'), AppTheme.error);
   });
+
+  testWidgets('a refund is not a payment made', (tester) async {
+    await pump(
+      tester,
+      _tenant(moveInDate: DateTime(2026, 8, 17), paidThrough: DateTime(2026, 9, 30)),
+      [
+        _entry('p1', LedgerEntryType.payment, -50),
+        _entry('r1', LedgerEntryType.refund, 50),
+      ],
+    );
+    final made = tester.widget<Text>(find.descendant(
+      of: find.ancestor(of: find.text('Payments made: '), matching: find.byType(Row)).first,
+      matching: find.text('1'),
+    ));
+    expect(made.data, '1');
+  });
 }

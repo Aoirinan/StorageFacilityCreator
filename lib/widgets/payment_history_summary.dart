@@ -62,12 +62,14 @@ class PaymentHistorySummary extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // A refund is money handed back to the tenant, not a payment they made,
+    // so it is not counted here: a tenant who paid once and was refunded
+    // used to show two payments made.
     final paymentCount = entries
         .where((e) =>
             e.status != LedgerEntryStatus.voided &&
             (e.type == LedgerEntryType.payment ||
-                e.type == LedgerEntryType.credit ||
-                e.type == LedgerEntryType.refund))
+                e.type == LedgerEntryType.credit))
         .length;
     // The collectible part: a month is late only for money the tenant owes
     // the facility's own way. Card-dispute rows are staff's to collect by

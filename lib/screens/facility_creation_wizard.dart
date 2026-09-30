@@ -5,6 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/models/paid_subscription.dart';
+import 'package:sfcapp/services/facility_creation_policy.dart';
 import '../providers/auth_provider.dart';
 import '../services/facility_service.dart';
 import '../services/permission_service.dart';
@@ -114,6 +117,20 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
     super.dispose();
   }
 
+  /// The signed-in owner's facilities, so a subscription on a facility counts
+  /// for the owner ([ownerHasPaidOrCardTrialSubscription]). Empty when they
+  /// cannot be read: the account alone then decides, as it always did.
+  Future<List<FacilityModel>> _ownerFacilitiesOrEmpty() async {
+    try {
+      return await FacilityService.getUserFacilities(includeArchived: false);
+    } catch (e) {
+      if (kDebugMode) {
+        print('⚠️ Could not load facilities for the subscription check: $e');
+      }
+      return const [];
+    }
+  }
+
   Future<void> _createFacility() async {
     // A second tap in the same frame, before the rebuild disables Create,
     // would make a second facility.
@@ -147,12 +164,18 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
         try {
           final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
           final currentFacilityCount = account.facilityIds.length;
-          
+          // A card-backed subscription on the account or on a facility counts
+          // as paid, including its free month (the account can then still
+          // read `trialing`).
+          final addCheck = currentFacilityCount >= 1
+              ? wizardAddFacilityCheck(account, await _ownerFacilitiesOrEmpty())
+              : null;
+
           // Trial users can only create 1 facility
           // Active subscribers can create unlimited facilities
           if (currentFacilityCount >= 1) {
             // Check if user is on trial - trials are limited to 1 facility
-            if (account.hasTrial) {
+            if (addCheck == WizardAddFacilityCheck.trialLimit) {
               if (kDebugMode) {
                 print('⚠️ Trial user trying to create 2nd facility (limit is 1)');
               }
@@ -305,7 +328,7 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
             }
             
             // Non-trial users with 1+ facility need active subscription (not just trial)
-            if (!account.hasActiveSubscription) {
+            if (addCheck == WizardAddFacilityCheck.subscriptionRequired) {
               if (kDebugMode) {
                 print('⚠️ User has $currentFacilityCount facility(ies) but no active subscription');
               }
@@ -464,7 +487,7 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
             }
 
             // Active subscribers adding 2nd+ facility: require explicit consent before charging
-            if (account.hasActiveSubscription && currentFacilityCount >= 1) {
+            if (addCheck == WizardAddFacilityCheck.confirmAddedCharge) {
               if (mounted) {
                 setState(() {
                   _isLoading = false;
@@ -663,12 +686,15 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
             facilityId: facilityId,
           );
           
-          final emailLimit =
-              emailMonthlyLimitForAccount(isTrialing: account.hasTrial);
+          // The trial cap is for the unpaid app trial only; a card-backed
+          // subscription in its free month gets the paid cap, like active.
+          final ownerFacilities = await _ownerFacilitiesOrEmpty();
+          final unpaidTrial = ownerOnUnpaidAppTrial(account, ownerFacilities);
+          final emailLimit = emailMonthlyLimitForAccount(isTrialing: unpaidTrial);
           await EmailUsageService.setEmailLimit(facilityId, emailLimit);
-          
+
           if (kDebugMode) {
-            print('✅ Email limit set to $emailLimit for facility $facilityId (${account.hasTrial ? "Trial" : "Active"})');
+            print('✅ Email limit set to $emailLimit for facility $facilityId (${unpaidTrial ? "Trial" : "Active"})');
           }
 
           if (kDebugMode) {
@@ -688,7 +714,9 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
             final isSuperAdmin = checkUser != null && SuperAdminService.isSuperAdmin(checkUser);
             
             // If this is 2nd+ facility and they don't have active subscription, redirect to payment
-            if (isAddingSecondFacility && !updatedAccount.hasActiveSubscription && !isSuperAdmin) {
+            if (isAddingSecondFacility &&
+                !ownerHasPaidOrCardTrialSubscription(updatedAccount, ownerFacilities) &&
+                !isSuperAdmin) {
               if (kDebugMode) {
                 print('🔄 2nd facility created - redirecting to payment for subscription upgrade');
               }
