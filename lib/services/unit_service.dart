@@ -946,6 +946,86 @@ class UnitService {
     }
   }
 
+  /// Whether Edit Unit's save of [previous] with [tenantId] picked assigns
+  /// that tenant: a tenant who doesn't hold it yet (as its occupant).
+  static bool editAssignsTenant(UnitModel previous, String? tenantId) =>
+      tenantId != null &&
+      tenantId.isNotEmpty &&
+      !(previous.tenantId == tenantId &&
+          previous.status != UnitStatus.available);
+
+  /// Edit Unit's save of an existing unit, [previous] as the screen loaded
+  /// it. A tenant picked for a unit they don't hold yet
+  /// ([editAssignsTenant]) is assigned through [assignTenantToUnit] after
+  /// the other fields are saved, so the unit's rate as saved here is the one
+  /// added to their rent. Written with the unit fields (status, tenantId and
+  /// tenantName through [updateUnit]), assignUnit saw the unit as already
+  /// theirs and never added its rate. Returns the rent notice, or null.
+  /// [records] and [effects] are for tests.
+  static Future<String?> saveEditedUnit({
+    required String facilityId,
+    required UnitModel previous,
+    required String unitNumber,
+    required String unitType,
+    required UnitStatus status,
+    required String? tenantId,
+    required String? tenantName,
+    required double monthlyRate,
+    double? securityDeposit,
+    String? description,
+    Map<String, dynamic>? dimensions,
+    List<String>? features,
+    String? notes,
+    bool? publicListingEnabled,
+    bool? internalUse,
+    // As updateUnit takes it: null leaves the area, blank removes it.
+    String? area,
+    TenantRecordsStore? records,
+    TenantUpdateEffects? effects,
+  }) async {
+    final assigning = editAssignsTenant(previous, tenantId);
+    await updateUnit(
+      facilityId: facilityId,
+      unitId: previous.id,
+      unitNumber: unitNumber,
+      unitType: unitType,
+      status: assigning ? null : status,
+      tenantId: assigning ? null : tenantId,
+      tenantName: assigning ? null : tenantName,
+      monthlyRate: monthlyRate,
+      securityDeposit: securityDeposit,
+      description: description,
+      dimensions: dimensions,
+      features: features,
+      notes: notes,
+      publicListingEnabled: publicListingEnabled,
+      internalUse: internalUse,
+      area: area,
+    );
+    if (!assigning || tenantId == null) return null;
+    return assignTenantToUnit(
+      facilityId: facilityId,
+      unitId: previous.id,
+      tenantId: tenantId,
+      tenantName: tenantName ?? '',
+      status: status,
+      records: records,
+      effects: effects,
+    );
+  }
+
+  /// The Unassign Tenant confirmation for [unitId]: see
+  /// [TenantService.unassignConfirmation]. [records] is for tests.
+  static Future<String> unassignConfirmation({
+    required String facilityId,
+    required String unitId,
+    TenantRecordsStore? records,
+  }) =>
+      TenantService.unassignConfirmation(
+        records ?? TenantService.recordsFor(facilityId),
+        unitId: unitId,
+      );
+
   /// The unit fields [removeTenantFromUnit] writes: tenant fields deleted,
   /// status available. Shared so a batched unlink (tenant delete) makes the
   /// same change as Unassign Tenant.

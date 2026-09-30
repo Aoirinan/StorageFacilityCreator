@@ -1432,15 +1432,13 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
           }
         }
 
-        // A tenant picked for a unit they don't hold yet is assigned through
-        // UnitService.assignTenantToUnit, after the fields below are saved
-        // (so this unit's rate as saved here is the one added to theirs).
-        // Written here with the unit, the tenant was never billed for it.
+        // A tenant picked for a unit they don't hold yet is assigned by
+        // UnitService.saveEditedUnit through assignTenantToUnit, after the
+        // other fields are saved. Written here with the unit, the tenant was
+        // never billed for it.
         final previous = widget.unit!;
-        final assigning = finalTenantId != null &&
-            finalTenantId.isNotEmpty &&
-            !(previous.tenantId == finalTenantId &&
-                previous.status != UnitStatus.available);
+        final assigning =
+            UnitService.editAssignsTenant(previous, finalTenantId);
         final holder = previous.tenantId?.trim() ?? '';
         if (assigning &&
             holder.isNotEmpty &&
@@ -1460,14 +1458,14 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
           return;
         }
 
-        await UnitService.updateUnit(
+        final notice = await UnitService.saveEditedUnit(
           facilityId: widget.facilityId,
-          unitId: widget.unit!.id,
+          previous: previous,
           unitNumber: _unitNumberController.text.trim(),
           unitType: _selectedUnitType,
-          status: assigning ? null : _selectedStatus,
-          tenantId: assigning ? null : finalTenantId,
-          tenantName: assigning ? null : finalTenantName,
+          status: _selectedStatus,
+          tenantId: finalTenantId,
+          tenantName: finalTenantName,
           monthlyRate: double.parse(_monthlyRateController.text),
           securityDeposit: _securityDepositController.text.trim().isEmpty
               ? null
@@ -1485,15 +1483,6 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
           // Sent only when changed; blank removes the area.
           area: area == previous.area ? null : (area ?? ''),
         );
-        final notice = assigning
-            ? await UnitService.assignTenantToUnit(
-                facilityId: widget.facilityId,
-                unitId: previous.id,
-                tenantId: finalTenantId,
-                tenantName: finalTenantName ?? '',
-                status: _selectedStatus,
-              )
-            : null;
 
         if (mounted) {
           // The tenant's new rent, or a request to check it.

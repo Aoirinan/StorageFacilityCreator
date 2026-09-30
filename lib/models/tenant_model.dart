@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:sfcapp/utils/firestore_field_read.dart';
 import 'occupant_model.dart';
 import 'address_model.dart';
 import 'package:sfcapp/models/security_deposit_model.dart';
@@ -335,7 +336,9 @@ class TenantModel {
       unitNumber: data?['unitNumber'] ?? '',
       unitId: textField(data?['unitId']),
       unitArea: textField(data?['unitArea']),
-      monthlyRate: (data?['monthlyRate'] ?? 0.0).toDouble(),
+      // As UnitModel reads a rate: a string such as '250' threw here
+      // (String has no toDouble), failing the tenant's whole read.
+      monthlyRate: numberFromField(data?['monthlyRate']) ?? 0.0,
       paidThrough: (data?['paidThrough'] as Timestamp?)?.toDate(),
       moveInDate: data?['moveInDate'] is Timestamp
           ? (data!['moveInDate'] as Timestamp).toDate()

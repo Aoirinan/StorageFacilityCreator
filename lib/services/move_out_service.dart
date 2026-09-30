@@ -6,117 +6,232 @@ import 'package:intl/intl.dart';
 import 'package:sfcapp/models/contract_model.dart';
 import 'package:sfcapp/models/invoice_line_item_model.dart';
 import 'package:sfcapp/models/ledger_entry_model.dart'
-    show LedgerEntry, LedgerEntryStatus, LedgerEntryType;
-import 'package:sfcapp/models/tenant_model.dart';
+    show LedgerEntryStatus, LedgerEntryType;
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/audit_service.dart';
 import 'package:sfcapp/services/ledger_service.dart';
+import 'package:sfcapp/services/move_out_rent.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
-
-/// The unit a move-out vacates when the link names none: the one unit the
-/// tenant holds, or among several their primary unit (`unitId`), else the
-/// one their record's number names. Null when that leaves it open, for the
-/// owner to choose; never another tenant's unit. The screen fell back to the
-/// facility's first unit when the tenant's unit number matched none.
-///
-/// By id first: where a facility repeats unit numbers across areas, a
-/// tenant can hold unit 12 in two areas, and their number names neither.
-UnitModel? unitToVacate({
-  required List<UnitModel> units,
-  required TenantModel tenant,
-}) {
-  final held = units.where((u) => u.tenantId == tenant.id).toList();
-  if (held.length == 1) return held.single;
-  final primary = tenant.unitId?.trim() ?? '';
-  if (primary.isNotEmpty) {
-    for (final u in held) {
-      if (u.id == primary) return u;
-    }
-  }
-  final number = tenant.unitNumber.trim();
-  // Their own units, or with none linked by id (an older record) a unit by
-  // number that no other tenant holds.
-  final candidates = held.isNotEmpty
-      ? held
-      : units.where((u) => (u.tenantId ?? '').trim().isEmpty).toList();
-  final byNumber =
-      candidates.where((u) => number.isNotEmpty && u.unitNumber.trim() == number);
-  return byNumber.length == 1 ? byNumber.single : null;
-}
 
 /// Service for managing move-out workflow
 class MoveOutService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
 
-  /// Whether the scheduled rent job has already posted this tenant's rent for
-  /// the month containing [month].
-  ///
-  /// The job tags its entries `metadata.chargeType == 'monthlyRent'` with the
-  /// month and year, so this is an exact lookup rather than a guess from the
-  /// description. Returns false on error: charging prorated rent for the days
-  /// used is the safer wrong answer than issuing a credit for a month that was
-  /// never billed.
-  static Future<bool> _monthlyRentAlreadyCharged({
+  /// The tenant's ledger entries the move-out rent line reads
+  /// ([MoveOutRent.coverage]): their monthly rent charges, and the entries
+  /// posted for [contractId], among them its move-in rent. processMoveOut
+  /// reads all of their posted entries and keeps the same ones. Equality
+  /// filters only, so no composite index is needed.
+  static Future<List<Map<String, dynamic>>> _rentRows({
     required String facilityId,
     required String tenantId,
-    required DateTime month,
+    required String contractId,
   }) async {
-    try {
-      final snapshot = await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('ledgers')
-          .where('tenantId', isEqualTo: tenantId)
-          .where('status', isEqualTo: 'posted')
-          .where('metadata.chargeType', isEqualTo: 'monthlyRent')
-          .where('metadata.year', isEqualTo: month.year)
-          .where('metadata.month', isEqualTo: month.month)
-          .limit(1)
-          .get();
-      return snapshot.docs.isNotEmpty;
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ [MoveOut] Could not check for an existing rent charge: $e');
+    final posted = _firestore
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('ledgers')
+        .where('tenantId', isEqualTo: tenantId)
+        .where('status', isEqualTo: 'posted');
+    final reads = await Future.wait([
+      posted.where('metadata.chargeType', isEqualTo: 'monthlyRent').get(),
+      posted.where('referenceId', isEqualTo: contractId).get(),
+    ]);
+    final byId = <String, Map<String, dynamic>>{};
+    for (final snapshot in reads) {
+      for (final doc in snapshot.docs) {
+        byId[doc.id] = doc.data();
       }
-      return false;
     }
+    return byId.values.toList();
   }
 
-  /// The rent line for a move-out, in dollars.
+  /// The move-out's lines, net and refund, from the rent line ([rent], null
+  /// when not prorating) and the fees, on top of [currentBalance].
   ///
-  /// Rent is billed in advance, so which way the money moves depends on
-  /// whether this month was already posted:
-  ///
-  /// * [alreadyCharged] true — the tenant has paid for the whole month and is
-  ///   owed the unused days back, so [amount] is the credit due.
-  /// * false — the month was never billed, so [amount] is the charge for the
-  ///   days actually used.
-  ///
-  /// The caller applies the sign. Extracted from [calculateMoveOutCharges] so
-  /// the arithmetic can be tested without Firestore; the surrounding method
-  /// reads a tenant, a balance and a ledger before it gets here.
-  ///
-  /// Day counts come from [moveOutDate].day rather than a date subtraction, so
-  /// there is no daylight-saving truncation to worry about.
-  static ({double amount, int days, int unusedDays}) moveOutRentAmount({
-    required double monthlyRate,
+  /// The rent line is a charge for used days no rent covers and a credit
+  /// for unused days rent already covers ([MoveOutRent]). The credit is
+  /// negative and counts toward the refund, which is whatever the tenant is
+  /// owed once every line is in: it is paid out only if the owner ticks
+  /// Process Refund, and stays on the ledger as their credit otherwise.
+  /// processMoveOut posts the same lines (moveOutLedgerRows).
+  @visibleForTesting
+  static MoveOutCalculation buildCalculation({
+    required double currentBalance,
     required DateTime moveOutDate,
-    required bool alreadyCharged,
+    MoveOutRentLine? rent,
+    double? cleaningFee,
+    double? damageFee,
+    double? otherFees,
   }) {
-    final daysInMonth =
-        DateTime(moveOutDate.year, moveOutDate.month + 1, 0).day;
-    final daysUsed = moveOutDate.day.clamp(0, daysInMonth);
-    final daysUnused = daysInMonth - daysUsed;
-    final dailyRate = monthlyRate / daysInMonth;
-    final billableDays = alreadyCharged ? daysUnused : daysUsed;
-    final amount =
-        double.parse((dailyRate * billableDays).toStringAsFixed(2));
-    return (amount: amount, days: daysUsed, unusedDays: daysUnused);
+    final lineItems = <InvoiceLineItem>[];
+    final stamp = DateTime.now().millisecondsSinceEpoch;
+    var rentNet = 0.0;
+    if (rent != null && rent.chargeAmount > 0) {
+      lineItems.add(InvoiceLineItem(
+        id: 'prorated_rent_$stamp',
+        type: InvoiceLineItemType.proratedRent,
+        description: 'Prorated Rent (${rent.chargeDays} days)',
+        amount: rent.chargeAmount,
+        isProrated: true,
+        dueDate: moveOutDate,
+      ));
+      rentNet += rent.chargeAmount;
+    }
+    if (rent != null && rent.creditAmount > 0) {
+      lineItems.add(InvoiceLineItem(
+        id: 'prorated_rent_credit_$stamp',
+        type: InvoiceLineItemType.proratedRent,
+        description: 'Prorated Rent Credit (${rent.creditDays} unused days)',
+        amount: -rent.creditAmount,
+        isProrated: true,
+        dueDate: moveOutDate,
+      ));
+      rentNet -= rent.creditAmount;
+    }
+
+    var fees = 0.0;
+    for (final (id, description, amount) in [
+      ('cleaning_fee', 'Cleaning Fee', cleaningFee),
+      ('damage_fee', 'Damage Fee', damageFee),
+      ('other_fees', 'Other Fees', otherFees),
+    ]) {
+      if (amount == null || !amount.isFinite || amount <= 0) continue;
+      lineItems.add(InvoiceLineItem(
+        id: '${id}_$stamp',
+        type: InvoiceLineItemType.otherFee,
+        description: description,
+        amount: amount,
+        isProrated: false,
+        dueDate: moveOutDate,
+      ));
+      fees += amount;
+    }
+
+    final newCharges = MoveOutRent.cents(rentNet + fees);
+    final finalBalance = MoveOutRent.cents(currentBalance + newCharges);
+    return MoveOutCalculation(
+      lineItems: lineItems,
+      currentBalance: currentBalance,
+      newCharges: newCharges,
+      finalBalance: finalBalance,
+      refundAmount: finalBalance < 0 ? -finalBalance : 0.0,
+      prorateRent: rent != null,
+      fees: MoveOutRent.cents(fees),
+    );
   }
 
-  /// Calculate move-out charges and refunds
+  /// The monthly rate a move-out prorates: the tenant's own while the unit
+  /// is the only one they hold, only the vacated unit's ([unitRate]) when
+  /// they keep others. Their rate covers every unit they hold, so prorating
+  /// all of it for one of two credited (or charged) the days of the unit
+  /// they keep as well.
+  static double prorationRate({
+    required double tenantRate,
+    required double? unitRate,
+    required bool keepsOtherUnits,
+  }) =>
+      keepsOtherUnits && unitRate != null ? unitRate : tenantRate;
+
+  /// Whether [tenantId] keeps a unit besides [vacated] among [units] (the
+  /// screen's choices, from the Units list's read, archived units left
+  /// out): one linked to them exactly, as processMoveOut's query matches
+  /// the link, that [UnitModel] reads as not available (a unit with no
+  /// status, or one that is not a [UnitStatus] name, reads as available).
+  /// It decides the rate prorated ([prorationRate]).
+  ///
+  /// processMoveOut decides it again (isHeld in
+  /// functions-tenant-lifecycle/src/moveOutTenantFields.ts) and refuses a
+  /// net that is not the one shown here. It counted a linked unit with no
+  /// status as kept, so every such move-out was refused. Both test suites
+  /// run its src/test/fixtures/moveOutKeepsOtherUnits.json.
+  static bool keepsOtherUnits({
+    required String? tenantId,
+    required UnitModel? vacated,
+    required List<UnitModel> units,
+  }) =>
+      vacated != null &&
+      tenantId != null &&
+      units.any((u) =>
+          u.id != vacated.id &&
+          u.tenantId == tenantId &&
+          u.status != UnitStatus.available);
+
+  /// The unit an app contract was signed for, or null: online move-ins
+  /// record it in customFields.onlineMoveInContext; contracts made in the
+  /// app record none. processMoveOut refuses to end a contract signed for
+  /// another unit the tenant still holds.
+  static String? contractUnitId(ContractModel contract) {
+    final context = contract.customFields?['onlineMoveInContext'];
+    final id = context is Map ? context['unitId'] : null;
+    return id is String && id.trim().isNotEmpty ? id.trim() : null;
+  }
+
+  /// The units a move-out of [tenantId] can free, and the one picked first.
+  ///
+  /// The units they hold (linked to them and not available), for the owner
+  /// to pick from. The screen took the unit numbered as their unitNumber, or
+  /// else the facility's first unit, and app contracts record no unit, so
+  /// moving a two-unit tenant out through the second unit's contract freed
+  /// their primary unit. Picked first: the unit the owner started from
+  /// ([preferredUnitId], the unit's own Move out), the unit the contract was
+  /// signed for ([contractUnitId]), their primary unit ([tenantUnitId], the
+  /// tenant's `unitId`), then the one unit their unitNumber names, then the
+  /// only choice. Null (the owner picks) when that leaves it open: where a
+  /// facility repeats unit numbers across areas, a tenant can hold unit 12
+  /// in two areas, and their number names neither. Holding none, a unit
+  /// still linked to them or numbered as theirs, so the contract can still
+  /// be ended; never another tenant's unit.
+  static ({List<UnitModel> choices, UnitModel? initial}) moveOutUnitChoices({
+    required String tenantId,
+    required String tenantUnitNumber,
+    required List<UnitModel> units,
+    String? tenantUnitId,
+    String? contractUnitId,
+    String? preferredUnitId,
+  }) {
+    final number = tenantUnitNumber.trim();
+    bool linked(UnitModel u) => (u.tenantId ?? '').trim() == tenantId;
+    var choices = [
+      for (final u in units)
+        if (linked(u) && u.status != UnitStatus.available) u
+    ];
+    if (choices.isEmpty) {
+      choices = [
+        for (final u in units)
+          if (linked(u) ||
+              (number.isNotEmpty &&
+                  u.unitNumber.trim() == number &&
+                  (u.tenantId ?? '').trim().isEmpty))
+            u
+      ];
+    }
+    UnitModel? find(bool Function(UnitModel u) test) {
+      for (final u in choices) {
+        if (test(u)) return u;
+      }
+      return null;
+    }
+
+    final primary = tenantUnitId?.trim() ?? '';
+    final numbered = [
+      for (final u in choices)
+        if (number.isNotEmpty && u.unitNumber.trim() == number) u
+    ];
+    final initial = find((u) => u.id == preferredUnitId) ??
+        find((u) => u.id == contractUnitId) ??
+        find((u) => primary.isNotEmpty && u.id == primary) ??
+        (numbered.length == 1 ? numbered.single : null) ??
+        (choices.length == 1 ? choices.single : null);
+    return (choices: choices, initial: initial);
+  }
+
+  /// Calculate move-out charges and refunds. [unitRate] is the vacated
+  /// unit's rate and [keepsOtherUnits] whether the tenant holds another
+  /// unit: see [prorationRate]. [unitMoveInDate] is the vacated unit's
+  /// moveInDate, the tenancy's start when its move-in rent does not say.
   static Future<MoveOutCalculation> calculateMoveOutCharges({
     required String tenantId,
     required String facilityId,
@@ -126,6 +241,9 @@ class MoveOutService {
     double? damageFee,
     double? otherFees,
     bool prorateRent = true,
+    double? unitRate,
+    bool keepsOtherUnits = false,
+    DateTime? unitMoveInDate,
   }) async {
     try {
       if (kDebugMode) {
@@ -144,123 +262,52 @@ class MoveOutService {
         throw Exception('Tenant not found');
       }
 
-      final lineItems = <InvoiceLineItem>[];
-      double totalCharges = 0.0;
-
-      // 1. Rent for the month of move-out.
-      //
-      // Rent is billed in advance: the scheduled job posts the whole month on
-      // the 1st, and `currentBalance` above already contains it. Adding
-      // prorated rent for the days used therefore charged the month twice — a
-      // tenant on $150 leaving on the 10th of a 30-day month was billed $150
-      // plus $50, or $200 for ten days.
-      //
-      // When the month has already been charged, the tenant is owed the unused
-      // days back, so post a credit. Only when it has not been charged does
-      // prorated rent make sense as a charge.
-      if (prorateRent && tenantModel.monthlyRate > 0) {
-        final alreadyCharged = await _monthlyRentAlreadyCharged(
-          facilityId: facilityId,
-          tenantId: tenantId,
-          month: moveOutDate,
+      // 1. Rent: charged for used days no rent covers, credited for days
+      // after the move-out that rent already posted covers (MoveOutRent).
+      // It counted days 1 to the move-out date as used whatever the
+      // tenancy, and charged them unless the scheduled job had posted the
+      // month: a tenancy starting 1 Oct, moved out on 24 Sep, was charged
+      // for 24 September days, and a mid-month move-in for days its
+      // move-in rent had billed. processMoveOut works this line out again
+      // and refuses to post one that differs.
+      final rate = prorationRate(
+        tenantRate: tenantModel.monthlyRate,
+        unitRate: unitRate,
+        keepsOtherUnits: keepsOtherUnits,
+      );
+      MoveOutRentLine? rent;
+      if (prorateRent) {
+        rent = MoveOutRent.line(
+          monthlyRate: rate,
+          moveOutDay: MoveOutRent.wallDay(moveOutDate),
+          contractId: contractId,
+          rows: await _rentRows(
+            facilityId: facilityId,
+            tenantId: tenantId,
+            contractId: contractId,
+          ),
+          unitMoveInDate: unitMoveInDate,
         );
-        final rent = moveOutRentAmount(
-          monthlyRate: tenantModel.monthlyRate,
-          moveOutDate: moveOutDate,
-          alreadyCharged: alreadyCharged,
-        );
-        final daysUsed = rent.days;
-        final daysUnused = rent.unusedDays;
-
-        if (alreadyCharged) {
-          final refundForUnusedDays = rent.amount;
-          if (refundForUnusedDays > 0) {
-            lineItems.add(InvoiceLineItem(
-              id: 'prorated_rent_credit_${DateTime.now().millisecondsSinceEpoch}',
-              type: InvoiceLineItemType.proratedRent,
-              description: 'Prorated Rent Credit ($daysUnused unused days)',
-              amount: -refundForUnusedDays,
-              isProrated: true,
-              dueDate: moveOutDate,
-            ));
-            totalCharges -= refundForUnusedDays;
-          }
-        } else {
-          final proratedRent =
-              rent.amount;
-          if (proratedRent > 0) {
-            lineItems.add(InvoiceLineItem(
-              id: 'prorated_rent_${DateTime.now().millisecondsSinceEpoch}',
-              type: InvoiceLineItemType.proratedRent,
-              description: 'Prorated Rent ($daysUsed days)',
-              amount: proratedRent,
-              isProrated: true,
-              dueDate: moveOutDate,
-            ));
-            totalCharges += proratedRent;
-          }
-        }
       }
 
-      // 2. Cleaning fee (if provided)
-      if (cleaningFee != null && cleaningFee > 0) {
-        lineItems.add(InvoiceLineItem(
-          id: 'cleaning_fee_${DateTime.now().millisecondsSinceEpoch}',
-          type: InvoiceLineItemType.otherFee,
-          description: 'Cleaning Fee',
-          amount: cleaningFee,
-          isProrated: false,
-          dueDate: moveOutDate,
-        ));
-        totalCharges += cleaningFee;
-      }
-
-      // 3. Damage fee (if provided)
-      if (damageFee != null && damageFee > 0) {
-        lineItems.add(InvoiceLineItem(
-          id: 'damage_fee_${DateTime.now().millisecondsSinceEpoch}',
-          type: InvoiceLineItemType.otherFee,
-          description: 'Damage Fee',
-          amount: damageFee,
-          isProrated: false,
-          dueDate: moveOutDate,
-        ));
-        totalCharges += damageFee;
-      }
-
-      // 4. Other fees (if provided)
-      if (otherFees != null && otherFees > 0) {
-        lineItems.add(InvoiceLineItem(
-          id: 'other_fees_${DateTime.now().millisecondsSinceEpoch}',
-          type: InvoiceLineItemType.otherFee,
-          description: 'Other Fees',
-          amount: otherFees,
-          isProrated: false,
-          dueDate: moveOutDate,
-        ));
-        totalCharges += otherFees;
-      }
-
-      // Calculate final balance (current balance + new charges)
-      final finalBalance = currentBalance + totalCharges;
-
-      // Calculate refund (if balance is negative)
-      final refundAmount = finalBalance < 0 ? finalBalance.abs() : 0.0;
+      // 2 to 4. Cleaning, damage and other fees.
+      final calculation = buildCalculation(
+        currentBalance: currentBalance,
+        moveOutDate: moveOutDate,
+        rent: rent,
+        cleaningFee: cleaningFee,
+        damageFee: damageFee,
+        otherFees: otherFees,
+      );
 
       if (kDebugMode) {
         print('💰 [MoveOut] Current Balance: \$${currentBalance.toStringAsFixed(2)}');
-        print('💰 [MoveOut] New Charges: \$${totalCharges.toStringAsFixed(2)}');
-        print('💰 [MoveOut] Final Balance: \$${finalBalance.toStringAsFixed(2)}');
-        print('💰 [MoveOut] Refund Amount: \$${refundAmount.toStringAsFixed(2)}');
+        print('💰 [MoveOut] New Charges: \$${calculation.newCharges.toStringAsFixed(2)}');
+        print('💰 [MoveOut] Final Balance: \$${calculation.finalBalance.toStringAsFixed(2)}');
+        print('💰 [MoveOut] Refund Amount: \$${calculation.refundAmount.toStringAsFixed(2)}');
       }
 
-      return MoveOutCalculation(
-        lineItems: lineItems,
-        currentBalance: currentBalance,
-        newCharges: totalCharges,
-        finalBalance: finalBalance,
-        refundAmount: refundAmount,
-      );
+      return calculation;
     } catch (e) {
       if (kDebugMode) {
         print('❌ [MoveOut] Error calculating charges: $e');
@@ -535,6 +582,11 @@ class MoveOutService {
         // server posts the refund only when processRefund is true.
         'moveOutCharges': calculation.newCharges,
         'moveOutRefund': calculation.refundAmount,
+        // processMoveOut works the rent line out again from these, posts it
+        // and the fees as their own lines, and refuses when its net differs
+        // from moveOutCharges (what the owner was shown).
+        'prorateRent': calculation.prorateRent,
+        'moveOutFees': calculation.fees,
         'moveOutNotes': moveOutNotes,
         'processRefund': processRefund && calculation.refundAmount > 0,
         'refundMethod': refundMethod,
@@ -581,10 +633,13 @@ class MoveOutService {
   /// What processMoveOut answered, for the screen. A move-out that had
   /// already been completed (a retry after a dropped connection) charged
   /// and freed nothing this time: its charges are not shown as posted
-  /// again, and the owner is told. The refund is shown only when the
-  /// server posted one (`refundPosted`): with Process Refund off the
-  /// credit stays on the ledger. The tenant's new rent, or a request to
-  /// check it, comes with the result.
+  /// again, and the owner is told. The tenant's new rent, or a request to
+  /// check it, comes with the result. The refund is shown only when the
+  /// server recorded one (`refundRecorded`, or `refundPosted` from a server
+  /// that sends only that): with Process Refund off the credit stays on the
+  /// ledger, and a card refund is made in Stripe, so why comes as a warning
+  /// (refundWarning). "Refund: $36.67" was shown for a card refund nothing
+  /// had made.
   @visibleForTesting
   static MoveOutResult moveOutResultFromServer(
     Map<String, dynamic> data,
@@ -593,14 +648,24 @@ class MoveOutService {
     final repeat = data['alreadyCompleted'] == true;
     String? text(Object? value) =>
         value is String && value.trim().isNotEmpty ? value.trim() : null;
+    // refundPosted is the same answer from a server that sends only that.
+    // A server that sends neither predates both and recorded every refund.
+    final recorded = data['refundRecorded'] ?? data['refundPosted'];
+    final refundRecorded = recorded is bool ? recorded : true;
+    final warnings = [
+      if (text(data['rentWarning']) != null) text(data['rentWarning'])!,
+      if (text(data['refundWarning']) != null) text(data['refundWarning'])!,
+    ];
     return MoveOutResult(
       success: data['success'] == true,
       charges: repeat ? null : calculation.newCharges,
-      refund: !repeat && data['refundPosted'] == true
-          ? calculation.refundAmount
-          : null,
+      refund: repeat || !refundRecorded ? null : calculation.refundAmount,
       notice: text(data['rentNotice']),
-      warning: repeat ? text(data['message']) : text(data['rentWarning']),
+      warning: repeat
+          ? text(data['message'])
+          : warnings.isEmpty
+              ? null
+              : warnings.join(' '),
     );
   }
 
@@ -641,12 +706,20 @@ class MoveOutCalculation {
   final double finalBalance;
   final double refundAmount;
 
+  /// Whether the rent line was worked out (Prorate Rent ticked).
+  final bool prorateRent;
+
+  /// The cleaning, damage and other fees together.
+  final double fees;
+
   MoveOutCalculation({
     required this.lineItems,
     required this.currentBalance,
     required this.newCharges,
     required this.finalBalance,
     required this.refundAmount,
+    this.prorateRent = false,
+    this.fees = 0,
   });
 }
 

@@ -264,41 +264,36 @@ void main() {
     });
   });
 
-  group('unitToVacate', () {
-    TenantModel tenant(String unitNumber) => TenantModel(
-          id: 't1',
-          facilityId: 'f1',
-          name: 'Ada Park',
-          email: '',
-          phone: '',
-          unitNumber: unitNumber,
-          monthlyRate: 100,
-          createdAt: _day,
-        );
-
-    test("the one unit the tenant holds, whatever their record's number says", () {
-      final units = [_unit('u1', '1', tenantId: 'other'), _unit('u7', '7', tenantId: 't1')];
-      expect(unitToVacate(units: units, tenant: tenant('stale'))?.id, 'u7');
+  group('the unit a move-out frees', () {
+    test("the unit's own Move out picks that unit first", () {
+      final units = [
+        _unit('u1', '1', tenantId: 't1'),
+        _unit('u2', '2', tenantId: 't1'),
+      ];
+      final picked = MoveOutService.moveOutUnitChoices(
+        tenantId: 't1',
+        tenantUnitNumber: '1',
+        units: units,
+        contractUnitId: 'u1',
+        preferredUnitId: 'u2',
+      );
+      expect(picked.initial?.id, 'u2');
+      expect(picked.choices.map((u) => u.id), ['u1', 'u2']);
     });
 
-    test('never falls back to some other unit', () {
-      // The screen took the facility's first unit when the number matched
-      // none: here another tenant's.
-      final units = [_unit('u1', '1', tenantId: 'other'), _unit('u2', '2')];
-      expect(unitToVacate(units: units, tenant: tenant('9')), isNull);
-      // Nor another tenant's unit with the same number.
-      expect(unitToVacate(units: units, tenant: tenant('1')), isNull);
-    });
-
-    test('among several held, the one the record names, else the owner chooses', () {
-      final units = [_unit('u1', '1', tenantId: 't1'), _unit('u2', '2', tenantId: 't1')];
-      expect(unitToVacate(units: units, tenant: tenant('2'))?.id, 'u2');
-      expect(unitToVacate(units: units, tenant: tenant('1, 2')), isNull);
-    });
-
-    test('an older record with no unit linked by id is found by number', () {
-      final units = [_unit('u1', '1', tenantId: 'other'), _unit('u5', '5')];
-      expect(unitToVacate(units: units, tenant: tenant('5'))?.id, 'u5');
+    test('a named unit the tenant does not hold is not picked', () {
+      final units = [
+        _unit('u1', '1', tenantId: 't1'),
+        _unit('u9', '9', tenantId: 'other'),
+      ];
+      final picked = MoveOutService.moveOutUnitChoices(
+        tenantId: 't1',
+        tenantUnitNumber: '1',
+        units: units,
+        preferredUnitId: 'u9',
+      );
+      expect(picked.initial?.id, 'u1');
+      expect(picked.choices.map((u) => u.id), ['u1']);
     });
   });
 }

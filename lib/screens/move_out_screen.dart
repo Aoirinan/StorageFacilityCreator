@@ -14,6 +14,7 @@ import '../services/modern_navigation_service.dart';
 import '../router/app_router.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/router/back_navigation.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 
 class MoveOutScreen extends ConsumerStatefulWidget {
   final String contractId;
@@ -43,7 +44,7 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
   TenantModel? _tenant;
   UnitModel? _unit;
 
-  /// The tenant's units, when they hold several and the link named none.
+  /// The units this move-out can free (MoveOutService.moveOutUnitChoices).
   List<UnitModel> _unitChoices = const [];
   MoveOutCalculation? _calculation;
 
@@ -52,10 +53,10 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
   final _damageFeeController = TextEditingController();
   final _otherFeesController = TextEditingController();
   final _notesController = TextEditingController();
-  // Off until the owner ticks it. The prorated line counts days from the
-  // 1st of the month whatever the tenancy: it charged a tenant whose tenancy
-  // starts on 1 Oct for 24 September days, and for days already covered by
-  // rent posted and paid at move-in.
+  // Off until the owner ticks it, as since the move-out hotfix: whether a
+  // move-out prorates rent is the facility's policy. Ticked, it charges used
+  // days no rent covers and credits rent posted for days after the move-out
+  // (MoveOutRent).
   bool _prorateRent = false;
   bool _processRefund = false;
   String? _refundMethod;
@@ -94,25 +95,30 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
         contract.tenantId,
       );
 
-      UnitModel? unit;
-      var unitChoices = const <UnitModel>[];
-      final unitId = widget.unitId;
-      if (unitId != null && unitId.isNotEmpty) {
-        unit = await UnitService.getUnit(widget.facilityId, unitId);
-      } else if (tenant != null) {
+      // The owner picks which of the tenant's units this move-out frees:
+      // it took their unitNumber's unit, or else the facility's first unit,
+      // so a two-unit tenant's second contract freed their primary unit.
+      ({List<UnitModel> choices, UnitModel? initial}) picked =
+          (choices: const [], initial: null);
+      if (tenant != null) {
         final units = await UnitService.getUnitsForFacility(widget.facilityId);
-        unit = unitToVacate(units: units, tenant: tenant);
-        if (unit == null) {
-          unitChoices = units.where((u) => u.tenantId == tenant.id).toList();
-        }
+        picked = MoveOutService.moveOutUnitChoices(
+          tenantId: tenant.id,
+          tenantUnitNumber: tenant.unitNumber,
+          units: units,
+          tenantUnitId: tenant.unitId,
+          contractUnitId: MoveOutService.contractUnitId(contract),
+          // The unit's own menu names the unit it is moving out of.
+          preferredUnitId: widget.unitId,
+        );
       }
 
       if (!mounted) return;
       setState(() {
         _contract = contract;
         _tenant = tenant;
-        _unit = unit;
-        _unitChoices = unitChoices;
+        _unitChoices = picked.choices;
+        _unit = picked.initial;
         _isLoading = false;
       });
     } catch (e) {
@@ -129,6 +135,14 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
       }
     }
   }
+
+  /// Whether the tenant holds a unit besides the one being freed, by the
+  /// rule processMoveOut applies too (MoveOutService.keepsOtherUnits).
+  bool get _keepsOtherUnits => MoveOutService.keepsOtherUnits(
+        tenantId: _tenant?.id,
+        vacated: _unit,
+        units: _unitChoices,
+      );
 
   Future<void> _calculateCharges() async {
     if (_contract == null || _tenant == null) return;
@@ -147,6 +161,9 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
         damageFee: double.tryParse(_damageFeeController.text),
         otherFees: double.tryParse(_otherFeesController.text),
         prorateRent: _prorateRent,
+        unitRate: _unit?.monthlyRate,
+        keepsOtherUnits: _keepsOtherUnits,
+        unitMoveInDate: _unit?.moveInDate,
       );
 
       setState(() {
@@ -187,10 +204,11 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
     if (_unit == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
+          // Several units and none named for sure (see moveOutUnitChoices):
+          // the owner picks, rather than the first one being freed.
           content: Text(_unitChoices.isNotEmpty
               ? 'Choose the unit the tenant is moving out of.'
-              : "Couldn't tell which unit this tenant rents. Start the "
-                  "move-out from the unit's page: Units > unit > Move out."),
+              : 'This tenant holds no unit to move out of.'),
           backgroundColor: AppTheme.warning,
         ),
       );
@@ -348,22 +366,37 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
                           color: AppTheme.textSecondary,
                         ),
                       ),
-                      if (_unitChoices.isNotEmpty)
-                        DropdownButton<UnitModel>(
-                          value: _unit,
+                      if (_unitChoices.length > 1)
+                        // A tenant with several units: the owner says which
+                        // one this move-out frees.
+                        DropdownButton<String>(
+                          key: const Key('moveOutUnitPicker'),
+                          value: _unit?.id,
+                          isExpanded: true,
                           hint: const Text('Choose the unit'),
                           items: [
                             for (final u in _unitChoices)
                               DropdownMenuItem(
-                                value: u,
-                                child: Text(u.unitNumber),
+                                value: u.id,
+                                // With its area: two units can share a number.
+                                child: Text(unitPickerLabel(u)),
                               ),
                           ],
-                          onChanged: (u) => setState(() => _unit = u),
+                          onChanged: _isProcessing
+                              ? null
+                              : (id) => setState(() {
+                                    _unit = _unitChoices
+                                        .firstWhere((u) => u.id == id);
+                                    // Worked out for the unit picked.
+                                    _calculation = null;
+                                  }),
                         )
                       else
                         Text(
-                          _unit?.unitNumber ?? _tenant?.unitNumber ?? 'N/A',
+                          _unit == null
+                              ? 'No unit'
+                              : unitPickerLabel(_unit!,
+                                  style: UnitLabelStyle.plain),
                           style: Theme.of(context).textTheme.bodyLarge,
                         ),
                     ],
@@ -409,6 +442,8 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
                 if (date != null) {
                   setState(() {
                     _moveOutDate = date;
+                    // Worked out for the date it was calculated on.
+                    _calculation = null;
                   });
                 }
               },
@@ -424,11 +459,14 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
             const SizedBox(height: 12),
             CheckboxListTile(
               title: const Text('Prorate Rent'),
-              subtitle: const Text('Calculate prorated rent for partial month'),
+              subtitle: const Text(
+                  'Charge days used that no rent covers, and credit rent '
+                  'already posted for days after the move-out'),
               value: _prorateRent,
               onChanged: (value) {
                 setState(() {
                   _prorateRent = value ?? false;
+                  _calculation = null;
                 });
               },
             ),
