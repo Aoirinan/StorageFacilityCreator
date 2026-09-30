@@ -8,6 +8,37 @@ import {
 } from './stripeWebhookSubscriptionInternal';
 import { reconcileAccountSubscription } from './accountSubscriptionReconcile';
 
+/**
+ * The account fields a `customer.subscription.deleted` event for [subscriptionId] writes.
+ *
+ * The event itself proves the subscription is gone (a deleted subscription never comes
+ * back), so when the account still points at it the pointer is cleared here too. The
+ * reconcile pass after this only clears it once Stripe confirms, and leaves it on any
+ * error other than "not found": cancelling in the free month then left the account
+ * `trialing` (the rollup puts a cancelled account whose trial end is ahead back on its
+ * trial) with a dead subscription id, which read as a paid card-backed trial. With the
+ * pointer gone the account is the unpaid app trial until that trial end, then the
+ * nightly sweep cancels it. A pointer to a different (newer) subscription is left alone.
+ */
+export function accountUpdateForDeletedSubscription<T>(
+  account: Record<string, unknown>,
+  subscriptionId: string,
+  stamp: T,
+): Record<string, unknown> {
+  const update: Record<string, unknown> = {
+    subscriptionStatus: 'cancelled',
+    subscriptionCanceledAt: stamp,
+    updatedAt: stamp,
+  };
+  const current = typeof account.stripeSubscriptionId === 'string' ? account.stripeSubscriptionId.trim() : '';
+  if (subscriptionId && current === subscriptionId) {
+    update.stripeSubscriptionId = null;
+    update.stripeSubscriptionIdClearedAt = stamp;
+    update.stripeSubscriptionIdClearedFrom = subscriptionId;
+  }
+  return update;
+}
+
 export async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
   const accountId = subscription.metadata?.accountId;
   const facilityId = subscription.metadata?.facilityId;
@@ -77,16 +108,26 @@ export async function handleSubscriptionDeleted(subscription: Stripe.Subscriptio
 
   if (accountId) {
     // The super-admin account delete also cancels before it deletes.
-    const updated = await updateIfExists(admin.firestore().collection('facilityCreatorAccounts').doc(accountId), {
-      subscriptionStatus: 'cancelled',
-      subscriptionCanceledAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    const db = admin.firestore();
+    const accountRef = db.collection('facilityCreatorAccounts').doc(accountId);
+    const updated = await db.runTransaction(async (transaction) => {
+      const snap = await transaction.get(accountRef);
+      if (!snap.exists) return false;
+      transaction.update(
+        accountRef,
+        accountUpdateForDeletedSubscription(
+          (snap.data() ?? {}) as Record<string, unknown>,
+          subscription.id,
+          admin.firestore.FieldValue.serverTimestamp(),
+        ),
+      );
+      return true;
     });
     if (updated) {
       functions.logger.info(`Subscription cancelled for account: ${accountId}`);
       // A cancellation is exactly when `stripeSubscriptionId` becomes a dead
-      // pointer, so verify and clear it here rather than leaving the account
-      // advertising a subscription that no longer exists.
+      // pointer. The write above cleared it when it named this subscription;
+      // any other pointer is verified with Stripe and cleared if dead.
       await reconcileAccountSubscription(accountId, { verifyStripeSubscription: true });
     } else {
       functions.logger.info(`Subscription ${subscription.id} cancelled for deleted account ${accountId}; nothing to update`);

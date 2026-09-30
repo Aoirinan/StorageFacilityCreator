@@ -20,6 +20,11 @@
  * change the other and add a case there.
  */
 
+import {
+  accountHasPaidOrCardTrialSubscription,
+  facilityHasPaidOrCardTrialSubscription,
+} from '../subscription/paidSubscription';
+
 export type DocData = Record<string, unknown>;
 
 /** Rows read per source when checking a tenant for history. */
@@ -334,10 +339,14 @@ export function timestampMillis(value: unknown): number | null {
   return null;
 }
 
-/** FacilityModel.hasActivePlatformSubscription. */
+/**
+ * FacilityModel.hasActivePlatformSubscription: paid, in the card-backed free month
+ * (`trialing` with a Stripe subscription, until its trial end plus the webhook grace), or
+ * trialing with an end date still ahead.
+ */
 function facilityHasActivePlatformSubscription(facility: DocData, nowMs: number): boolean {
+  if (facilityHasPaidOrCardTrialSubscription(facility, nowMs)) return true;
   const status = facility.platformSubscriptionStatus;
-  if (status === 'active') return true;
   const trialEnd = timestampMillis(facility.platformSubscriptionTrialEnd);
   return status === 'trialing' && trialEnd !== null && trialEnd > nowMs;
 }
@@ -345,9 +354,10 @@ function facilityHasActivePlatformSubscription(facility: DocData, nowMs: number)
 /** FacilityCreatorAccountModel.allowsPermanentTenantDeletion. */
 function accountAllowsPermanentTenantDelete(account: DocData, nowMs: number): boolean {
   if (account.suspended === true) return false;
+  // Paid, or the card-backed free month (until its trial end plus the webhook grace).
+  if (accountHasPaidOrCardTrialSubscription(account, nowMs)) return true;
   // A missing or unknown status parses as pendingApproval in the app.
   const status = account.subscriptionStatus;
-  if (status === 'active') return true;
   if (status !== 'trialing') return false;
   const trialEnd = timestampMillis(account.subscriptionTrialEnd);
   return trialEnd === null || nowMs <= trialEnd;
