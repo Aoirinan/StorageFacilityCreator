@@ -1825,3 +1825,35 @@ test('facility notifications: staff may mark one read and change nothing else', 
   await assertFails(staff.doc('n1').delete());
   await assertFails(staff.doc('n2').set({ type: 'ONLINE_MOVE_IN_REVIEW', message: 'forged', readAt: null }));
 });
+
+test("gate codes: a super admin with no role can read a tenant's and switch it off, as Unassign Tenant does", async () => {
+  // Unassign Tenant of a tenant's only unit (and archive, and switching them
+  // off) turns their gate codes off in the same transaction. For a super
+  // admin with no role at the facility the gateAccess read and update were
+  // refused, so the whole unassign failed where it used to succeed.
+  await seedFacility();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilities').doc(FACILITY_ID).collection('gateAccess').doc('g1').set({
+      facilityId: FACILITY_ID,
+      tenantId: TENANT_ID,
+      accessCode: '1234',
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      createdBy: OWNER_UID,
+    });
+  });
+  const gates = (context) => context.firestore().collection('facilities').doc(FACILITY_ID).collection('gateAccess');
+  const off = (uid) => ({ isActive: false, updatedAt: serverTimestamp(), updatedBy: uid });
+
+  const outsider = gates(testEnv.authenticatedContext(OUTSIDER_UID));
+  await assertFails(outsider.where('tenantId', '==', TENANT_ID).get());
+  await assertFails(outsider.doc('g1').update(off(OUTSIDER_UID)));
+
+  const admin = gates(testEnv.authenticatedContext('admin-user', { superadmin: true }));
+  await assertSucceeds(admin.where('tenantId', '==', TENANT_ID).get());
+  // Still stamped with the caller, as for staff.
+  await assertFails(admin.doc('g1').update(off(OWNER_UID)));
+  await assertSucceeds(admin.doc('g1').update(off('admin-user')));
+  await assertSucceeds(gates(testEnv.authenticatedContext(STAFF_UID)).doc('g1').update(off(STAFF_UID)));
+});

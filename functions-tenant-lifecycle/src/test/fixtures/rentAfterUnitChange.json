@@ -109,5 +109,26 @@
       "monthlyRate": null,
       "notice": null
     }
+  ],
+  "ratesAbout": "How a unit's or tenant's monthlyRate field is read, as [stored value, rate]: TenantService.rateField (and UnitModel) in the app, rateFromField in moveOutTenantFields.ts. A numeric string is its number; anything else is 0.",
+  "rates": [
+    [150, 150],
+    [99.5, 99.5],
+    ["150", 150],
+    [" 250.50 ", 250.5],
+    ["1e2", 100],
+    ["-5", -5],
+    [".5", 0.5],
+    ["", 0],
+    [" ", 0],
+    ["abc", 0],
+    ["12abc", 0],
+    ["0x10", 0],
+    ["Infinity", 0],
+    ["NaN", 0],
+    [null, 0],
+    [true, 0],
+    [[150], 0],
+    [{"amount": 150}, 0]
   ]
 }

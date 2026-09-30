@@ -8,12 +8,19 @@ import { releasePlatformOutgoing, reservePlatformOutgoing } from '@sfc/functions
 import { resolveReferralPendingItemForSuperAdmin } from '@sfc/functions-shared/referral/referralRewards';
 import { getStripeClient } from '@sfc/functions-shared/stripe/client';
 import { getOrCreateAddOnPriceId, getOrCreateBasePriceId } from '@sfc/functions-shared/stripe/subscriptionPricing';
-import { FacilityBillingNotStoppedError, purgeFacility, stripeFacilityPurgeDeps } from './facilityPurge';
+import {
+  FacilityBillingNotStoppedError,
+  purgeFacility,
+  stripeFacilityPurgeDeps,
+  tenantBillingDocs,
+  tenantLegacySubscriptions,
+} from './facilityPurge';
 import {
   anyCancelFailed,
   cancelSubscriptions,
   collectSubscriptionsToCancel,
   summarizeCancelOutcomes,
+  type CancellableSubscription,
 } from '@sfc/functions-shared/stripe/subscriptionCleanup';
 import { adminDeleteDocumentTree } from './admin_delete_document_tree';
 import { disableUserHandler } from './disableUser';
@@ -229,11 +236,18 @@ export const superAdminDeleteFacilityCreatorAccount = functions
     // Every subscription this owner has, across every facility plus the legacy
     // account plan, cancelled before any of it is deleted. Collected in one
     // pass so a subscription shared by two facilities is cancelled once.
+    // Their tenants' legacy AutoPay subscriptions too: on the platform
+    // account, they went on charging tenants of deleted facilities.
+    const tenantSubscriptions: CancellableSubscription[] = [];
+    for (const f of facilitiesSnap.docs) {
+      tenantSubscriptions.push(...tenantLegacySubscriptions(await tenantBillingDocs(db, f.ref)));
+    }
     const allSubscriptions = [
       ...facilitiesSnap.docs.flatMap((f) =>
         collectSubscriptionsToCancel(f.data() as Record<string, unknown>, null),
       ),
       ...collectSubscriptionsToCancel(null, accountData),
+      ...tenantSubscriptions,
     ].filter(
       (sub, i, list) => list.findIndex((other) => other.id === sub.id) === i,
     );

@@ -279,15 +279,17 @@ test("a tenant's autopay refuses the owner before the email code is spent; nothi
   await assert.rejects(run(OWNER, fakePurge(calls)), (err: unknown) => {
     const e = err as functions.https.HttpsError;
     assert.equal(e.code, 'failed-precondition');
-    assert.equal(e.message, facilityHasAutopayTenantsMessage(['Ada Park', 'Old']));
+    assert.equal(e.message, facilityHasAutopayTenantsMessage(['Ada Park'], ['Old']));
     assert.deepEqual(e.details, { reason: 'tenant-autopay', tenants: 2 });
     return true;
   });
+  // The legacy record has no page, so no Disable autopay: it was sent to
+  // one with the rest.
   assert.equal(
-    facilityHasAutopayTenantsMessage(['Ada Park', 'Old']),
-    'Nothing was deleted: autopay is still set up for 2 tenants (Ada Park, Old), ' +
-      "and deleting the facility wouldn't stop it. Open each tenant and press " +
-      'Disable autopay, then delete the facility.',
+    facilityHasAutopayTenantsMessage(['Ada Park'], ['Old']),
+    'Nothing was deleted: autopay is still set up for 1 tenant (Ada Park) and 1 older tenant record (Old). ' +
+      'Open each tenant and press Disable autopay. Older tenant records have no page in the app, ' +
+      'so contact support to switch it off. Then delete the facility.',
   );
   assert.deepEqual(calls, newCalls());
   await assertNothingDeleted();
@@ -301,28 +303,55 @@ test("a tenant's autopay refuses the owner before the email code is spent; nothi
   assert.deepEqual(await docsUnder(`facilities/${FACILITY}`), []);
 });
 
-test('a super admin (the claim) deletes a facility whose tenants have autopay', { skip: skipWithoutEmulator }, async () => {
+test("a super admin's delete cancels the tenants' legacy autopay subscriptions with the facility's", { skip: skipWithoutEmulator }, async () => {
+  // The super admin skips the owner's autopay refusal (support is where the
+  // refusal sends older tenant records). The legacy subscription is on the
+  // platform account, so the delete left it charging with no record left.
   await seedFacility();
-  await emulatorDb()
-    .collection('facilities')
-    .doc(FACILITY)
-    .collection('tenants')
-    .doc('t1')
-    .collection('billing')
-    .doc('default')
-    .set({ stripeSubscriptionId: 'sub_tenant' });
-  await run('admin-1', fakePurge(newCalls()), { superadmin: true });
+  const fac = emulatorDb().collection('facilities').doc(FACILITY);
+  await fac.collection('tenants').doc('t1').collection('billing').doc('default').set({ stripeSubscriptionId: 'sub_tenant' });
+  await fac.collection('oldTenants').doc('o1').collection('billing').doc('default').set({ stripeSubscriptionId: ' sub_old ' });
+  const calls = newCalls();
+  await run('admin-1', fakePurge(calls), { superadmin: true });
+  assert.deepEqual(
+    calls.cancelled,
+    [
+      { id: 'sub_platform', label: 'platform' },
+      { id: 'sub_website', label: 'website' },
+      { id: 'sub_tenant', label: 'tenant-autopay' },
+      { id: 'sub_old', label: 'tenant-autopay' },
+    ],
+  );
   assert.deepEqual(await docsUnder(`facilities/${FACILITY}`), []);
+});
+
+test("a tenant's legacy subscription that won't cancel: nothing is deleted", { skip: skipWithoutEmulator }, async () => {
+  await seedFacility();
+  const fac = emulatorDb().collection('facilities').doc(FACILITY);
+  await fac.collection('oldTenants').doc('o1').collection('billing').doc('default').set({ stripeSubscriptionId: 'sub_old' });
+  const purge = fakePurge(newCalls(), {
+    cancelSubscriptions: async (subs) =>
+      subs.map(
+        (s): CancelOutcome => ({ id: s.id, label: s.label, status: s.id === 'sub_old' ? 'failed' : 'canceled' }),
+      ),
+  });
+  await rejectsWith(run('admin-1', purge, { superadmin: true }), 'failed-precondition', FACILITY_BILLING_NOT_STOPPED_MESSAGE);
+  await assertNothingDeleted();
 });
 
 test('more than a few tenants with autopay: five are named, the rest counted', () => {
   assert.equal(
     facilityHasAutopayTenantsMessage(['A', 'B', 'C', 'D', 'E', 'F', 'G']),
-    'Nothing was deleted: autopay is still set up for 7 tenants (A, B, C, D, E and 2 more), ' +
-      "and deleting the facility wouldn't stop it. Open each tenant and press " +
-      'Disable autopay, then delete the facility.',
+    'Nothing was deleted: autopay is still set up for 7 tenants (A, B, C, D, E and 2 more). ' +
+      'Open each tenant and press Disable autopay. Then delete the facility.',
   );
-  assert.match(facilityHasAutopayTenantsMessage(['Ada Park']), /set up for 1 tenant \(Ada Park\),/);
+  assert.match(facilityHasAutopayTenantsMessage(['Ada Park']), /set up for 1 tenant \(Ada Park\)\./);
+  assert.equal(
+    facilityHasAutopayTenantsMessage([], ['Old', 'Older']),
+    'Nothing was deleted: autopay is still set up for 2 older tenant records (Old, Older). ' +
+      'Older tenant records have no page in the app, so contact support to switch them off. ' +
+      'Then delete the facility.',
+  );
 });
 
 test('a super admin (the claim) deletes a facility with active tenants', { skip: skipWithoutEmulator }, async () => {

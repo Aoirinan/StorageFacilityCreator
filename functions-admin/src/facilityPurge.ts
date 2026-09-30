@@ -10,6 +10,56 @@ import {
   cancelSubscriptions,
   collectSubscriptionsToCancel,
 } from '@sfc/functions-shared/stripe/subscriptionCleanup';
+import { legacySubscriptionId } from '@sfc/functions-shared/stripe/legacyTenantAutopay';
+
+/** Tenant collections a facility may have; oldTenants is the legacy one. */
+export const TENANT_COLLECTIONS = ['tenants', 'oldTenants'] as const;
+export type TenantCollection = (typeof TENANT_COLLECTIONS)[number];
+
+/** billing/default docs read per getAll. */
+const BILLING_READ_BATCH = 300;
+
+/** One tenant's billing/default doc, as [tenantBillingDocs] reads it. */
+export type TenantBilling = {
+  collection: TenantCollection;
+  tenantId: string;
+  tenant: Record<string, unknown>;
+  billing: Record<string, unknown>;
+};
+
+/**
+ * Every tenant's billing/default doc that exists, in both tenant
+ * collections, active or not. Tenant docs are read with their name only.
+ */
+export async function tenantBillingDocs(
+  db: admin.firestore.Firestore,
+  facilityRef: admin.firestore.DocumentReference,
+): Promise<TenantBilling[]> {
+  const out: TenantBilling[] = [];
+  for (const collection of TENANT_COLLECTIONS) {
+    const tenants = (await facilityRef.collection(collection).select('name').get()).docs;
+    for (let i = 0; i < tenants.length; i += BILLING_READ_BATCH) {
+      const batch = tenants.slice(i, i + BILLING_READ_BATCH);
+      const billing = await db.getAll(...batch.map((t) => t.ref.collection('billing').doc('default')));
+      billing.forEach((snap, j) => {
+        if (!snap.exists) return;
+        out.push({ collection, tenantId: batch[j].id, tenant: batch[j].data(), billing: snap.data() || {} });
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * The tenants' legacy AutoPay subscriptions, deduped. They are on the
+ * platform Stripe account, so deleting the facility doesn't stop them: a
+ * super admin's delete (which skips the owner's autopay refusal) left them
+ * charging tenants with no record anywhere.
+ */
+export function tenantLegacySubscriptions(docs: TenantBilling[]): CancellableSubscription[] {
+  const ids = new Set(docs.map((d) => legacySubscriptionId(d.billing)).filter((id) => id.length > 0));
+  return [...ids].map((id) => ({ id, label: 'tenant-autopay' as const }));
+}
 
 /**
  * Permanently removing one facility: shared by superAdminDeleteFacility and
@@ -60,10 +110,12 @@ export async function purgeFacility(
   // Stop the billing before removing the thing being billed for. Done first
   // on purpose: if the delete succeeded and this failed, the customer would
   // keep paying for a facility that no longer exists, and nothing would be
-  // left to point at the charge.
-  const subscriptionOutcomes = await deps.cancelSubscriptions(
-    collectSubscriptionsToCancel(facilityData, null),
-  );
+  // left to point at the charge. Its tenants' legacy AutoPay subscriptions
+  // too (tenantLegacySubscriptions), for the same reason.
+  const subscriptionOutcomes = await deps.cancelSubscriptions([
+    ...collectSubscriptionsToCancel(facilityData, null),
+    ...tenantLegacySubscriptions(await tenantBillingDocs(db, facilityRef)),
+  ]);
   if (anyCancelFailed(subscriptionOutcomes)) {
     throw new FacilityBillingNotStoppedError(subscriptionOutcomes);
   }
