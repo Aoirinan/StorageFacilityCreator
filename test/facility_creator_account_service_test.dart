@@ -879,7 +879,9 @@ void main() {
         () async {
       pendingInvite('fac-maple');
       store.put('facilities/fac-maple', {'ownerUid': 'fac-maple-owner', 'roles': {}});
-      store.put('user_roles/half', {
+      // As in production: someone not on the team cannot read the facility.
+      store.refuseRead = (path) => path == 'facilities/fac-maple';
+      final half = {
         'userId': 'u1',
         'facilityId': 'fac-maple',
         'roleType': 'employee',
@@ -887,14 +889,18 @@ void main() {
         'assignedAt': Timestamp.fromDate(DateTime.now()),
         'isActive': true,
         'inviteId': 'inv_fac-maple',
-      });
+      };
+      store.put('user_roles/half', half);
       expect(
         await FacilityCreatorAccountService.ensureAccountOnce(user, createOnlyForNewSignups: true),
         isTrue,
       );
       expect(inviteStatus('fac-maple'), 'accepted');
       expect((store.data('facilities/fac-maple')!['roles'] as Map)['u1'], 'employee');
-      expect(store.idsIn('user_roles'), ['half']);
+      // The acceptance writes the invite's own row, the only one the rules let
+      // an invitee write; the row left part-way stays as it was.
+      expect(store.idsIn('user_roles'), unorderedEquals(['half', 'fac-maple_inv_fac-maple']));
+      expect(store.data('user_roles/half'), half);
       expect(store.idsIn('facilityCreatorAccounts'), isEmpty);
     });
 

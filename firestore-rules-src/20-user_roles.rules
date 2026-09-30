@@ -19,6 +19,11 @@
       // could create an active row naming anyone, with any role, and a row is
       // what the app reads for someone's role and the callables that move
       // money accept as access.
+      //
+      // An invitee writes only the row whose id is the invite's
+      // (inviteRoleDocId): one row per invite, however many the batch holds.
+      // Rows written before that (the owners' rows, with ids of any shape)
+      // are read and updated as before.
       allow create: if request.auth != null && (
         isSuperAdmin() ||
         (
@@ -32,6 +37,7 @@
           request.resource.data.inviteId is string &&
           request.resource.data.userId == request.auth.uid &&
           request.resource.data.facilityId is string &&
+          roleId == inviteRoleDocId(request.resource.data.facilityId, request.resource.data.inviteId) &&
           request.resource.data.roleType is string &&
           request.resource.data.assignedBy is string &&
           request.resource.data.isActive == true &&
@@ -68,10 +74,14 @@
           )
         ) ||
         (
+          // The invite's own row again (inviteRoleDocId): an invite the
+          // owner reopened after it was accepted. Never another row of
+          // theirs, which would be a second active row for the one invite.
           request.resource.data.inviteId is string &&
           resource.data.userId == request.auth.uid &&
           request.resource.data.userId == request.auth.uid &&
           request.resource.data.facilityId == resource.data.facilityId &&
+          roleId == inviteRoleDocId(resource.data.facilityId, request.resource.data.inviteId) &&
           request.resource.data.assignedBy == resource.data.assignedBy &&
           request.resource.data.roleType is string &&
           request.resource.data.assignedBy is string &&

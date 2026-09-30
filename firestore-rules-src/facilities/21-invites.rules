@@ -11,8 +11,12 @@
           );
         // list: management UI only (collection queries); not public listing
         allow list: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        // Only the facility's owner or a co-owner invites
+        // (isFacilityOwnerOrCoOwner), as in the app, where only they may
+        // manage the team (manageUsers). A manager could invite anyone, a
+        // second login of their own included, as a manager.
         allow create: if isSuperAdmin() ||
-          (isFacilityOwnerOrManager(facilityId) &&
+          (isFacilityOwnerOrCoOwner(facilityId) &&
           request.resource.data.facilityId == facilityId &&
           request.resource.data.keys().hasAll([
             'email',
@@ -28,22 +32,27 @@
           request.resource.data.invitedBy == request.auth.uid &&
           inviteSenderEmailAllowed() &&
           request.resource.data.invitedAt is timestamp);
-        // The facility's owner and managers edit its invites (resend, change
-        // the role, cancel) as this facility's: authorised by the path, and
-        // facilityId must name it after the write. Authorised by the doc's own
-        // facilityId, an invitee who pointed it at a facility of their own
-        // (anyone can create one) could reopen it as a manager invite and let
-        // themselves back in after every removal, or leave it pending where
-        // the real owner could neither cancel nor delete it, which made them
-        // unremovable. Whom it is addressed to and who sent it stay as
-        // written: the invitee is shown the sender, and a manager could
-        // readdress an owner's invite to a login of their own.
+        // The facility's owner or a co-owner edits its invites (resend,
+        // change the role, cancel) as this facility's: authorised by the
+        // path, and facilityId must name it after the write. Authorised by the
+        // doc's own facilityId, an invitee who pointed it at a facility of
+        // their own (anyone can create one) could reopen it as a manager
+        // invite and let themselves back in after every removal, or leave it
+        // pending where the real owner could neither cancel nor delete it,
+        // which made them unremovable. Whom it is addressed to and who sent it
+        // stay as written: the invitee is shown the sender. Nor do they
+        // record an acceptance: only the invitee's own acceptance (below)
+        // says who accepted it, and removeRole and the invite check read that.
         //
         // Only the facility's owner sets a spent or cancelled invite back to
         // pending. A manager could reopen an accepted owner invite (getting
         // round the owner-only grant below), and a co-owner demoted to
         // manager could reopen their own and accept it again, as owner. The
         // app never reopens one: a resend is refused unless it is pending.
+        //
+        // A manager may only cancel a pending invite, as removeRole does for
+        // the team member it removes; not resend it, change its role or
+        // anything else.
         //
         // The invitee may only accept a pending invite (a removed team member
         // could flip their cancelled one to accepted, overwriting the record
@@ -54,16 +63,28 @@
         // Google sign-in's token says its address is verified.
         allow update: if isSuperAdmin() ||
           (
-            isFacilityOwnerOrManager(facilityId) &&
+            isFacilityOwnerOrCoOwner(facilityId) &&
             request.resource.data.get('facilityId', facilityId) == facilityId &&
             !request.resource.data.diff(resource.data).affectedKeys()
-              .hasAny(['email', 'emailLower', 'invitedBy', 'invitedByEmail']) &&
+              .hasAny(['email', 'emailLower', 'invitedBy', 'invitedByEmail', 'acceptedAt', 'acceptedBy']) &&
+            (
+              request.resource.data.get('status', null) != 'accepted' ||
+              resource.data.get('status', null) == 'accepted'
+            ) &&
             inviteRoleGrantAllowed(facilityId, resource.data.get('roleType', null)) &&
             (
               resource.data.get('status', null) == 'pending' ||
               request.resource.data.get('status', null) != 'pending' ||
               isFacilityOwnerUid(facilityId)
             )
+          ) ||
+          (
+            isFacilityOwnerOrManager(facilityId) &&
+            resource.data.get('status', null) == 'pending' &&
+            request.resource.data.get('status', null) == 'cancelled' &&
+            request.resource.data.get('facilityId', facilityId) == facilityId &&
+            request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['status', 'cancelledAt', 'cancelledReason', 'facilityId'])
           ) ||
           (
             resource.data.status == 'pending' &&
@@ -75,6 +96,11 @@
             request.resource.data.acceptedBy == request.auth.uid &&
             request.resource.data.acceptedAt is timestamp
           );
-        allow delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        // Cancel Invite deletes one. A manager, only a pending one: an
+        // accepted invite is what ties a team member's address to them, for
+        // their removal and for the check that they are not invited twice.
+        allow delete: if isSuperAdmin() ||
+          isFacilityOwnerOrCoOwner(facilityId) ||
+          (isFacilityOwnerOrManager(facilityId) && resource.data.get('status', null) == 'pending');
       }
 

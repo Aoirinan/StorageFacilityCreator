@@ -33,6 +33,15 @@
         facilityDoc(facilityId).ownerUid == request.auth.uid;
     }
 
+    // The facility's owner, or a co-owner: someone its roles map names
+    // 'owner', which only the owner can grant (inviteRoleGrantAllowed). The
+    // app gives both every permission, managing the team (manageUsers) among
+    // them; a manager, an admin or an employee has no such permission.
+    function isFacilityOwnerOrCoOwner(facilityId) {
+      return isFacilityOwnerUid(facilityId) ||
+        (isAuthenticated() && facilityRole(facilityId) == 'owner');
+    }
+
     function isFacilityStaff(facilityId) {
       return isFacilityOwnerOrManager(facilityId) ||
         facilityRole(facilityId) == 'manager' ||
@@ -385,6 +394,18 @@
     function inviteSpentByThisWrite(facilityId, inviteId) {
       return getAfter(inviteDocPath(facilityId, inviteId)).data.status == 'accepted' &&
         getAfter(inviteDocPath(facilityId, inviteId)).data.acceptedBy == request.auth.uid;
+    }
+
+    // The one user_roles document an invite's acceptance may write
+    // (PermissionService.inviteRoleDocId). Every write in a batch sees the
+    // invite pending (get) and spent (getAfter), so with any id one
+    // acceptance could write several active rows for a single invite: the
+    // callables that charge cards take any one active row as access. With the
+    // id fixed, a batch writes one row per invite, and a retry of the same
+    // acceptance writes the same row. The facility id is part of it because
+    // anyone can create a facility and give its invites any id.
+    function inviteRoleDocId(facilityId, inviteId) {
+      return facilityId + '_' + inviteId;
     }
 
     // The accept write is set({roles: {<own uid>: <invite role>}, acceptingInviteId}, merge).

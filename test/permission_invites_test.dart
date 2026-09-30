@@ -83,6 +83,9 @@ void main() {
       expect(statusOf('f1', 'inv_x'), 'pending');
       expect(roleRowsOf('newbie').map((r) => (r['facilityId'], r['isActive'], r['inviteId'])),
           unorderedEquals([('f1', true, 'inv_1'), ('f2', true, 'inv_2')]));
+      // Each at its invite's own id, the only row the rules let an invitee write.
+      expect(store.idsIn('user_roles'), unorderedEquals(['f1_inv_1', 'f2_inv_2']));
+      expect(PermissionService.inviteRoleDocId('f1', 'inv_1'), 'f1_inv_1');
     });
 
     test('anyone who has had a role anywhere, or owns a facility, accepts through the link instead',
@@ -175,6 +178,8 @@ void main() {
         'ownerUid': 'owner',
         'roles': {'owner': 'owner'},
       });
+      // As in production: someone not on the team cannot read the facility.
+      store.refuseRead = (path) => path == 'facilities/f1';
       invite('f1', 'inv_1', 'new@example.com');
       store.refuseWrite = (path) => path == 'facilities/f1';
 
@@ -194,20 +199,57 @@ void main() {
       expect(store.commits, hasLength(1));
       expect(
         store.commits.single.map((w) => w.split(' ').last).toSet(),
-        {...store.idsIn('user_roles').map((id) => 'user_roles/$id'), 'facilities/f1',
-          'facilities/f1/invites/inv_1'},
+        {'user_roles/f1_inv_1', 'facilities/f1', 'facilities/f1/invites/inv_1'},
       );
     });
 
-    test('an acceptance that stopped part-way before this is finished on the next load', () async {
-      // What the old two-write acceptance left behind in production: the
-      // role row, and nothing else. It is not a role, so they are still new.
+    test('a retry of the same acceptance writes the same row, never a second', () async {
+      // It looked up the invitee's existing row first, but they cannot read
+      // the facility, so it found none and each attempt added another row.
       store.put('facilities/f1', {
         'ownerUid': 'owner',
         'roles': {'owner': 'owner'},
       });
+      store.refuseRead = (path) => path == 'facilities/f1';
       invite('f1', 'inv_1', 'new@example.com');
-      store.put('user_roles/half', {
+      Future<bool> accept() => PermissionService.fulfillSpecificInvite(
+          facilityId: 'f1', inviteId: 'inv_1', userId: 'newbie', email: 'new@example.com');
+
+      store.refuseWrite = (path) => path == 'facilities/f1/invites/inv_1';
+      expect(await accept(), isFalse);
+      expect(store.idsIn('user_roles'), isEmpty);
+      store.refuseWrite = null;
+      expect(await accept(), isTrue);
+      expect(store.idsIn('user_roles'), ['f1_inv_1']);
+      // Removed since, and the owner reopened the invite: accepted again, it
+      // is the same row.
+      store.put('user_roles/f1_inv_1', {...store.data('user_roles/f1_inv_1')!, 'isActive': false});
+      store.put('facilities/f1', {
+        'ownerUid': 'owner',
+        'roles': {'owner': 'owner'},
+      });
+      store.put('facilities/f1/invites/inv_1', {
+        ...store.data('facilities/f1/invites/inv_1')!,
+        'status': 'pending',
+      });
+      expect(await accept(), isTrue);
+      expect(store.idsIn('user_roles'), ['f1_inv_1']);
+      expect(store.data('user_roles/f1_inv_1')!['isActive'], isTrue);
+    });
+
+    test('an acceptance that stopped part-way before this is finished on the next load', () async {
+      // What the old two-write acceptance left behind: the role row, and
+      // nothing else. It is not a role, so they are still new. The invitee
+      // cannot read the facility, and the rules let them write only the
+      // invite's own row, so the old row stays as it was beside it (there
+      // are none in production; the audit script lists any).
+      store.put('facilities/f1', {
+        'ownerUid': 'owner',
+        'roles': {'owner': 'owner'},
+      });
+      store.refuseRead = (path) => path == 'facilities/f1';
+      invite('f1', 'inv_1', 'new@example.com');
+      final half = {
         'userId': 'newbie',
         'facilityId': 'f1',
         'roleType': 'employee',
@@ -215,13 +257,16 @@ void main() {
         'assignedAt': _daysAgo(1),
         'isActive': true,
         'inviteId': 'inv_1',
-      });
+      };
+      store.put('user_roles/half', half);
 
       expect(await fulfil('newbie', 'new@example.com'), isTrue);
       expect(statusOf('f1', 'inv_1'), 'accepted');
       expect((store.data('facilities/f1')!['roles'] as Map)['newbie'], 'employee');
-      expect(store.idsIn('user_roles'), ['half'], reason: 'the half-written row is reused');
-      expect(store.data('user_roles/half')!['isActive'], isTrue);
+      expect(store.idsIn('user_roles'), unorderedEquals(['half', 'f1_inv_1']));
+      expect(store.data('user_roles/half'), half);
+      expect(store.data('user_roles/f1_inv_1')!['isActive'], isTrue);
+      expect(store.writes, isNot(contains('set user_roles/half')));
     });
 
     test('but one promoted since keeps their role: the old invite is only marked accepted',
@@ -431,9 +476,10 @@ void main() {
 
     test('reaches every active row they have there, not just the first', () async {
       // The callables that charge cards take any active row as access (one
-      // read, in no set order). An invitee's acceptance may write two manager
-      // rows; demoted to viewer, only the first changed, and the other kept
-      // them a manager there.
+      // read, in no set order). Someone may have two manager rows (one per
+      // invite they accepted, or two from one acceptance before each wrote
+      // only its invite's row); demoted to viewer, only the first changed,
+      // and the other kept them a manager there.
       store.put('facilities/f1', {
         'ownerUid': 'owner',
         'roles': {'owner': 'owner', 'u1': 'manager'},

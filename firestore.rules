@@ -36,6 +36,15 @@ service cloud.firestore {
         facilityDoc(facilityId).ownerUid == request.auth.uid;
     }
 
+    // The facility's owner, or a co-owner: someone its roles map names
+    // 'owner', which only the owner can grant (inviteRoleGrantAllowed). The
+    // app gives both every permission, managing the team (manageUsers) among
+    // them; a manager, an admin or an employee has no such permission.
+    function isFacilityOwnerOrCoOwner(facilityId) {
+      return isFacilityOwnerUid(facilityId) ||
+        (isAuthenticated() && facilityRole(facilityId) == 'owner');
+    }
+
     function isFacilityStaff(facilityId) {
       return isFacilityOwnerOrManager(facilityId) ||
         facilityRole(facilityId) == 'manager' ||
@@ -388,6 +397,18 @@ service cloud.firestore {
     function inviteSpentByThisWrite(facilityId, inviteId) {
       return getAfter(inviteDocPath(facilityId, inviteId)).data.status == 'accepted' &&
         getAfter(inviteDocPath(facilityId, inviteId)).data.acceptedBy == request.auth.uid;
+    }
+
+    // The one user_roles document an invite's acceptance may write
+    // (PermissionService.inviteRoleDocId). Every write in a batch sees the
+    // invite pending (get) and spent (getAfter), so with any id one
+    // acceptance could write several active rows for a single invite: the
+    // callables that charge cards take any one active row as access. With the
+    // id fixed, a batch writes one row per invite, and a retry of the same
+    // acceptance writes the same row. The facility id is part of it because
+    // anyone can create a facility and give its invites any id.
+    function inviteRoleDocId(facilityId, inviteId) {
+      return facilityId + '_' + inviteId;
     }
 
     // The accept write is set({roles: {<own uid>: <invite role>}, acceptingInviteId}, merge).
@@ -1146,8 +1167,12 @@ service cloud.firestore {
           );
         // list: management UI only (collection queries); not public listing
         allow list: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        // Only the facility's owner or a co-owner invites
+        // (isFacilityOwnerOrCoOwner), as in the app, where only they may
+        // manage the team (manageUsers). A manager could invite anyone, a
+        // second login of their own included, as a manager.
         allow create: if isSuperAdmin() ||
-          (isFacilityOwnerOrManager(facilityId) &&
+          (isFacilityOwnerOrCoOwner(facilityId) &&
           request.resource.data.facilityId == facilityId &&
           request.resource.data.keys().hasAll([
             'email',
@@ -1163,22 +1188,27 @@ service cloud.firestore {
           request.resource.data.invitedBy == request.auth.uid &&
           inviteSenderEmailAllowed() &&
           request.resource.data.invitedAt is timestamp);
-        // The facility's owner and managers edit its invites (resend, change
-        // the role, cancel) as this facility's: authorised by the path, and
-        // facilityId must name it after the write. Authorised by the doc's own
-        // facilityId, an invitee who pointed it at a facility of their own
-        // (anyone can create one) could reopen it as a manager invite and let
-        // themselves back in after every removal, or leave it pending where
-        // the real owner could neither cancel nor delete it, which made them
-        // unremovable. Whom it is addressed to and who sent it stay as
-        // written: the invitee is shown the sender, and a manager could
-        // readdress an owner's invite to a login of their own.
+        // The facility's owner or a co-owner edits its invites (resend,
+        // change the role, cancel) as this facility's: authorised by the
+        // path, and facilityId must name it after the write. Authorised by the
+        // doc's own facilityId, an invitee who pointed it at a facility of
+        // their own (anyone can create one) could reopen it as a manager
+        // invite and let themselves back in after every removal, or leave it
+        // pending where the real owner could neither cancel nor delete it,
+        // which made them unremovable. Whom it is addressed to and who sent it
+        // stay as written: the invitee is shown the sender. Nor do they
+        // record an acceptance: only the invitee's own acceptance (below)
+        // says who accepted it, and removeRole and the invite check read that.
         //
         // Only the facility's owner sets a spent or cancelled invite back to
         // pending. A manager could reopen an accepted owner invite (getting
         // round the owner-only grant below), and a co-owner demoted to
         // manager could reopen their own and accept it again, as owner. The
         // app never reopens one: a resend is refused unless it is pending.
+        //
+        // A manager may only cancel a pending invite, as removeRole does for
+        // the team member it removes; not resend it, change its role or
+        // anything else.
         //
         // The invitee may only accept a pending invite (a removed team member
         // could flip their cancelled one to accepted, overwriting the record
@@ -1189,16 +1219,28 @@ service cloud.firestore {
         // Google sign-in's token says its address is verified.
         allow update: if isSuperAdmin() ||
           (
-            isFacilityOwnerOrManager(facilityId) &&
+            isFacilityOwnerOrCoOwner(facilityId) &&
             request.resource.data.get('facilityId', facilityId) == facilityId &&
             !request.resource.data.diff(resource.data).affectedKeys()
-              .hasAny(['email', 'emailLower', 'invitedBy', 'invitedByEmail']) &&
+              .hasAny(['email', 'emailLower', 'invitedBy', 'invitedByEmail', 'acceptedAt', 'acceptedBy']) &&
+            (
+              request.resource.data.get('status', null) != 'accepted' ||
+              resource.data.get('status', null) == 'accepted'
+            ) &&
             inviteRoleGrantAllowed(facilityId, resource.data.get('roleType', null)) &&
             (
               resource.data.get('status', null) == 'pending' ||
               request.resource.data.get('status', null) != 'pending' ||
               isFacilityOwnerUid(facilityId)
             )
+          ) ||
+          (
+            isFacilityOwnerOrManager(facilityId) &&
+            resource.data.get('status', null) == 'pending' &&
+            request.resource.data.get('status', null) == 'cancelled' &&
+            request.resource.data.get('facilityId', facilityId) == facilityId &&
+            request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['status', 'cancelledAt', 'cancelledReason', 'facilityId'])
           ) ||
           (
             resource.data.status == 'pending' &&
@@ -1210,7 +1252,12 @@ service cloud.firestore {
             request.resource.data.acceptedBy == request.auth.uid &&
             request.resource.data.acceptedAt is timestamp
           );
-        allow delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        // Cancel Invite deletes one. A manager, only a pending one: an
+        // accepted invite is what ties a team member's address to them, for
+        // their removal and for the check that they are not invited twice.
+        allow delete: if isSuperAdmin() ||
+          isFacilityOwnerOrCoOwner(facilityId) ||
+          (isFacilityOwnerOrManager(facilityId) && resource.data.get('status', null) == 'pending');
       }
 
       match /digests/{digestId} {
@@ -2291,6 +2338,11 @@ service cloud.firestore {
       // could create an active row naming anyone, with any role, and a row is
       // what the app reads for someone's role and the callables that move
       // money accept as access.
+      //
+      // An invitee writes only the row whose id is the invite's
+      // (inviteRoleDocId): one row per invite, however many the batch holds.
+      // Rows written before that (the owners' rows, with ids of any shape)
+      // are read and updated as before.
       allow create: if request.auth != null && (
         isSuperAdmin() ||
         (
@@ -2304,6 +2356,7 @@ service cloud.firestore {
           request.resource.data.inviteId is string &&
           request.resource.data.userId == request.auth.uid &&
           request.resource.data.facilityId is string &&
+          roleId == inviteRoleDocId(request.resource.data.facilityId, request.resource.data.inviteId) &&
           request.resource.data.roleType is string &&
           request.resource.data.assignedBy is string &&
           request.resource.data.isActive == true &&
@@ -2340,10 +2393,14 @@ service cloud.firestore {
           )
         ) ||
         (
+          // The invite's own row again (inviteRoleDocId): an invite the
+          // owner reopened after it was accepted. Never another row of
+          // theirs, which would be a second active row for the one invite.
           request.resource.data.inviteId is string &&
           resource.data.userId == request.auth.uid &&
           request.resource.data.userId == request.auth.uid &&
           request.resource.data.facilityId == resource.data.facilityId &&
+          roleId == inviteRoleDocId(resource.data.facilityId, request.resource.data.inviteId) &&
           request.resource.data.assignedBy == resource.data.assignedBy &&
           request.resource.data.roleType is string &&
           request.resource.data.assignedBy is string &&

@@ -511,6 +511,12 @@ class PermissionService {
     }
   }
 
+  /// The id of the `user_roles` row an acceptance of invite [inviteId] at
+  /// [facilityId] writes. The rules let an invitee write only this row, so one
+  /// acceptance cannot give an invite several active rows, and a retry writes
+  /// the same one.
+  static String inviteRoleDocId(String facilityId, String inviteId) => '${facilityId}_$inviteId';
+
   // Assign role to user
   /// When [fulfilledInviteId] is set (invite acceptance), Firestore rules validate against
   /// `facilities/{facilityId}/invites/{id}` so the invitee can write without being owner yet,
@@ -569,9 +575,30 @@ class PermissionService {
 
       final batch = _newBatch();
 
-      // Check if user already has a role for this facility
-      final existingRole = await _getUserRole(userId, facilityId);
-      if (existingRole != null) {
+      // An acceptance writes the invite's own row (inviteRoleDocId), the only
+      // one the rules let an invitee write: one row per invite, and a retry
+      // of the same acceptance writes the same row. It looked up an existing
+      // row first, but an invitee cannot read the facility, so that found
+      // none and every attempt added another row.
+      final existingRole =
+          fulfilledInviteId != null ? null : await _getUserRole(userId, facilityId);
+      if (fulfilledInviteId != null) {
+        final now = Timestamp.fromDate(DateTime.now());
+        batch.set(_collection(_userRolesCollection).doc(inviteRoleDocId(facilityId, fulfilledInviteId)), {
+          'userId': userId,
+          'facilityId': facilityId,
+          'roleType': roleType.name,
+          'assignedAt': now,
+          'assignedBy': assignedBy,
+          'expiresAt': expiresAt != null ? Timestamp.fromDate(expiresAt) : null,
+          'isActive': true,
+          'createdAt': now,
+          'updatedAt': now,
+          if (userDisplayName != null) 'userDisplayName': userDisplayName,
+          if (userEmail != null) 'userEmail': userEmail,
+          'inviteId': fulfilledInviteId,
+        });
+      } else if (existingRole != null) {
         // Upsert: set with merge. existingRole.id can be synthetic (owner-$fid, etc.)
         // when derived from facility ownership; those docs don't exist yet. set+merge
         // creates the doc, avoiding [cloud_firestore/not-found] No document to update.
@@ -587,32 +614,30 @@ class PermissionService {
           'isActive': true,
           if (userDisplayName != null) 'userDisplayName': userDisplayName,
           if (userEmail != null) 'userEmail': userEmail,
-          if (fulfilledInviteId != null) 'inviteId': fulfilledInviteId,
         };
         batch.set(
           _collection(_userRolesCollection).doc(existingRole.id),
           payload,
           SetOptions(merge: true),
         );
-        if (fulfilledInviteId == null) {
-          // A role change reaches every active row here, not just the first
-          // one read. The callables that charge cards take any active row
-          // (limit 1, in no set order) as access, so a second manager row (an
-          // invitee's acceptance may write several) kept a demoted viewer a
-          // manager there.
-          final activeRows = await _collection(_userRolesCollection)
-              .where('userId', isEqualTo: userId)
-              .where('facilityId', isEqualTo: facilityId)
-              .where('isActive', isEqualTo: true)
-              .get();
-          for (final doc in activeRows.docs) {
-            if (doc.id == existingRole.id) continue;
-            batch.set(doc.reference, {
-              'roleType': roleType.name,
-              'assignedBy': assignedBy,
-              'updatedAt': Timestamp.fromDate(now),
-            }, SetOptions(merge: true));
-          }
+        // A role change reaches every active row here, not just the first
+        // one read. The callables that charge cards take any active row
+        // (limit 1, in no set order) as access, so a second manager row (one
+        // from each invite they accepted, or several from one acceptance
+        // before an acceptance wrote only the invite's own row) kept a
+        // demoted viewer a manager there.
+        final activeRows = await _collection(_userRolesCollection)
+            .where('userId', isEqualTo: userId)
+            .where('facilityId', isEqualTo: facilityId)
+            .where('isActive', isEqualTo: true)
+            .get();
+        for (final doc in activeRows.docs) {
+          if (doc.id == existingRole.id) continue;
+          batch.set(doc.reference, {
+            'roleType': roleType.name,
+            'assignedBy': assignedBy,
+            'updatedAt': Timestamp.fromDate(now),
+          }, SetOptions(merge: true));
         }
       } else {
         // Create new role assignment
@@ -628,7 +653,6 @@ class PermissionService {
           'updatedAt': Timestamp.fromDate(DateTime.now()),
           if (userDisplayName != null) 'userDisplayName': userDisplayName,
           if (userEmail != null) 'userEmail': userEmail,
-          if (fulfilledInviteId != null) 'inviteId': fulfilledInviteId,
         });
       }
 
@@ -1705,6 +1729,12 @@ Please do not reply directly to this email. For support, contact support@storage
       );
     }
   }
+
+  /// The role [userId] holds at [facilityId] as the app reads it (the
+  /// facility's owner, a legacy manager, or their active role row), or null
+  /// when they hold none or it cannot be read.
+  static Future<RoleType?> roleTypeAt({required String userId, required String facilityId}) async =>
+      (await _getUserRole(userId, facilityId))?.roleType;
 
   // Check if user is owner of facility
   static Future<bool> isFacilityOwner(String userId, String facilityId) async {
