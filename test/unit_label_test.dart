@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/ledger_entry_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/providers/ledger_provider.dart';
 import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/providers/unit_label_provider.dart';
@@ -362,7 +363,19 @@ void main() {
           tenantListUnitLine(_tenant(unitArea: null),
               includeArea: true,
               areas: const ['complex 2'],
-              labelUnitArea: 'complex 2'),
+              labelUnit: UnitModel(
+                id: 'u12',
+                facilityId: 'f1',
+                unitNumber: '12',
+                unitType: 'standard',
+                status: UnitStatus.occupied,
+                tenantId: 't1',
+                monthlyRate: 85,
+                createdAt: DateTime(2026, 1, 1),
+                updatedAt: DateTime(2026, 1, 1),
+                createdBy: 'owner',
+                area: 'complex 2',
+              )),
           'Unit: 12 (complex 2)');
       expect(
           tenantListUnitLine(_tenant(unitArea: null), includeArea: true),

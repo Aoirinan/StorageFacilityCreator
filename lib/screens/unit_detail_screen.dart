@@ -21,8 +21,10 @@ import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/utils/unit_areas.dart';
 import 'package:sfcapp/utils/unit_label.dart';
 import 'package:sfcapp/widgets/move_out_action.dart';
+import 'package:sfcapp/widgets/security_deposit_dialogs.dart' show unassignDepositNote;
 
 /// Whether the unit menu offers Remove Lockout. Not only on occupied units:
 /// Set Lockout moves the unit to lockout status, and the tenant-archive and
@@ -60,6 +62,17 @@ class UnitDetailActions {
 
   Future<double> balance(String facilityId, String tenantId) =>
       LedgerService.getLedgerBalance(tenantId: tenantId, facilityId: facilityId);
+
+  /// Whether [tenantId] holds a unit besides [unitId] (as
+  /// TenantService.unitsHeldByTenant), so Unassign Tenant knows if it ends
+  /// their tenancy.
+  Future<bool> holdsOtherUnits(
+      String facilityId, String tenantId, String unitId) async {
+    final units =
+        await TenantService.recordsFor(facilityId).linkedUnits(tenantId);
+    return TenantService.unitsHeldByTenant(
+        tenantId, [for (final u in units) if (u.id != unitId) u]).isNotEmpty;
+  }
 
   Future<void> setStatus(String facilityId, String unitId, UnitStatus status) =>
       UnitService.updateUnit(facilityId: facilityId, unitId: unitId, status: status);
@@ -674,7 +687,11 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
       builder: (context) => Consumer(
         builder: (context, ref, _) {
           final tenantsAsync = ref.watch(activeTenantsProvider(widget.facilityId));
-          
+          // Each tenant's current units, so two records with one name (a
+          // person imported once per unit) can be told apart in the list.
+          final units = TenantUnitAreaIndex(
+              ref.watch(facilityUnitsProvider(widget.facilityId)).value ?? const <UnitModel>[]);
+
           return AlertDialog(
             title: const Text('Assign Tenant to Unit'),
             content: SizedBox(
@@ -691,6 +708,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
                   return _TenantSelectionDialogContent(
                     facilityId: widget.facilityId,
                     tenants: tenants,
+                    units: units,
                     unitLabel: unitPickerLabel(_unit!),
                   );
                 },
@@ -882,11 +900,44 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
   }
 
   void _showUnassignTenantDialog() async {
+    // Unassign posts no charges and no refund, so the deposit the facility
+    // still holds is only mentioned here: settle it now only if this was
+    // their last unit. Null when the other units could not be read.
+    final tenant = _tenant;
+    final deposit = tenant?.securityDeposit;
+    String? depositNote;
+    if (tenant != null && deposit != null && deposit.isHeld) {
+      bool? holdsOthers;
+      try {
+        holdsOthers = await ref
+            .read(unitDetailActionsProvider)
+            .holdsOtherUnits(widget.facilityId, tenant.id, widget.unitId);
+      } catch (e) {
+        if (kDebugMode) print('Error reading the tenant\'s other units: $e');
+      }
+      if (!mounted) return;
+      depositNote =
+          unassignDepositNote(deposit, holdsOtherUnits: holdsOthers);
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Unassign Tenant'),
-        content: Text('Are you sure you want to unassign the tenant from unit ${_unit!.unitNumber}?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Are you sure you want to unassign the tenant from unit ${_unit!.unitNumber}?'),
+            if (depositNote != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                depositNote,
+                key: const Key('unassign-security-deposit'),
+                style: const TextStyle(color: AppTheme.textSecondary),
+              ),
+            ],
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -1195,6 +1246,10 @@ class _TenantSelectionDialogContent extends StatefulWidget {
   final String facilityId;
   final List<TenantModel> tenants;
 
+  /// The facility's units, for each tenant's current units under their name
+  /// ([tenantPickerUnitsText]).
+  final TenantUnitAreaIndex units;
+
   /// "Unit 12 (Complex 2)": with its area, so the operator can tell which
   /// of two units numbered alike they are assigning.
   final String unitLabel;
@@ -1202,6 +1257,7 @@ class _TenantSelectionDialogContent extends StatefulWidget {
   const _TenantSelectionDialogContent({
     required this.facilityId,
     required this.tenants,
+    required this.units,
     required this.unitLabel,
   });
 
@@ -1277,7 +1333,11 @@ class _TenantSelectionDialogContentState extends State<_TenantSelectionDialogCon
                     
                     return RadioListTile<String>(
                       title: Text(tenant.name),
-                      subtitle: Text('${tenant.email} • ${tenant.phone}'),
+                      subtitle: Text([
+                        tenantPickerUnitsText(tenant, widget.units),
+                        if (tenant.email.isNotEmpty) tenant.email,
+                        if (tenant.phone.isNotEmpty) tenant.phone,
+                      ].join(' • ')),
                       value: tenant.id,
                       groupValue: _selectedTenantId,
                       onChanged: (value) {

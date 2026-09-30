@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:cloud_firestore/cloud_firestore.dart' show FieldValue;
 import 'package:file_picker/file_picker.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +13,7 @@ import '../router/app_route.dart';
 import '../services/facility_service.dart';
 import 'package:sfcapp/services/late_logic_service.dart';
 import 'package:sfcapp/models/document_logo_layout.dart';
+import 'package:sfcapp/models/security_deposit_model.dart';
 import '../models/facility_model.dart';
 import '../models/unit_model.dart';
 import 'package:sfcapp/models/facility_public_settings_model.dart';
@@ -80,6 +82,10 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
   late final TextEditingController _emailController;
   late final TextEditingController _gracePeriodController;
   late final TextEditingController _lateFeeAmountController;
+
+  /// billingSettings.securityDeposit: the deposit usually taken at move-in,
+  /// prefilled when one is recorded on a tenant. Blank means none.
+  late final TextEditingController _securityDepositController;
   late final TextEditingController _totalUnitsController;
 
   String? _logoUrl;
@@ -181,6 +187,10 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
       _gracePeriodController = TextEditingController(text: '5');
       _lateFeeAmountController = TextEditingController(text: '25.00');
     }
+    final defaultDeposit = SecurityDeposit.facilityDefault(billingSettings);
+    _securityDepositController = TextEditingController(
+      text: defaultDeposit == null ? '' : defaultDeposit.toStringAsFixed(2),
+    );
 
     _totalUnitsController = TextEditingController(
       text: widget.facility.totalUnits > 0
@@ -203,6 +213,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     _emailController.dispose();
     _gracePeriodController.dispose();
     _lateFeeAmountController.dispose();
+    _securityDepositController.dispose();
     _totalUnitsController.dispose();
     _publicRentalSlugController.dispose();
     super.dispose();
@@ -632,7 +643,13 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     return slug.isEmpty ? widget.facility.id.toLowerCase() : slug;
   }
 
+  /// The Unit Type dropdown's name for a type the app knows, so this page
+  /// and Create Unit agree ('RV Site', not 'Rv Site'); a stored value the
+  /// app does not know is spaced out as it is.
   String _unitTypeLabel(String raw) {
+    for (final type in UnitType.values) {
+      if (type.name == raw) return type.displayName;
+    }
     return raw
         .replaceAllMapped(RegExp(r'([A-Z])'), (m) => ' ${m.group(1)}')
         .trim()
@@ -662,11 +679,18 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
             int.tryParse(_gracePeriodController.text.trim()) ?? 5;
         final lateFeeAmount =
             double.tryParse(_lateFeeAmountController.text.trim()) ?? 25.0;
+        // Blank clears the default rather than saving 0, so a facility
+        // that takes no deposit has no key to prefill from.
+        final securityDeposit =
+            double.tryParse(_securityDepositController.text.trim());
         billingSettings = {
           'gracePeriodDays': gracePeriod,
           'lateFeeType': _lateFeeType,
           'lateFeeAmount': lateFeeAmount,
           'enableAutoLateFees': _autoLateFees,
+          'securityDeposit': securityDeposit == null || securityDeposit <= 0
+              ? FieldValue.delete()
+              : securityDeposit,
         };
       } catch (e) {
         if (kDebugMode) {
@@ -1078,6 +1102,36 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                         : 'Off: no late fee is added to any tenant\'s ledger '
                             'automatically. When on, fees only apply to '
                             'tenants with a "paid through" date set.'),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Default security deposit: prefills the deposit on Create
+                  // Tenant and in the tenant page's Security deposit dialog.
+                  // The online quote would charge it only with
+                  // settings/public.chargeSecurityDepositAtMoveIn on, which
+                  // no screen sets (see SecurityDeposit.facilityDefault).
+                  TextFormField(
+                    key: const Key('facility-default-security-deposit'),
+                    controller: _securityDepositController,
+                    decoration: const InputDecoration(
+                      labelText: 'Default security deposit (\$)',
+                      hintText: '25.00',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.savings_outlined),
+                      helperText: 'Prefills the deposit when you record one '
+                          'on a tenant. It is not charged to online renters.',
+                    ),
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    validator: (value) {
+                      if (value != null && value.trim().isNotEmpty) {
+                        final amount = double.tryParse(value.trim());
+                        if (amount == null || amount < 0) {
+                          return 'Please enter a valid amount';
+                        }
+                      }
+                      return null;
+                    },
                   ),
                   const SizedBox(height: 24),
 

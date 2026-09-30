@@ -632,6 +632,28 @@ test('account owners cannot write subscription entitlements', async () => {
   await assertSucceeds(accountRef.update({ facilityIds: [FACILITY_ID] }));
 });
 
+test('account owners cannot clear or forge the once-per-owner offer markers', async () => {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilityCreatorAccounts').doc('account-markers').set({
+      ownerUid: OWNER_UID,
+      ownerEmail: 'owner@example.com',
+      ownerName: 'Owner',
+      subscriptionStatus: 'cancelled',
+      facilityIds: [],
+      platformTrialUsedAt: serverTimestamp(),
+      platformFirstMonthFreeUsedAt: serverTimestamp(),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  });
+
+  const owner = testEnv.authenticatedContext(OWNER_UID);
+  const accountRef = owner.firestore().collection('facilityCreatorAccounts').doc('account-markers');
+  await assertFails(accountRef.update({ platformTrialUsedAt: null }));
+  await assertFails(accountRef.update({ platformFirstMonthFreeUsedAt: deleteField() }));
+  await assertSucceeds(accountRef.update({ facilityIds: [FACILITY_ID] }));
+});
+
 test('new accounts must start pending approval without server-owned billing fields', async () => {
   const owner = testEnv.authenticatedContext(OWNER_UID);
   const accounts = owner.firestore().collection('facilityCreatorAccounts');
@@ -1099,6 +1121,223 @@ test('DNR evidence storage reads require current premium entitlement', async () 
   );
 });
 
+// The first free month is Stripe trial time: an owner who subscribed with a
+// card reads 'trialing' with a Stripe subscription id until the first charge,
+// and that counts as paid until its recorded trial end plus 3 days (webhook
+// lag). A 'trialing' record with an id and a trial end long past, or none, is
+// stale and does not count. The unpaid app trial ('trialing', no id) does not.
+const DNR_DAY_MS = 24 * 60 * 60 * 1000;
+const dnrDaysFromNow = (days) => new Date(Date.now() + days * DNR_DAY_MS);
+
+async function seedPaidTrialDnrFixtures() {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('facilityCreatorAccounts').doc('acct-card-trial').set({
+      ownerUid: 'dnr-card-trial',
+      subscriptionStatus: 'trialing',
+      stripeSubscriptionId: 'sub_test_account',
+      subscriptionTrialEnd: dnrDaysFromNow(20),
+    });
+    await db.collection('facilityCreatorAccounts').doc('acct-app-trial').set({
+      ownerUid: 'dnr-app-trial',
+      subscriptionStatus: 'trialing',
+      stripeSubscriptionId: null,
+      subscriptionTrialEnd: dnrDaysFromNow(20),
+    });
+    // Per-facility billing: the account only rolls the facility up as trialing.
+    await db.collection('facilityCreatorAccounts').doc('acct-rollup').set({
+      ownerUid: 'dnr-facility-trial',
+      subscriptionStatus: 'trialing',
+      subscriptionTrialEnd: dnrDaysFromNow(-2),
+    });
+    await db.collection('facilities').doc('fac-card-trial').set({
+      ownerUid: 'dnr-facility-trial',
+      facilityCreatorAccountId: 'acct-rollup',
+      platformSubscriptionStatus: 'trialing',
+      stripePlatformSubscriptionId: 'sub_test_facility',
+      platformSubscriptionTrialEnd: dnrDaysFromNow(20),
+    });
+    await db.collection('facilities').doc('fac-app-trial').set({
+      ownerUid: 'dnr-app-trial',
+      facilityCreatorAccountId: 'acct-app-trial',
+      platformSubscriptionStatus: 'trialing',
+      platformSubscriptionTrialEnd: dnrDaysFromNow(20),
+    });
+    // Card-backed trials past their trial end: inside the 3-day grace, long past it,
+    // and with no trial end recorded at all.
+    await db.collection('facilityCreatorAccounts').doc('acct-card-grace').set({
+      ownerUid: 'dnr-card-grace',
+      subscriptionStatus: 'trialing',
+      stripeSubscriptionId: 'sub_test_grace',
+      subscriptionTrialEnd: dnrDaysFromNow(-1),
+    });
+    await db.collection('facilityCreatorAccounts').doc('acct-card-stale').set({
+      ownerUid: 'dnr-card-stale',
+      subscriptionStatus: 'trialing',
+      stripeSubscriptionId: 'sub_test_stale',
+      subscriptionTrialEnd: dnrDaysFromNow(-10),
+    });
+    await db.collection('facilityCreatorAccounts').doc('acct-card-no-end').set({
+      ownerUid: 'dnr-card-no-end',
+      subscriptionStatus: 'trialing',
+      stripeSubscriptionId: 'sub_test_no_end',
+    });
+    await db.collection('facilityCreatorAccounts').doc('acct-rollup-stale').set({
+      ownerUid: 'dnr-facility-stale',
+      subscriptionStatus: 'trialing',
+      subscriptionTrialEnd: dnrDaysFromNow(-40),
+    });
+    await db.collection('facilities').doc('fac-card-stale').set({
+      ownerUid: 'dnr-facility-stale',
+      facilityCreatorAccountId: 'acct-rollup-stale',
+      platformSubscriptionStatus: 'trialing',
+      stripePlatformSubscriptionId: 'sub_test_facility_stale',
+      platformSubscriptionTrialEnd: dnrDaysFromNow(-10),
+    });
+    await db.collection('facilities').doc('fac-card-no-end').set({
+      ownerUid: 'dnr-facility-stale',
+      facilityCreatorAccountId: 'acct-rollup-stale',
+      platformSubscriptionStatus: 'trialing',
+      stripePlatformSubscriptionId: 'sub_test_facility_no_end',
+    });
+    await db.collection('global_dnr_entries').doc('entry-1').set({
+      createdByUserId: 'someone-else',
+      createdByFacilityId: 'fac-elsewhere',
+    });
+  });
+}
+
+test('DNR acceptance: the card-backed free month counts as paid, the unpaid app trial does not', async () => {
+  await seedPaidTrialDnrFixtures();
+  const accept = (uid, fields) =>
+    testEnv
+      .authenticatedContext(uid)
+      .firestore()
+      .collection('dnr_participants')
+      .doc(uid)
+      .set({ accepted: true, termsVersion: '1.0', ...fields });
+
+  // Account-level subscription in its free month.
+  await assertSucceeds(accept('dnr-card-trial', { accountId: 'acct-card-trial' }));
+  // Facility subscription in its free month: named on the acceptance.
+  await assertFails(accept('dnr-facility-trial', { accountId: 'acct-rollup' }));
+  await assertSucceeds(accept('dnr-facility-trial', { accountId: 'acct-rollup', facilityId: 'fac-card-trial' }));
+  // The unpaid app trial, on the account or the facility.
+  await assertFails(accept('dnr-app-trial', { accountId: 'acct-app-trial' }));
+  await assertFails(accept('dnr-app-trial', { accountId: 'acct-app-trial', facilityId: 'fac-app-trial' }));
+});
+
+test('DNR acceptance: a card-backed trial counts until its trial end plus 3 days, never with no trial end', async () => {
+  await seedPaidTrialDnrFixtures();
+  const accept = (uid, fields) =>
+    testEnv
+      .authenticatedContext(uid)
+      .firestore()
+      .collection('dnr_participants')
+      .doc(uid)
+      .set({ accepted: true, termsVersion: '1.0', ...fields });
+
+  // Account: a day past the trial end (webhook late) still counts; ten days past, or none, does not.
+  await assertSucceeds(accept('dnr-card-grace', { accountId: 'acct-card-grace' }));
+  await assertFails(accept('dnr-card-stale', { accountId: 'acct-card-stale' }));
+  await assertFails(accept('dnr-card-no-end', { accountId: 'acct-card-no-end' }));
+  // Facility: the same bound on platformSubscriptionTrialEnd.
+  await assertFails(accept('dnr-facility-stale', { accountId: 'acct-rollup-stale', facilityId: 'fac-card-stale' }));
+  await assertFails(accept('dnr-facility-stale', { accountId: 'acct-rollup-stale', facilityId: 'fac-card-no-end' }));
+});
+
+test('DNR reads: the card-backed free month keeps participants in, the unpaid app trial is shut out', async () => {
+  await seedPaidTrialDnrFixtures();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('dnr_participants').doc('dnr-card-trial').set({ accepted: true, accountId: 'acct-card-trial' });
+    await db
+      .collection('dnr_participants')
+      .doc('dnr-facility-trial')
+      .set({ accepted: true, accountId: 'acct-rollup', facilityId: 'fac-card-trial' });
+    // Accepted earlier, now on the unpaid app trial.
+    await db
+      .collection('dnr_participants')
+      .doc('dnr-app-trial')
+      .set({ accepted: true, accountId: 'acct-app-trial', facilityId: 'fac-app-trial' });
+  });
+  const read = (uid) =>
+    testEnv.authenticatedContext(uid).firestore().collection('global_dnr_entries').doc('entry-1').get();
+  await assertSucceeds(read('dnr-card-trial'));
+  await assertSucceeds(read('dnr-facility-trial'));
+  await assertFails(read('dnr-app-trial'));
+});
+
+test('DNR reads: a stale card-backed trial (trial end long past, or none) shuts the participant out', async () => {
+  await seedPaidTrialDnrFixtures();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    // All accepted while they were paid.
+    await db.collection('dnr_participants').doc('dnr-card-grace').set({ accepted: true, accountId: 'acct-card-grace' });
+    await db.collection('dnr_participants').doc('dnr-card-stale').set({ accepted: true, accountId: 'acct-card-stale' });
+    await db.collection('dnr_participants').doc('dnr-card-no-end').set({ accepted: true, accountId: 'acct-card-no-end' });
+    await db
+      .collection('dnr_participants')
+      .doc('dnr-facility-stale')
+      .set({ accepted: true, accountId: 'acct-rollup-stale', facilityId: 'fac-card-stale' });
+  });
+  const read = (uid) =>
+    testEnv.authenticatedContext(uid).firestore().collection('global_dnr_entries').doc('entry-1').get();
+  await assertSucceeds(read('dnr-card-grace'));
+  await assertFails(read('dnr-card-stale'));
+  await assertFails(read('dnr-card-no-end'));
+  await assertFails(read('dnr-facility-stale'));
+});
+
+test('DNR evidence storage: the card-backed free month counts as premium', async () => {
+  await seedPaidTrialDnrFixtures();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('dnr_participants').doc('dnr-card-trial').set({ accepted: true, accountId: 'acct-card-trial' });
+    await db
+      .collection('dnr_participants')
+      .doc('dnr-facility-trial')
+      .set({ accepted: true, accountId: 'acct-rollup', facilityId: 'fac-card-trial' });
+    await db
+      .collection('dnr_participants')
+      .doc('dnr-app-trial')
+      .set({ accepted: true, accountId: 'acct-app-trial', facilityId: 'fac-app-trial' });
+    await uploadBytes(
+      storageRef(context.storage(), 'dnrEvidence/entry-2/evidence.txt'),
+      new TextEncoder().encode('evidence'),
+    );
+  });
+  const read = (uid) =>
+    getBytes(storageRef(testEnv.authenticatedContext(uid).storage(), 'dnrEvidence/entry-2/evidence.txt'));
+  await assertSucceeds(read('dnr-card-trial'));
+  await assertSucceeds(read('dnr-facility-trial'));
+  await assertFails(read('dnr-app-trial'));
+});
+
+test('DNR evidence storage: a stale card-backed trial is not premium', async () => {
+  await seedPaidTrialDnrFixtures();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('dnr_participants').doc('dnr-card-grace').set({ accepted: true, accountId: 'acct-card-grace' });
+    await db.collection('dnr_participants').doc('dnr-card-stale').set({ accepted: true, accountId: 'acct-card-stale' });
+    await db.collection('dnr_participants').doc('dnr-card-no-end').set({ accepted: true, accountId: 'acct-card-no-end' });
+    await db
+      .collection('dnr_participants')
+      .doc('dnr-facility-stale')
+      .set({ accepted: true, accountId: 'acct-rollup-stale', facilityId: 'fac-card-no-end' });
+    await uploadBytes(
+      storageRef(context.storage(), 'dnrEvidence/entry-3/evidence.txt'),
+      new TextEncoder().encode('evidence'),
+    );
+  });
+  const read = (uid) =>
+    getBytes(storageRef(testEnv.authenticatedContext(uid).storage(), 'dnrEvidence/entry-3/evidence.txt'));
+  await assertSucceeds(read('dnr-card-grace'));
+  await assertFails(read('dnr-card-stale'));
+  await assertFails(read('dnr-card-no-end'));
+  await assertFails(read('dnr-facility-stale'));
+});
+
 test('an operator cannot seize another operator’s public storefront slug', async () => {
   // Slugs are the public storefront URL, so they are discoverable by design.
   // The update rule used to accept the INCOMING payload's facilityId, which let
@@ -1417,6 +1656,137 @@ test('an invitee can list the pending invites addressed to their own verified em
   const ownerList = await assertSucceeds(facilityInvites(testEnv.authenticatedContext(OWNER_UID).firestore()));
   assert.equal(ownerList.size, 2);
   await assertFails(facilityInvites(testEnv.authenticatedContext(STAFF_UID).firestore()));
+});
+
+const INVITEE_UID = 'invitee-user';
+
+async function seedPendingInvite(facilityDoc) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('facilities').doc(FACILITY_ID).set(facilityDoc);
+    await db.collection('facilities').doc(FACILITY_ID).collection('invites').doc('inv-1').set({
+      facilityId: FACILITY_ID,
+      email: 'invitee@example.com',
+      emailLower: 'invitee@example.com',
+      roleType: 'employee',
+      status: 'pending',
+      invitedAt: new Date(),
+      invitedBy: OWNER_UID,
+    });
+  });
+}
+
+function inviteeFacilityRef() {
+  return testEnv
+    .authenticatedContext(INVITEE_UID, { email: 'Invitee@Example.com', email_verified: true })
+    .firestore()
+    .collection('facilities')
+    .doc(FACILITY_ID);
+}
+
+// PermissionService.assignRole's facility write when accepting an invite.
+function acceptWrite(extra = {}, extraRoles = {}) {
+  return inviteeFacilityRef().set(
+    { roles: { [INVITEE_UID]: 'employee', ...extraRoles }, acceptingInviteId: 'inv-1', ...extra },
+    { merge: true },
+  );
+}
+
+test('invite accept: the invitee adds their own role and the invite id, and nothing else', async () => {
+  // The rule checked changed keys, which leave out keys that are added or
+  // removed. Added fields the facility doc did not have yet, and other
+  // users' roles, went through.
+  await seedPendingInvite({
+    ownerUid: OWNER_UID,
+    name: 'Test Storage',
+    roles: { [OWNER_UID]: 'owner', [STAFF_UID]: 'employee' },
+  });
+
+  // Fields the facility doc does not have yet.
+  await assertFails(
+    acceptWrite({ platformSubscriptionStatus: 'trialing', stripePlatformSubscriptionId: 'sub_x' }),
+  );
+  await assertFails(acceptWrite({ platformSubscriptionStatus: 'trialing' }));
+  await assertFails(acceptWrite({ stripePlatformSubscriptionId: 'sub_x' }));
+  await assertFails(acceptWrite({ billingExempt: true }));
+  await assertFails(acceptWrite({ facilityCreatorAccountId: 'account-1' }));
+  await assertFails(acceptWrite({ someNewField: 'x' }));
+  // Removing a field, or changing one that is there (already refused).
+  await assertFails(acceptWrite({ name: deleteField() }));
+  await assertFails(acceptWrite({ name: 'Renamed' }));
+  // Another user's role: added, changed or removed.
+  await assertFails(acceptWrite({}, { 'other-user': 'manager' }));
+  await assertFails(acceptWrite({}, { [STAFF_UID]: 'manager' }));
+  await assertFails(acceptWrite({}, { [STAFF_UID]: deleteField() }));
+  // A role the invite does not grant (already refused).
+  await assertFails(
+    inviteeFacilityRef().set(
+      { roles: { [INVITEE_UID]: 'manager' }, acceptingInviteId: 'inv-1' },
+      { merge: true },
+    ),
+  );
+
+  await assertSucceeds(acceptWrite());
+  let after;
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    after = (await context.firestore().collection('facilities').doc(FACILITY_ID).get()).data();
+  });
+  assert.deepEqual(after, {
+    ownerUid: OWNER_UID,
+    name: 'Test Storage',
+    roles: { [OWNER_UID]: 'owner', [STAFF_UID]: 'employee', [INVITEE_UID]: 'employee' },
+    acceptingInviteId: 'inv-1',
+  });
+});
+
+test('invite accept: with no roles map yet, the new one holds only the invitee', async () => {
+  await seedPendingInvite({ ownerUid: OWNER_UID, name: 'Test Storage' });
+
+  await assertFails(acceptWrite({}, { 'other-user': 'manager' }));
+  await assertFails(acceptWrite({}, { [OWNER_UID]: 'owner' }));
+  await assertFails(acceptWrite({ billingExempt: true }));
+  await assertSucceeds(acceptWrite());
+});
+
+test('invite accept: a later invitee overwrites acceptingInviteId and adds only their role', async () => {
+  // acceptingInviteId is left on the facility by the previous accept, so a
+  // second accept changes it rather than adding it.
+  await seedPendingInvite({
+    ownerUid: OWNER_UID,
+    roles: { [OWNER_UID]: 'owner', [STAFF_UID]: 'employee' },
+    acceptingInviteId: 'inv-earlier',
+  });
+
+  await assertFails(acceptWrite({ billingExempt: true }));
+  await assertSucceeds(acceptWrite());
+});
+
+test('staff revoke a pending payment link and change nothing else', async () => {
+  await seedFacility();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('publicPaymentLinks').doc('token-1').set({
+      facilityId: FACILITY_ID,
+      tenantId: TENANT_ID,
+      token: 'token-1',
+      amount: 50,
+      status: 'pending',
+      expiresAt: new Date(Date.now() + 86400000),
+    });
+  });
+  const linkAs = (uid) =>
+    testEnv.authenticatedContext(uid).firestore().collection('publicPaymentLinks').doc('token-1');
+  const revoke = { status: 'revoked', revokedAt: serverTimestamp() };
+
+  // Fields the link does not have yet, or removing one.
+  await assertFails(linkAs(STAFF_UID).update({ ...revoke, paidAt: serverTimestamp() }));
+  await assertFails(linkAs(STAFF_UID).update({ ...revoke, stripePaymentIntentId: 'pi_x' }));
+  await assertFails(linkAs(STAFF_UID).update({ ...revoke, expiresAt: deleteField() }));
+  // Not a revoke, or not staff (already refused).
+  await assertFails(linkAs(STAFF_UID).update({ status: 'paid' }));
+  await assertFails(linkAs(OUTSIDER_UID).update(revoke));
+
+  // PublicPaymentLinkService.revokePaymentLink's write.
+  await assertSucceeds(linkAs(STAFF_UID).update(revoke));
 });
 
 test('facility notifications: staff may mark one read and change nothing else', async () => {

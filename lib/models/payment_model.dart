@@ -77,6 +77,13 @@ PaymentMethod paymentMethodFromStored(Object? stored) {
   return PaymentMethod.other;
 }
 
+/// "Check #1234", "Venmo": how money arrived, with the operator's reference
+/// when they typed one.
+String paymentMethodWithReference(PaymentMethod method, {String? reference}) {
+  final ref = reference?.trim() ?? '';
+  return '${method.displayName}${ref.isNotEmpty ? ' #$ref' : ''}';
+}
+
 /// "Payment - Check #1234", "Payment - Venmo: June rent": the ledger line for
 /// money received. recordTenantPastHistory builds the same line.
 String receivedPaymentDescription(
@@ -84,10 +91,8 @@ String receivedPaymentDescription(
   String? reference,
   String? notes,
 }) {
-  final ref = reference?.trim() ?? '';
   final note = notes?.trim() ?? '';
-  return 'Payment - ${method.displayName}'
-      '${ref.isNotEmpty ? ' #$ref' : ''}'
+  return 'Payment - ${paymentMethodWithReference(method, reference: reference)}'
       '${note.isNotEmpty ? ': $note' : ''}';
 }
 

@@ -69,6 +69,11 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
   /// edit, so turning Internal use back off puts it back. Null when Internal
   /// use was not turned on here (it was already on, or is off).
   bool? _listingBeforeInternalUse;
+
+  /// The listing switch as it was when RV Site was chosen on Create Unit, so
+  /// choosing another type puts it back. Null when RV Site is not the type
+  /// chosen here.
+  bool? _listingBeforeRvSite;
   bool _isLoading = false;
   String? _errorMessage;
   bool _isBulkCreateMode = false;
@@ -525,11 +530,41 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                   value: 'outdoor',
                                   child: Text('Outdoor Storage'),
                                 ),
+                                const DropdownMenuItem(
+                                  value: 'rvSite',
+                                  child: Text('RV Site'),
+                                ),
                               ],
                               onChanged: (value) {
                                 if (value != null && mounted) {
                                   setState(() {
+                                    final wasRvSite =
+                                        _selectedUnitType == 'rvSite';
                                     _selectedUnitType = value;
+                                    if (widget.unit == null &&
+                                        value == 'rvSite' &&
+                                        !wasRvSite) {
+                                      // A new unit is listed and Available,
+                                      // and an RV park's sites are empty
+                                      // between guests, so every site would
+                                      // go on the public map as available
+                                      // at its monthly rate. Start unlisted;
+                                      // the switch stays free for an owner
+                                      // who does want sites offered online.
+                                      // Editing keeps the saved choice.
+                                      _listingBeforeRvSite =
+                                          _publicListingEnabled;
+                                      _publicListingEnabled = false;
+                                    } else if (wasRvSite &&
+                                        value != 'rvSite' &&
+                                        _listingBeforeRvSite != null) {
+                                      // Changed away again in this edit: a
+                                      // storage unit should not quietly stay
+                                      // off the website.
+                                      _publicListingEnabled =
+                                          _listingBeforeRvSite!;
+                                      _listingBeforeRvSite = null;
+                                    }
                                   });
                                 }
                               },

@@ -22,6 +22,32 @@ final overdueInvoicesProvider = FutureProvider.family<List<InvoiceModel>, String
   return InvoiceService.getOverdueInvoices(facilityId);
 });
 
+/// What a tenant's live invoices already cover, for the ledger. The ledger
+/// watches it to mark the charges on an invoice, and Generate Invoice
+/// refreshes it (ref.refresh) each time it opens: the invoice made a moment
+/// ago has to count, and a cached read would not know about it.
+///
+/// autoDispose, so the value goes with the ledger that watched it and the
+/// next visit reads afresh. Kept for the session, it outlived a void made
+/// from the invoice page: the owner came back to the ledger and the voided
+/// invoice's charges still read "On invoice" until she generated again or
+/// reloaded the app. The invoice page also invalidates it after a void, for
+/// the ledger still open underneath.
+///
+/// No retries: a staff login that can read ledgers but not invoices, or an
+/// owner offline, would otherwise wait through Riverpod's default retries
+/// (about 50 seconds) before Generate Invoice said anything.
+final liveInvoiceCoverageProvider = FutureProvider.autoDispose
+    .family<LiveInvoiceCoverage, InvoiceParams>(
+  (ref, params) {
+    return InvoiceService.liveInvoiceCoverage(
+      facilityId: params.facilityId,
+      tenantId: params.tenantId,
+    );
+  },
+  retry: (retryCount, error) => null,
+);
+
 /// Provider for invoice operations
 final invoiceOperationsProvider = StateNotifierProvider<InvoiceOperationsNotifier, AsyncValue<void>>((ref) {
   return InvoiceOperationsNotifier();
@@ -30,10 +56,15 @@ final invoiceOperationsProvider = StateNotifierProvider<InvoiceOperationsNotifie
 /// Each method records a failure in [state] and rethrows it. They used to
 /// only record it, so "Send to tenant", the ledger's Generate Invoice and
 /// Generate PDF said they had worked when they had not.
+///
+/// Each returns the invoice as it stands afterwards, for the page to show.
+/// Generate Invoice threw the new invoice away, so the ledger could say only
+/// "Invoice generated successfully" and had no number to name or page to
+/// open, and the owner asked where it had gone.
 class InvoiceOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   InvoiceOperationsNotifier() : super(const AsyncValue.data(null));
 
-  Future<void> generateInvoice({
+  Future<InvoiceModel> generateInvoice({
     required String tenantId,
     required String facilityId,
     List<String>? ledgerEntryIds,
@@ -43,7 +74,7 @@ class InvoiceOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   }) async {
     state = const AsyncValue.loading();
     try {
-      await InvoiceService.generateInvoiceFromLedger(
+      final invoice = await InvoiceService.generateInvoiceFromLedger(
         tenantId: tenantId,
         facilityId: facilityId,
         ledgerEntryIds: ledgerEntryIds,
@@ -52,42 +83,45 @@ class InvoiceOperationsNotifier extends StateNotifier<AsyncValue<void>> {
         taxRate: taxRate,
       );
       state = const AsyncValue.data(null);
+      return invoice;
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
       rethrow;
     }
   }
 
-  Future<void> generateAndUploadPDF({
+  Future<InvoiceModel> generateAndUploadPDF({
     required InvoiceModel invoice,
     required String facilityId,
     required String invoiceId,
   }) async {
     state = const AsyncValue.loading();
     try {
-      await InvoiceService.generateAndUploadInvoicePDF(
+      final pdfUrl = await InvoiceService.generateAndUploadInvoicePDF(
         invoice: invoice,
         facilityId: facilityId,
         invoiceId: invoiceId,
       );
       state = const AsyncValue.data(null);
+      return invoice.copyWith(pdfUrl: pdfUrl);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
       rethrow;
     }
   }
 
-  Future<void> sendInvoice({
+  Future<InvoiceModel> sendInvoice({
     required String facilityId,
     required String invoiceId,
   }) async {
     state = const AsyncValue.loading();
     try {
-      await InvoiceService.sendInvoice(
+      final sent = await InvoiceService.sendInvoice(
         facilityId: facilityId,
         invoiceId: invoiceId,
       );
       state = const AsyncValue.data(null);
+      return sent;
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
       rethrow;

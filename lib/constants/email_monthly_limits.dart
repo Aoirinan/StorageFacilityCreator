@@ -9,6 +9,9 @@ library;
 const int kEmailMonthlyLimitTrialing = 500;
 const int kEmailMonthlyLimitPaid = 5000;
 
-/// Resolves the default cap from subscription state (matches backend `trialing` check).
+/// Resolves the default cap from subscription state. [isTrialing] means the
+/// unpaid app trial (`ownerOnUnpaidAppTrial` in lib/models/paid_subscription.dart,
+/// the same rule the backend applies): an owner in the card-backed free month
+/// reads `trialing` but gets the paid cap.
 int emailMonthlyLimitForAccount({required bool isTrialing}) =>
     isTrialing ? kEmailMonthlyLimitTrialing : kEmailMonthlyLimitPaid;

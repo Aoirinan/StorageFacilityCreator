@@ -22,6 +22,7 @@ import '../widgets/ledger_entry_card.dart';
 import 'package:sfcapp/widgets/tenant_prev_next.dart';
 import '../utils/error_message_helper.dart';
 import 'package:sfcapp/utils/past_history_math.dart';
+import 'package:sfcapp/utils/statement_lines.dart';
 import 'package:sfcapp/services/past_history_service.dart';
 import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/screens/tenant_past_history_dialog.dart';
@@ -174,11 +175,14 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
           if (_statusFilter != null) {
             filteredEntries = filteredEntries.where((e) => e.status == _statusFilter).toList();
           }
-          if (_startDate != null) {
-            filteredEntries = filteredEntries.where((e) => e.entryDate.isAfter(_startDate!) || e.entryDate.isAtSameMomentAs(_startDate!)).toList();
-          }
-          if (_endDate != null) {
-            filteredEntries = filteredEntries.where((e) => e.entryDate.isBefore(_endDate!) || e.entryDate.isAtSameMomentAs(_endDate!)).toList();
+          // The same period rule as the printed statement: the end day
+          // counts. This compared against the end date's midnight, so an
+          // entry on that day was hidden here but printed on the statement.
+          if (_startDate != null || _endDate != null) {
+            filteredEntries = filteredEntries
+                .where((e) => inStatementPeriod(e.entryDate,
+                    startDate: _startDate, endDate: _endDate))
+                .toList();
           }
 
           final unitLabel = tenantUnitLabel(
@@ -189,6 +193,19 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                     .value ??
                 false,
           );
+
+          // Charges on an invoice that has not been voided, for the "On
+          // invoice" mark. From the invoices, not the entries' own
+          // metadata.invoiceId: voiding an invoice leaves that in place, so
+          // it alone would mark charges whose invoice is gone.
+          final invoicedIds = ref
+                  .watch(liveInvoiceCoverageProvider(InvoiceParams(
+                    tenantId: widget.tenant.id,
+                    facilityId: widget.tenant.facilityId,
+                  )))
+                  .value
+                  ?.ledgerEntryIds ??
+              const <String>{};
 
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -469,6 +486,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                 else
                   ...filteredEntries.map((entry) => LedgerEntryCard(
                     entry: entry,
+                    onInvoice: invoicedIds.contains(entry.id),
                     onVoid: () => _voidEntry(context, entry),
                   )),
                     ],
@@ -589,17 +607,25 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
   }
 
   void _showFiltersDialog(BuildContext context) {
+    // The dialog works on copies and the screen takes them on Apply. It
+    // wrote the screen's fields as each control changed, so a date picked
+    // and then Cancelled still applied at the next rebuild, and nothing in
+    // it could put a date back to None once one was set.
+    var type = _typeFilter;
+    var status = _statusFilter;
+    var start = _startDate;
+    var end = _endDate;
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Filter Ledger'),
         content: StatefulBuilder(
-          builder: (context, setState) {
+          builder: (context, setDialogState) {
             return Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 DropdownButtonFormField<LedgerEntryType?>(
-                  value: _typeFilter,
+                  value: type,
                   decoration: const InputDecoration(labelText: 'Type'),
                   items: [
                     const DropdownMenuItem(value: null, child: Text('All Types')),
@@ -608,11 +634,11 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                       child: Text(type.displayName),
                     )),
                   ],
-                  onChanged: (value) => setState(() => _typeFilter = value),
+                  onChanged: (value) => setDialogState(() => type = value),
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<LedgerEntryStatus?>(
-                  value: _statusFilter,
+                  value: status,
                   decoration: const InputDecoration(labelText: 'Status'),
                   items: [
                     const DropdownMenuItem(value: null, child: Text('All Statuses')),
@@ -621,41 +647,43 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                       child: Text(status.displayName),
                     )),
                   ],
-                  onChanged: (value) => setState(() => _statusFilter = value),
+                  onChanged: (value) => setDialogState(() => status = value),
                 ),
                 const SizedBox(height: 16),
                 ListTile(
                   title: const Text('Start Date'),
-                  subtitle: Text(_startDate != null ? DateFormat('MM/dd/yyyy').format(_startDate!) : 'None'),
+                  subtitle: Text(start != null ? DateFormat('MM/dd/yyyy').format(start!) : 'None'),
                   trailing: IconButton(
                     icon: const Icon(Icons.calendar_today),
+                    tooltip: 'Pick start date',
                     onPressed: () async {
                       final date = await showDatePicker(
                         context: context,
-                        initialDate: _startDate ?? DateTime.now(),
+                        initialDate: start ?? DateTime.now(),
                         firstDate: DateTime(2000),
                         lastDate: DateTime.now(),
                       );
                       if (date != null) {
-                        setState(() => _startDate = date);
+                        setDialogState(() => start = date);
                       }
                     },
                   ),
                 ),
                 ListTile(
                   title: const Text('End Date'),
-                  subtitle: Text(_endDate != null ? DateFormat('MM/dd/yyyy').format(_endDate!) : 'None'),
+                  subtitle: Text(end != null ? DateFormat('MM/dd/yyyy').format(end!) : 'None'),
                   trailing: IconButton(
                     icon: const Icon(Icons.calendar_today),
+                    tooltip: 'Pick end date',
                     onPressed: () async {
                       final date = await showDatePicker(
                         context: context,
-                        initialDate: _endDate ?? DateTime.now(),
+                        initialDate: end ?? DateTime.now(),
                         firstDate: DateTime(2000),
                         lastDate: DateTime.now(),
                       );
                       if (date != null) {
-                        setState(() => _endDate = date);
+                        setDialogState(() => end = date);
                       }
                     },
                   ),
@@ -672,7 +700,24 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
           TextButton(
             onPressed: () {
               Navigator.pop(context);
-              setState(() {});
+              setState(() {
+                _typeFilter = null;
+                _statusFilter = null;
+                _startDate = null;
+                _endDate = null;
+              });
+            },
+            child: const Text('Clear'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              setState(() {
+                _typeFilter = type;
+                _statusFilter = status;
+                _startDate = start;
+                _endDate = end;
+              });
             },
             child: const Text('Apply'),
           ),
@@ -748,45 +793,65 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
 
     final ledgerAsync = ref.read(ledgerStreamProvider(ledgerParams));
 
-    // The same exclusions generation applies, so the dialog cannot promise to
-    // bill a charge that is already on a live invoice or already settled.
-    // These used to be different rules, and the preview was the optimistic one.
-    final idsOnLiveInvoices = await InvoiceService.ledgerEntryIdsOnLiveInvoices(
-      facilityId: widget.tenant.facilityId,
-      tenantId: widget.tenant.id,
-    );
+    // The same rule generation applies, on the same figures, so the dialog
+    // cannot promise an invoice other than the one that gets saved. These
+    // used to be different rules, and the preview was the optimistic one.
+    // Read fresh, not from the cache: an invoice made a moment ago counts.
+    final LiveInvoiceCoverage coverage;
+    try {
+      coverage = await ref.refresh(
+        liveInvoiceCoverageProvider(InvoiceParams(
+          tenantId: widget.tenant.id,
+          facilityId: widget.tenant.facilityId,
+        )).future,
+      );
+    } catch (e) {
+      // Without knowing what is already invoiced, an invoice could bill a
+      // charge twice, so there is no invoice.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Could not check the tenant\'s existing invoices: '
+              '${ErrorMessageHelper.getUserFriendlyMessage(e)}',
+            ),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+      return;
+    }
     if (!mounted) return;
 
     ledgerAsync.whenData((entries) {
-      final invoiceableIds = selectableChargeIds(
-        charges: entries.map((e) => SelectableCharge(
-              id: e.id,
-              isCharge: e.status == LedgerEntryStatus.posted &&
-                  e.type != LedgerEntryType.payment &&
-                  e.type != LedgerEntryType.credit &&
-                  e.type != LedgerEntryType.refund &&
-                  e.amount > 0,
-              isActive: e.isActive,
-              amount: e.amount,
-              allocatedAmount: (e.metadata?['allocatedAmount'] as num?)?.toDouble(),
-            )),
-        idsOnLiveInvoices: idsOnLiveInvoices,
-      ).toSet();
+      // The balance the header shows, less what live invoices already ask
+      // for, is all an invoice may bill. Charges are taken newest first
+      // until it is covered; the oldest taken may be for part of itself.
+      final ledgerBalance = sumPostedLedgerEntries(entries);
+      final lines = openChargesForInvoice(
+        charges: entries.map(SelectableCharge.fromLedgerEntry),
+        idsOnLiveInvoices: coverage.ledgerEntryIds,
+        ledgerBalance: ledgerBalance,
+        liveInvoiceBalance: coverage.balance,
+      );
 
-      final unpaidCharges =
-          entries.where((e) => invoiceableIds.contains(e.id)).toList();
-
-      if (unpaidCharges.isEmpty) {
+      if (lines.isEmpty) {
+        // "No balance due" only when none is: a tenant who owes money that
+        // an existing invoice already asks for is sent to that invoice.
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No unpaid charges to invoice'),
+          SnackBar(
+            content: Text(nothingToInvoiceMessage(
+              ledgerBalance: ledgerBalance,
+              liveInvoiceBalance: coverage.balance,
+            )),
             backgroundColor: AppTheme.warning,
+            duration: const Duration(seconds: 8),
           ),
         );
         return;
       }
 
-      final totalAmount = unpaidCharges.fold(0.0, (sum, e) => sum + e.amount);
+      final totalAmount = lines.fold(0.0, (sum, line) => sum + line.amount);
       final dueDate = DateTime.now().add(const Duration(days: 30));
 
       showDialog(
@@ -799,11 +864,11 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'This will create an invoice for ${unpaidCharges.length} unpaid charge(s):',
+                  'This will create an invoice for ${lines.length} charge(s) to invoice:',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 const SizedBox(height: 16),
-                ...unpaidCharges.take(5).map((entry) {
+                ...lines.take(5).map((line) {
                   return Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4.0),
                     child: Row(
@@ -811,12 +876,12 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                       children: [
                         Expanded(
                           child: Text(
-                            entry.description ?? entry.typeDisplayName,
+                            line.description,
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ),
                         Text(
-                          entry.formattedAmount,
+                          '\$${line.amount.toStringAsFixed(2)}',
                           style: Theme.of(context).textTheme.bodySmall?.copyWith(
                             fontWeight: FontWeight.bold,
                           ),
@@ -825,9 +890,9 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                     ),
                   );
                 }),
-                if (unpaidCharges.length > 5)
+                if (lines.length > 5)
                   Text(
-                    '... and ${unpaidCharges.length - 5} more',
+                    '... and ${lines.length - 5} more',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: AppTheme.textSecondary,
                     ),
@@ -869,7 +934,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                 if (_generatingInvoice) return;
                 setState(() => _generatingInvoice = true);
                 Navigator.pop(context);
-                await _generateInvoice(unpaidCharges, dueDate);
+                await _generateInvoice(lines, dueDate);
               },
               child: const Text('Generate Invoice'),
             ),
@@ -879,12 +944,12 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
     });
   }
 
-  Future<void> _generateInvoice(List<LedgerEntry> entries, DateTime dueDate) async {
+  Future<void> _generateInvoice(List<OpenCharge> lines, DateTime dueDate) async {
     try {
       final operations = ref.read(invoiceOperationsProvider.notifier);
-      final ledgerEntryIds = entries.map((e) => e.id).toList();
+      final ledgerEntryIds = lines.map((line) => line.id).toList();
 
-      await operations.generateInvoice(
+      final invoice = await operations.generateInvoice(
         tenantId: widget.tenant.id,
         facilityId: widget.tenant.facilityId,
         ledgerEntryIds: ledgerEntryIds,
@@ -893,11 +958,29 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
       );
 
       if (mounted) {
+        // The charges just billed now show "On invoice".
+        ref.invalidate(liveInvoiceCoverageProvider(InvoiceParams(
+          tenantId: widget.tenant.id,
+          facilityId: widget.tenant.facilityId,
+        )));
+        // Say where it went and go there. The only word used to be a
+        // four-second "Invoice generated successfully" with no number and
+        // no link, and the invoice is not shown on the ledger or the
+        // tenant's page, so an owner asked where it had gone.
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Invoice generated successfully'),
+          SnackBar(
+            content: Text(
+              'Invoice ${invoice.invoiceNumber} saved as a draft. You can find '
+              'it later under Rent & payments › Invoices.',
+            ),
             backgroundColor: AppTheme.success,
+            duration: const Duration(seconds: 8),
           ),
+        );
+        // The same extra the Invoices tab passes: the page is built from it.
+        context.push(
+          AppRoute.invoiceDetail,
+          extra: {'invoice': invoice, 'facilityId': widget.tenant.facilityId},
         );
       }
     } catch (e) {
@@ -943,41 +1026,22 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
           throw Exception('Facility not found');
         }
 
-        // Apply filters if any
-        var filteredEntries = entries;
-        if (_startDate != null) {
-          filteredEntries = filteredEntries.where((e) => e.entryDate.isAfter(_startDate!.subtract(const Duration(seconds: 1))) || e.entryDate.isAtSameMomentAs(_startDate!)).toList();
-        }
-        if (_endDate != null) {
-          filteredEntries = filteredEntries.where((e) => e.entryDate.isBefore(_endDate!.add(const Duration(days: 1))) || e.entryDate.isAtSameMomentAs(_endDate!)).toList();
-        }
+        // Every unit the tenant holds, so a two-unit tenant's statement
+        // names both, not just the record's own unit.
+        final unitLabels =
+            await StatementService.unitLabelsFor(widget.tenant, facility);
 
-        // Calculate balance forward
-        double balanceForward = 0.0;
-        if (_startDate != null) {
-          final earlierEntries = entries.where((e) => e.entryDate.isBefore(_startDate!)).toList();
-          balanceForward = 0.0;
-          for (final entry in earlierEntries) {
-            if (entry.status != LedgerEntryStatus.voided) {
-              if (entry.type == LedgerEntryType.payment || 
-                  entry.type == LedgerEntryType.credit || 
-                  entry.type == LedgerEntryType.refund) {
-                balanceForward -= entry.amount.abs();
-              } else {
-                balanceForward += entry.amount;
-              }
-            }
-          }
-        }
-
-        // Generate PDF
+        // Generate PDF. The whole ledger goes in: the statement cuts the
+        // period and the balance forward from it itself (statement_lines.dart).
+        // The end date stays null when none was chosen, so the statement can
+        // label the figure "Current Balance" rather than "as of" today.
         final pdfData = await StatementService.generateStatementPDF(
-          entries: filteredEntries,
+          entries: entries,
           tenant: widget.tenant,
           facility: facility,
           startDate: _startDate,
-          endDate: _endDate ?? DateTime.now(),
-          balanceForward: balanceForward,
+          endDate: _endDate,
+          unitLabels: unitLabels,
         );
 
         // Show print dialog

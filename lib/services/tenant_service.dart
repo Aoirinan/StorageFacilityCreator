@@ -9,6 +9,7 @@ import 'package:sfcapp/models/address_model.dart';
 import 'package:sfcapp/models/invoice_model.dart';
 import 'package:sfcapp/models/ledger_entry_model.dart';
 import 'package:sfcapp/models/payment_model.dart';
+import 'package:sfcapp/models/security_deposit_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/audit_service.dart';
@@ -813,11 +814,18 @@ class TenantService {
     // The tenant refused texts (the CSV import's "no" / "stop"): recorded
     // as their own opt-out, which staff cannot reverse.
     bool smsRefused = false,
+    // A deposit taken with the move-in, held for the tenant (its status,
+    // who recorded it and when are set here). Kept off the ledger: see
+    // SecurityDeposit.
+    SecurityDeposit? securityDeposit,
   }) async {
     try {
       final user = _auth.currentUser;
       if (user == null) {
         throw Exception('Not signed in');
+      }
+      if (securityDeposit != null && securityDeposit.amount <= 0) {
+        throw Exception('Enter a security deposit amount above \$0.');
       }
 
       // Check facility tenant limit (hard cap on active tenants)
@@ -887,6 +895,15 @@ class TenantService {
           'smsConsentRecordedBy': user.uid,
           if (smsConsentMethod != null) 'smsConsentMethod': smsConsentMethod.value,
         },
+        if (securityDeposit != null)
+          'securityDeposit': securityDeposit
+              .copyWith(
+                status: SecurityDepositStatus.held,
+                recordedAt: DateTime.now(),
+                recordedBy: user.uid,
+                updatedAt: DateTime.now(),
+              )
+              .toMap(),
       };
 
       if (kDebugMode) {
@@ -941,6 +958,8 @@ class TenantService {
         metadata: {
           'leadSource': leadSource,
           'portalEnabled': portalEnabled,
+          if (securityDeposit != null)
+            'securityDepositAmount': securityDeposit.amount,
         },
       );
 

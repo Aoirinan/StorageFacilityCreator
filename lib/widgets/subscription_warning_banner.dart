@@ -90,6 +90,7 @@ class _SubscriptionWarningBannerState extends State<SubscriptionWarningBanner> {
                 trialEnd: account.subscriptionTrialEnd,
                 currentPeriodEnd: account.subscriptionCurrentPeriodEnd,
                 billingExempt: account.billingExempt,
+                cardBackedTrial: account.hasCardBackedTrial,
               ),
         facilities: facilities
             .map((f) => FacilitySubscriptionState(

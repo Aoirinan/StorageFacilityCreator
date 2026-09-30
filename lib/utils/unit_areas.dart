@@ -1,6 +1,7 @@
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/utils/unit_number.dart';
+import 'package:sfcapp/utils/unit_number_sort.dart';
 
 /// Longest area name the unit editor and "Set area" accept.
 const int unitAreaMaxLength = 60;
@@ -156,6 +157,26 @@ class TenantUnitAreaIndex {
       units.add(named);
     }
     return units;
+  }
+
+  /// The units [tenant] holds beyond the one their label names
+  /// ([namedUnit]), by number: those with their `tenantId`, other than a
+  /// unit freed with the id left behind (available) or one with no number,
+  /// as TenantService counts held units. The Tenants list, the tenant page
+  /// and the Assign Tenant picker list these after the record's own unit,
+  /// since a record's `unitNumber` names one unit however many it holds.
+  List<UnitModel> otherUnitsFor(TenantModel tenant) {
+    final named = namedUnit(tenant);
+    final others = [
+      for (final u in unitsFor(tenant))
+        if (u.id != named?.id &&
+            u.status != UnitStatus.available &&
+            unitNumberKey(u.unitNumber).isNotEmpty)
+          u,
+    ];
+    others.sort(
+        (a, b) => compareUnitNumbersNatural(a.unitNumber, b.unitNumber));
+    return others;
   }
 
   /// The areas of [tenant]'s units, distinct and sorted; empty when none of
