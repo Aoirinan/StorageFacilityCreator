@@ -7,6 +7,7 @@ import {
   hasPaidOrCardTrialSubscription,
 } from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
+import { refuseBillingForSuspendedAccount } from './stripePlatformSuspendedAccount';
 
 const WEBSITE_SUBSCRIPTION_TYPE = 'website_addon';
 const WEBSITE_PRICE_LOOKUP_KEY = 'sfc_website_monthly_25';
@@ -129,6 +130,9 @@ export const createWebsiteSubscriptionCheckout = functions
         'Facility is not linked to this account',
       );
     }
+    // Before the base-plan check, which also fails a suspended account but
+    // told it to buy the $75 plan.
+    refuseBillingForSuspendedAccount(account);
 
     if (!hasActiveBasePlatformSubscription(account, facility)) {
       throw new functions.https.HttpsError(

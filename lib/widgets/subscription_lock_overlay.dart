@@ -18,6 +18,19 @@ typedef ShellLockAnswer = ({
   String? message,
 });
 
+/// Why the shell is locked, which decides what the overlay offers.
+enum ShellLockKind {
+  /// The owner's own billing lapsed: subscribe or manage it.
+  billing,
+
+  /// The account is suspended: paying does not lift that, support does.
+  suspended,
+
+  /// No account of their own (invited staff) and the owner's billing lapsed
+  /// or was suspended: only the owner can fix it.
+  teamMember,
+}
+
 /// Global overlay that disables all features when trial expired or no active subscription
 /// Blocks all user interactions until subscription is active
 class SubscriptionLockOverlay extends StatefulWidget {
@@ -45,6 +58,15 @@ class SubscriptionLockOverlay extends StatefulWidget {
   /// (An exempt account is never locked, suspended or not.)
   @visibleForTesting
   static bool isSuspension(FacilityCreatorAccountModel? account) => account?.suspended == true;
+
+  /// What kind of lock [account] (as [SubscriptionGuardService.shellLock]
+  /// read it) is under. With no account the lock can only be a team member's
+  /// ([SubscriptionGuardService.accessWithoutAccount]), and they were offered
+  /// Subscribe and Manage Subscription for a facility they do not own.
+  static ShellLockKind lockKind(FacilityCreatorAccountModel? account) {
+    if (account == null) return ShellLockKind.teamMember;
+    return isSuspension(account) ? ShellLockKind.suspended : ShellLockKind.billing;
+  }
 
   /// What the lock says: [accessMessage], the reason the access rule gave
   /// ([SubscriptionGuardService.shellLock]), whenever there is one. It used to
@@ -229,7 +251,7 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
       return widget.child; // No lock needed
     }
 
-    final suspended = SubscriptionLockOverlay.isSuspension(_account);
+    final kind = SubscriptionLockOverlay.lockKind(_account);
 
     // CRITICAL: Show blocking overlay - MUST block ALL interactions
     // Use Material to ensure proper z-index and blocking
@@ -267,7 +289,11 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
                         ),
                         const SizedBox(height: 24),
                         Text(
-                          suspended ? 'Account Suspended' : 'Subscription Required',
+                          switch (kind) {
+                            ShellLockKind.suspended => 'Account Suspended',
+                            ShellLockKind.teamMember => 'Team Access Paused',
+                            ShellLockKind.billing => 'Subscription Required',
+                          },
                           style: TextStyle(
                             fontSize: 24,
                             fontWeight: FontWeight.bold,
@@ -286,7 +312,20 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
                         const SizedBox(height: 32),
                         // Paying does not lift a suspension, so a suspended
                         // account is pointed at support, not at billing.
-                        if (suspended) ...[
+                        // Staff cannot pay for the owner's facility at all:
+                        // the message tells them to ask the owner, and they
+                        // can check again once the owner has.
+                        if (kind == ShellLockKind.teamMember) ...[
+                          FilledButton.icon(
+                            onPressed: _checkSubscription,
+                            icon: const Icon(Icons.refresh, size: 20),
+                            label: const Text('Check again'),
+                            style: FilledButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                              minimumSize: const Size(200, 48),
+                            ),
+                          ),
+                        ] else if (kind == ShellLockKind.suspended) ...[
                           FilledButton.icon(
                             onPressed: _contactSupport,
                             icon: const Icon(Icons.mail_outline, size: 20),

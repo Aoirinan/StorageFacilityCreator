@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:convert';
@@ -7,6 +7,7 @@ import '../models/permission_model.dart';
 import '../models/facility_model.dart';
 import '../services/permission_service.dart';
 import '../services/facility_service.dart';
+import 'package:sfcapp/services/superadmin_service.dart';
 import '../providers/facility_provider.dart';
 import '../theme/app_theme.dart';
 import '../services/modern_navigation_service.dart';
@@ -31,6 +32,139 @@ void _debugLogPMS(String location, String message, Map<String, dynamic> data, St
 class PermissionManagementScreen extends ConsumerStatefulWidget {
   const PermissionManagementScreen({super.key});
 
+  /// What the team screen tells the inviter about [result] for [email]:
+  /// sent; not sent at all (refused, or not written), so there is nothing to
+  /// resend; or saved with the email failing. A refusal used to read "Invite
+  /// created but email failed to send", pointing at a resend that did not
+  /// exist.
+  @visibleForTesting
+  static SnackBar inviteOutcomeSnackBar({required InviteResult result, required String email}) {
+    if (result.success) {
+      return SnackBar(
+        content: Text('Invitation sent to $email. They will receive an email with instructions to join.'),
+        backgroundColor: AppTheme.success,
+        duration: const Duration(seconds: 4),
+      );
+    }
+    if (!result.inviteSaved) {
+      return SnackBar(
+        content: Text('Invitation not sent. ${result.errorMessage ?? 'Unknown error'}'),
+        backgroundColor: AppTheme.error,
+        duration: const Duration(seconds: 8),
+      );
+    }
+    final errorMsg = result.errorMessage ?? 'Unknown error';
+    return SnackBar(
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Invite created but email failed to send.', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 4),
+          Text('Error: $errorMsg', style: const TextStyle(fontSize: 12)),
+          const SizedBox(height: 4),
+          const Text('You can resend it from the pending invites section.', style: TextStyle(fontSize: 12)),
+        ],
+      ),
+      backgroundColor: AppTheme.warning,
+      duration: const Duration(seconds: 10),
+    );
+  }
+
+  /// The actions offered on a team member's row to someone with [powers]:
+  /// Change Role only to the facility's owner, Remove Access to whoever may
+  /// take anyone off the team (greyed out, with the reason, where they may
+  /// not take this member off). Nothing for anyone else. Every action was
+  /// offered to everyone, and the rules refused a manager's role change.
+  @visibleForTesting
+  static List<PopupMenuEntry<String>> memberMenuEntries({
+    required TeamPowers powers,
+    required RoleType memberRole,
+    required bool memberIsFacilityOwner,
+    required bool memberIsYou,
+  }) {
+    // The owner role can't be changed, except by the owner themselves.
+    final canChange = !memberIsFacilityOwner || memberIsYou;
+    final canRemove = powers.canRemove(
+      memberRole: memberRole,
+      memberIsFacilityOwner: memberIsFacilityOwner,
+      memberIsYou: memberIsYou,
+    );
+    final removeBlockedReason = memberIsFacilityOwner
+        ? 'Owner cannot be removed'
+        : memberIsYou
+            ? 'You cannot remove yourself'
+            : 'Only the facility owner can remove an owner';
+    return [
+      if (powers.canChangeRoles)
+        PopupMenuItem(
+          value: 'change_role',
+          enabled: canChange,
+          child: ListTile(
+            leading: Icon(Icons.edit, color: canChange ? null : AppTheme.textTertiary),
+            title: Text(
+              'Change Role',
+              style: TextStyle(color: canChange ? null : AppTheme.textTertiary),
+            ),
+            subtitle: canChange
+                ? null
+                : const Text(
+                    'Owner role cannot be changed',
+                    style: TextStyle(fontSize: 11, color: AppTheme.textTertiary),
+                  ),
+            contentPadding: EdgeInsets.zero,
+          ),
+        ),
+      if (powers.canRemoveAnyone)
+        PopupMenuItem(
+          value: 'remove',
+          enabled: canRemove,
+          child: ListTile(
+            leading: Icon(
+              Icons.remove_circle,
+              color: canRemove ? AppTheme.error : AppTheme.textTertiary,
+            ),
+            title: Text(
+              'Remove Access',
+              style: TextStyle(color: canRemove ? AppTheme.error : AppTheme.textTertiary),
+            ),
+            subtitle: canRemove
+                ? null
+                : Text(
+                    removeBlockedReason,
+                    style: const TextStyle(fontSize: 11, color: AppTheme.textTertiary),
+                  ),
+            contentPadding: EdgeInsets.zero,
+          ),
+        ),
+    ];
+  }
+
+  /// The buttons on a pending invitation for someone with [powers]: Resend
+  /// for the owner or a co-owner, Cancel for them and managers.
+  @visibleForTesting
+  static List<Widget> pendingInviteActions({
+    required TeamPowers powers,
+    required VoidCallback onResend,
+    required VoidCallback onCancel,
+  }) {
+    return [
+      if (powers.canInvite)
+        TextButton(
+          onPressed: onResend,
+          child: const Text('Resend'),
+        ),
+      if (powers.canCancelInvites)
+        TextButton(
+          onPressed: onCancel,
+          child: const Text(
+            'Cancel',
+            style: TextStyle(color: AppTheme.error),
+          ),
+        ),
+    ];
+  }
+
   @override
   ConsumerState<PermissionManagementScreen> createState() => _PermissionManagementScreenState();
 }
@@ -44,6 +178,16 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
   Map<String, Map<String, dynamic>> _userProfiles = {};
   List<FacilityInvite> _pendingInvites = [];
   bool _isLoading = false;
+
+  /// What the signed-in user may do here at the selected facility.
+  TeamPowers _powers = const TeamPowers();
+
+  FacilityModel? get _selectedFacility {
+    for (final facility in _facilities) {
+      if (facility.id == _selectedFacilityId) return facility;
+    }
+    return null;
+  }
 
   @override
   void initState() {
@@ -100,6 +244,18 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
     
     setState(() => _isLoading = true);
     try {
+      final me = FirebaseAuth.instance.currentUser;
+      final myRole = me == null
+          ? null
+          : await PermissionService.roleTypeAt(userId: me.uid, facilityId: _selectedFacilityId!);
+      final powers = TeamPowers.of(
+        userId: me?.uid,
+        isSuperAdmin: SuperAdminService.isSuperAdmin(me),
+        facilityOwnerUid: _selectedFacility?.ownerUid,
+        role: myRole,
+      );
+      if (mounted) setState(() => _powers = powers);
+
       final users = await PermissionService.getFacilityUsers(_selectedFacilityId!);
       users.sort((a, b) {
         final levelA = PermissionService.getRoleByType(a.roleType)?.level ?? 0;
@@ -338,69 +494,7 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
                   ),
                 ],
               ),
-              trailing: PopupMenuButton<String>(
-                onSelected: (value) => _handleUserAction(value, userRole),
-                itemBuilder: (context) {
-                  final currentUser = FirebaseAuth.instance.currentUser;
-                  final isOwner = _selectedFacilityId != null && 
-                      _facilities.firstWhere(
-                        (f) => f.id == _selectedFacilityId,
-                        orElse: () => _facilities.first,
-                      ).ownerUid == userRole.userId;
-                  final isCurrentUser = currentUser?.uid == userRole.userId;
-                  
-                  return [
-                    PopupMenuItem(
-                      value: 'change_role',
-                      enabled: !isOwner || isCurrentUser, // Can't change owner role unless it's yourself
-                      child: ListTile(
-                        leading: Icon(Icons.edit, color: (!isOwner || isCurrentUser) ? null : AppTheme.textTertiary),
-                        title: Text(
-                          'Change Role',
-                          style: TextStyle(
-                            color: (!isOwner || isCurrentUser) ? null : AppTheme.textTertiary,
-                          ),
-                        ),
-                        subtitle: isOwner && !isCurrentUser
-                            ? const Text(
-                                'Owner role cannot be changed',
-                                style: TextStyle(fontSize: 11, color: AppTheme.textTertiary),
-                              )
-                            : null,
-                        contentPadding: EdgeInsets.zero,
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: 'remove',
-                      enabled: !isOwner && !isCurrentUser, // Can't remove owner or yourself
-                      child: ListTile(
-                        leading: Icon(
-                          Icons.remove_circle,
-                          color: (!isOwner && !isCurrentUser) ? AppTheme.error : AppTheme.textTertiary,
-                        ),
-                        title: Text(
-                          'Remove Access',
-                          style: TextStyle(
-                            color: (!isOwner && !isCurrentUser) ? AppTheme.error : AppTheme.textTertiary,
-                          ),
-                        ),
-                        subtitle: isOwner
-                            ? const Text(
-                                'Owner cannot be removed',
-                                style: TextStyle(fontSize: 11, color: AppTheme.textTertiary),
-                              )
-                            : isCurrentUser
-                                ? const Text(
-                                    'You cannot remove yourself',
-                                    style: TextStyle(fontSize: 11, color: AppTheme.textTertiary),
-                                  )
-                                : null,
-                        contentPadding: EdgeInsets.zero,
-                      ),
-                    ),
-                  ];
-                },
-              ),
+              trailing: _memberMenu(userRole),
             ),
           ),
         );
@@ -415,6 +509,23 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
     return ListView(
       padding: const EdgeInsets.all(16),
       children: children,
+    );
+  }
+
+  /// The action menu on [userRole]'s row, or none when the signed-in user
+  /// may do nothing to it.
+  Widget? _memberMenu(UserRole userRole) {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    final entries = PermissionManagementScreen.memberMenuEntries(
+      powers: _powers,
+      memberRole: userRole.roleType,
+      memberIsFacilityOwner: _selectedFacility?.ownerUid == userRole.userId,
+      memberIsYou: currentUser?.uid == userRole.userId,
+    );
+    if (entries.isEmpty) return null;
+    return PopupMenuButton<String>(
+      onSelected: (value) => _handleUserAction(value, userRole),
+      itemBuilder: (context) => entries,
     );
   }
 
@@ -559,13 +670,20 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
           ),
           const SizedBox(height: 16),
           Card(
-            child: ListTile(
-              leading: Icon(Icons.add_circle, color: AppTheme.success),
-              title: const Text('Add User to Facility'),
-              subtitle: const Text('Grant access to a user for this facility'),
-              trailing: const Icon(Icons.arrow_forward_ios),
-              onTap: _showAddUserDialog,
-            ),
+            child: _powers.canInvite
+                ? ListTile(
+                    leading: Icon(Icons.add_circle, color: AppTheme.success),
+                    title: const Text('Add User to Facility'),
+                    subtitle: const Text('Grant access to a user for this facility'),
+                    trailing: const Icon(Icons.arrow_forward_ios),
+                    onTap: _showAddUserDialog,
+                  )
+                : const ListTile(
+                    leading: Icon(Icons.add_circle, color: AppTheme.textTertiary),
+                    title: Text('Add User to Facility'),
+                    subtitle: Text('Only the facility owner can invite team members'),
+                    enabled: false,
+                  ),
           ),
           const SizedBox(height: 8),
           Card(
@@ -649,19 +767,11 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
                   ),
                   trailing: Wrap(
                     spacing: 8,
-                    children: [
-                      TextButton(
-                        onPressed: () => _resendInvite(invite),
-                        child: const Text('Resend'),
-                      ),
-                      TextButton(
-                        onPressed: () => _cancelInvite(invite),
-                        child: const Text(
-                          'Cancel',
-                          style: TextStyle(color: AppTheme.error),
-                        ),
-                      ),
-                    ],
+                    children: PermissionManagementScreen.pendingInviteActions(
+                      powers: _powers,
+                      onResend: () => _resendInvite(invite),
+                      onCancel: () => _cancelInvite(invite),
+                    ),
                   ),
                 );
               }).toList(),
@@ -790,6 +900,12 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
       );
       return;
     }
+    if (!_powers.canInvite) {
+      ScaffoldMessenger.of(pageContext).showSnackBar(
+        const SnackBar(content: Text('Only the facility owner can invite team members.')),
+      );
+      return;
+    }
 
     final emailController = TextEditingController();
     RoleType selectedRole = RoleType.viewer;
@@ -872,47 +988,14 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
                 
                 setState(() => isSubmitting = false);
                 Navigator.of(dialogContext).pop();
-                
-                if (result.success) {
-                  ScaffoldMessenger.of(pageContext).showSnackBar(
-                    SnackBar(
-                      content: Text('Invitation sent to $email. They will receive an email with instructions to join.'),
-                      backgroundColor: AppTheme.success,
-                      duration: const Duration(seconds: 4),
-                    ),
-                  );
-                } else if (!result.inviteSaved) {
-                  // Refused or not written: there is no invite to resend.
-                  if (!pageContext.mounted) return;
-                  ScaffoldMessenger.of(pageContext).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                          'Invitation not sent. ${result.errorMessage ?? 'Unknown error'}'),
-                      backgroundColor: AppTheme.error,
-                      duration: const Duration(seconds: 8),
-                    ),
-                  );
-                } else {
-                  final errorMsg = result.errorMessage ?? 'Unknown error';
-                  print('❌ [PermissionManagementScreen] Invite creation failed: $errorMsg');
-                  ScaffoldMessenger.of(pageContext).showSnackBar(
-                    SnackBar(
-                      content: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('Invite created but email failed to send.', style: TextStyle(fontWeight: FontWeight.bold)),
-                          const SizedBox(height: 4),
-                          Text('Error: $errorMsg', style: const TextStyle(fontSize: 12)),
-                          const SizedBox(height: 4),
-                          const Text('You can resend it from the pending invites section.', style: TextStyle(fontSize: 12)),
-                        ],
-                      ),
-                      backgroundColor: AppTheme.warning,
-                      duration: const Duration(seconds: 10),
-                    ),
-                  );
+
+                if (!result.success) {
+                  debugPrint('❌ [PermissionManagementScreen] Invite not sent: ${result.errorMessage}');
                 }
+                if (!pageContext.mounted) return;
+                ScaffoldMessenger.of(pageContext).showSnackBar(
+                  PermissionManagementScreen.inviteOutcomeSnackBar(result: result, email: email),
+                );
                 // Try to reload users, but don't fail if it errors
                 try {
                   await _loadFacilityUsers();

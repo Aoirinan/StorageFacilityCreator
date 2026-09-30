@@ -24,6 +24,7 @@ import 'package:sfcapp/router/back_navigation.dart';
 import 'package:sfcapp/screens/cancellation/cancellation_retention_wizard.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/widgets/subscription_lock_overlay.dart';
 
 /// Test screen for subscription checkout and payment testing
 class SubscriptionTestScreen extends ConsumerStatefulWidget {
@@ -31,12 +32,23 @@ class SubscriptionTestScreen extends ConsumerStatefulWidget {
   final String? message;
   /// When true, show a reminder dialog that trial has expired (e.g. after redirect from guard).
   final bool showTrialExpiredDialog;
-  
+
+  /// Loads the signed-in owner's account:
+  /// [FacilityCreatorAccountService.getOrCreateAccountForCurrentUser] unless
+  /// a test passes its own.
+  final Future<FacilityCreatorAccountModel> Function()? loadAccount;
+
+  /// What "Contact support" does for a suspended account: an email to
+  /// [SubscriptionLockOverlay.supportEmail] unless a test passes its own.
+  final Future<void> Function()? contactSupport;
+
   const SubscriptionTestScreen({
     super.key,
     this.requireSubscriptionChoice = false,
     this.message,
     this.showTrialExpiredDialog = false,
+    this.loadAccount,
+    this.contactSupport,
   });
 
   @override
@@ -59,6 +71,15 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
   bool _hasShownTrialExpiredDialog = false;
   String? _referralShareLink;
   bool _referralFacilityPrefBusy = false;
+  // No account of their own: a team member, whose owner handles billing.
+  // They were shown "Error loading account" and "No account found".
+  bool _teamMemberOnly = false;
+
+  // A suspended account is offered no checkout: paying does not lift a
+  // suspension (the callables refuse it too), and it used to take the money.
+  // An exempt one is never locked out, so it is not held here either.
+  static bool _suspendedAccount(FacilityCreatorAccountModel? account) =>
+      account != null && account.suspended && !account.billingExempt;
 
   /// What the status card says about trials. An owner who subscribed with a
   /// card (on the account or on a facility) gets no trial countdown or
@@ -103,12 +124,34 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
       await _accountStreamSub?.cancel();
       _accountStreamSub = null;
 
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) {
-        throw Exception('Not authenticated');
+      final FacilityCreatorAccountModel account;
+      try {
+        // Throws when no one is signed in.
+        account = await (widget.loadAccount ??
+            FacilityCreatorAccountService.getOrCreateAccountForCurrentUser)();
+      } on InvitedStaffAccountException {
+        if (mounted) {
+          setState(() {
+            _teamMemberOnly = true;
+            _account = null;
+            _isLoading = false;
+          });
+        }
+        return;
       }
 
-      final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
+      if (_suspendedAccount(account)) {
+        // Nothing to sync or offer: the account waits on support. The
+        // guard re-checks on every navigation once it is lifted.
+        if (mounted) {
+          setState(() {
+            _teamMemberOnly = false;
+            _account = account;
+            _isLoading = false;
+          });
+        }
+        return;
+      }
 
       String? referralShareLink;
       var accForState = account;
@@ -1048,6 +1091,22 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
       child: SizedBox.expand(
         child: _isLoading
           ? const Center(child: CircularProgressIndicator())
+          : _teamMemberOnly
+              ? _buildNoBillingHere(
+                  icon: Icons.groups_outlined,
+                  title: "Billing is handled by the facility's owner",
+                  body: 'You are a team member, or have been invited to be one, so there '
+                      'is no subscription for you to manage here. If the app says team '
+                      'access is paused, ask the facility owner: only they can restore it.',
+                )
+          : _suspendedAccount(_account)
+              ? _buildNoBillingHere(
+                  icon: Icons.lock_outline,
+                  title: 'Account Suspended',
+                  body: 'This account is suspended. Subscribing or paying does not '
+                      'restore access; contact support and we will help.',
+                  contactSupport: true,
+                )
           : _account == null
               ? const Center(child: Text('No account found'))
               : SingleChildScrollView(
@@ -1719,6 +1778,70 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
                 ),
       ),
     );
+  }
+
+  /// A page with nothing to buy: [title], [body], and for a suspended
+  /// account the support contact.
+  Widget _buildNoBillingHere({
+    required IconData icon,
+    required String title,
+    required String body,
+    bool contactSupport = false,
+  }) {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Card(
+            elevation: 2,
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 48, color: AppTheme.textSecondary),
+                  const SizedBox(height: 16),
+                  Text(
+                    title,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(body, textAlign: TextAlign.center, style: const TextStyle(fontSize: 14)),
+                  if (contactSupport) ...[
+                    const SizedBox(height: 20),
+                    FilledButton.icon(
+                      onPressed: _contactSupport,
+                      icon: const Icon(Icons.mail_outline, size: 20),
+                      label: const Text('Contact support'),
+                    ),
+                    const SizedBox(height: 12),
+                    const SelectableText(SubscriptionLockOverlay.supportEmail),
+                  ],
+                  const SizedBox(height: 12),
+                  TextButton.icon(
+                    onPressed: _loadAccount,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Refresh Status'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _contactSupport() async {
+    final contact = widget.contactSupport;
+    if (contact != null) return contact();
+    await launchUrl(Uri(
+      scheme: 'mailto',
+      path: SubscriptionLockOverlay.supportEmail,
+      query: 'subject=${Uri.encodeComponent('Suspended account')}',
+    ));
   }
 
   Widget _buildStatusSummaryCard() {

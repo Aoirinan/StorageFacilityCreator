@@ -6,15 +6,24 @@
       allow read: if request.auth != null && 
         resource.data.userId == request.auth.uid;
       
-      // Facility owners/managers can read roles for their facilities
-      allow read: if request.auth != null && 
-        exists(/databases/$(database)/documents/facilities/$(resource.data.facilityId)) &&
-        (
-          get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.ownerUid == request.auth.uid ||
-          get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.managers[request.auth.uid] == true
-        );
+      // Facility owners/managers can read roles for their facilities. Any
+      // manager: a manager who joined by invite is one in the roles map, not
+      // the legacy managers map, and was refused this read, so the team
+      // screen listed nobody and every removal they tried failed.
+      allow read: if request.auth != null &&
+        isFacilityOwnerOrManager(resource.data.facilityId);
       
-      // Allow create if user is super admin, facility owner, or has manageUsers permission
+      // Allow create by a super admin, the facility's owner, or an invitee
+      // accepting a pending invite. Managers invite instead (their
+      // assignRole was refused at the roles map anyway). A legacy manager
+      // could create an active row naming anyone, with any role, and a row is
+      // what the app reads for someone's role and the callables that move
+      // money accept as access.
+      //
+      // An invitee writes only the row whose id is the invite's
+      // (inviteRoleDocId): one row per invite, however many the batch holds.
+      // Rows written before that (the owners' rows, with ids of any shape)
+      // are read and updated as before.
       allow create: if request.auth != null && (
         isSuperAdmin() ||
         (
@@ -22,16 +31,13 @@
           request.resource.data.facilityId is string &&
           request.resource.data.roleType is string &&
           request.resource.data.assignedBy == request.auth.uid &&
-          exists(/databases/$(database)/documents/facilities/$(request.resource.data.facilityId)) &&
-          (
-            get(/databases/$(database)/documents/facilities/$(request.resource.data.facilityId)).data.ownerUid == request.auth.uid ||
-            get(/databases/$(database)/documents/facilities/$(request.resource.data.facilityId)).data.managers[request.auth.uid] == true
-          )
+          isFacilityOwnerUid(request.resource.data.facilityId)
         ) ||
         (
           request.resource.data.inviteId is string &&
           request.resource.data.userId == request.auth.uid &&
           request.resource.data.facilityId is string &&
+          roleId == inviteRoleDocId(request.resource.data.facilityId, request.resource.data.inviteId) &&
           request.resource.data.roleType is string &&
           request.resource.data.assignedBy is string &&
           request.resource.data.isActive == true &&
@@ -44,24 +50,38 @@
         )
       );
       
-      // Allow update if super admin, facility owner, assignedBy self, or pending-invite acceptance (merge)
+      // Allow update by a super admin, the facility's owner, a manager taking
+      // someone off the team, or a pending-invite acceptance (merge).
+      // A manager (either map, as for reads) may only deactivate a row
+      // (removeRole), and never one naming an owner or admin: the row is what
+      // the app reads for someone's role and the callables that move money
+      // accept as access, so a manager who could set it could make anyone a
+      // manager, bring back someone removed, or demote a co-owner. Whoever
+      // assigned a row could do the same to it after leaving the team.
       allow update: if request.auth != null && (
         isSuperAdmin() ||
         (
           request.resource.data.userId == resource.data.userId &&
           request.resource.data.facilityId == resource.data.facilityId &&
-          exists(/databases/$(database)/documents/facilities/$(resource.data.facilityId)) &&
           (
-            get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.ownerUid == request.auth.uid ||
-            get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.managers[request.auth.uid] == true ||
-            resource.data.assignedBy == request.auth.uid
+            isFacilityOwnerUid(resource.data.facilityId) ||
+            (
+              isFacilityOwnerOrManager(resource.data.facilityId) &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isActive', 'updatedAt']) &&
+              request.resource.data.isActive == false &&
+              !(resource.data.get('roleType', null) in ['owner', 'admin'])
+            )
           )
         ) ||
         (
+          // The invite's own row again (inviteRoleDocId): an invite the
+          // owner reopened after it was accepted. Never another row of
+          // theirs, which would be a second active row for the one invite.
           request.resource.data.inviteId is string &&
           resource.data.userId == request.auth.uid &&
           request.resource.data.userId == request.auth.uid &&
           request.resource.data.facilityId == resource.data.facilityId &&
+          roleId == inviteRoleDocId(resource.data.facilityId, request.resource.data.inviteId) &&
           request.resource.data.assignedBy == resource.data.assignedBy &&
           request.resource.data.roleType is string &&
           request.resource.data.assignedBy is string &&
@@ -74,16 +94,12 @@
         )
       );
 
+      // The app never deletes a row (removeRole deactivates it). A legacy
+      // manager could delete anyone's, a co-owner's included, and whoever
+      // assigned a row could delete it after leaving the team.
       allow delete: if request.auth != null && (
         isSuperAdmin() ||
-        (
-          exists(/databases/$(database)/documents/facilities/$(resource.data.facilityId)) &&
-          (
-            get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.ownerUid == request.auth.uid ||
-            get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.managers[request.auth.uid] == true ||
-            resource.data.assignedBy == request.auth.uid
-          )
-        )
+        isFacilityOwnerUid(resource.data.facilityId)
       );
     }
 

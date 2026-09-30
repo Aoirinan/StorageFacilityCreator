@@ -13,7 +13,8 @@
         request.resource.data.active == true &&
         !request.resource.data.keys().hasAny(facilityEntitlementWriteForbiddenKeys());
       
-      // Allow update by owner or super admin, or invitee merging their own role + trace field (assignRole)
+      // Allow update by owner or super admin, invitee merging their own role + trace field (assignRole),
+      // or a manager removing a team member (removeRole)
       allow update: if request.auth != null && (
         isSuperAdmin() ||
         (
@@ -21,7 +22,8 @@
           !request.resource.data.diff(resource.data).affectedKeys()
             .hasAny(facilityEntitlementWriteForbiddenKeys())
         ) ||
-        facilityInviteRoleMergeAllowed(facilityId)
+        facilityInviteRoleMergeAllowed(facilityId) ||
+        facilityManagerRoleRemovalAllowed(facilityId)
       );
       
       // Owners delete through the deleteFacilityPermanently callable, which

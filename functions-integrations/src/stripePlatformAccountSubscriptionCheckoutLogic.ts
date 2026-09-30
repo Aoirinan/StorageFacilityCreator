@@ -13,6 +13,7 @@ import {
   resolvePlatformCheckoutDeps,
   type PlatformCheckoutDeps,
 } from './platformCheckoutOfferContext';
+import { refuseBillingForSuspendedAccount } from './stripePlatformSuspendedAccount';
 
 /**
  * Core flow for account-level subscription checkout (after auth, App Check, rate limit, and required fields).
@@ -40,6 +41,7 @@ export async function executeCreateSubscriptionCheckout(
     if (accountData.ownerUid !== context.auth!.uid) {
       throw new functions.https.HttpsError('permission-denied', 'Access denied');
     }
+    refuseBillingForSuspendedAccount(accountData);
 
     let customerId = accountData.stripeCustomerId as string | undefined;
     if (!customerId) {
