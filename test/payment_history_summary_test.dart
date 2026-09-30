@@ -69,6 +69,20 @@ LedgerEntry _historyPayment(
       createdBy: 'owner',
     );
 
+/// The figure next to "Payments made: ".
+String? _paymentsMade(WidgetTester tester) {
+  final row = find.ancestor(of: find.text('Payments made: '), matching: find.byType(Row)).first;
+  final texts = tester.widgetList<Text>(find.descendant(of: row, matching: find.byType(Text))).toList();
+  return texts.last.data;
+}
+
+/// The received-payment rows' keys, top to bottom.
+List<String> _receivedRows(WidgetTester tester) => tester
+    .widgetList<Padding>(find.byWidgetPredicate(
+        (w) => w.key is ValueKey<String> && (w.key! as ValueKey<String>).value.startsWith('received-payment-')))
+    .map((w) => (w.key! as ValueKey<String>).value)
+    .toList();
+
 Color? _monthColor(WidgetTester tester, String key) {
   final text = tester.widget<Text>(
     find.descendant(of: find.byKey(ValueKey('payment-month-$key')), matching: find.byType(Text)),
@@ -150,6 +164,8 @@ void main() {
         _historyPayment('p7', DateTime(2026, 7, 1), 65, method: 'cash', monthOnly: true),
         // Taken back by Undo: not a payment received.
         _historyPayment('p0', DateTime(2026, 2, 5), 65, reference: '300', status: LedgerEntryStatus.voided),
+        // Not received yet.
+        _historyPayment('pp', DateTime(2026, 1, 6), 65, reference: '299', status: LedgerEntryStatus.pending),
       ],
     );
 
@@ -162,14 +178,10 @@ void main() {
     expect(find.text('Jul 2026'), findsOneWidget);
     expect(find.text('Cash'), findsOneWidget);
     expect(find.text('Check #300'), findsNothing);
+    expect(find.text('Check #299'), findsNothing);
 
     // Each payment once, newest first.
-    final rows = tester
-        .widgetList<Padding>(find.byWidgetPredicate(
-            (w) => w.key is ValueKey<String> && (w.key! as ValueKey<String>).value.startsWith('received-payment-')))
-        .map((w) => (w.key! as ValueKey<String>).value)
-        .toList();
-    expect(rows, [
+    expect(_receivedRows(tester), [
       'received-payment-p7',
       'received-payment-p6',
       'received-payment-p5',
@@ -178,7 +190,11 @@ void main() {
     ]);
     expect(find.text('\$65.00'), findsNWidgets(5));
 
-    // The months those checks paid are no longer "Before move-in".
+    expect(_paymentsMade(tester), '5');
+
+    // The months those checks paid are no longer "Before move-in"; the
+    // voided and pending ones before them do not move the start.
+    expect(_monthColor(tester, '2026-01'), AppTheme.textTertiary);
     expect(_monthColor(tester, '2026-02'), AppTheme.textTertiary);
     expect(_monthColor(tester, '2026-03'), AppTheme.success);
     expect(_monthColor(tester, '2026-07'), AppTheme.success);
@@ -253,10 +269,97 @@ void main() {
         _entry('r1', LedgerEntryType.refund, 50),
       ],
     );
-    final made = tester.widget<Text>(find.descendant(
-      of: find.ancestor(of: find.text('Payments made: '), matching: find.byType(Row)).first,
-      matching: find.text('1'),
-    ));
-    expect(made.data, '1');
+    expect(_paymentsMade(tester), '1');
+  });
+
+  testWidgets('payments made counts the payments listed, nothing else', (tester) async {
+    LedgerEntry row(String id, LedgerEntryType type, double amount, LedgerEntryStatus status) =>
+        _entry(id, type, amount).copyWith(status: status);
+    await pump(
+      tester,
+      _tenant(moveInDate: DateTime(2026, 8, 17), paidThrough: DateTime(2026, 9, 30)),
+      [
+        row('paid', LedgerEntryType.payment, -50, LedgerEntryStatus.posted),
+        row('owed', LedgerEntryType.payment, -50, LedgerEntryStatus.pending),
+        row('undone', LedgerEntryType.payment, -50, LedgerEntryStatus.voided),
+        row('goodwill', LedgerEntryType.credit, -10, LedgerEntryStatus.posted),
+        row('handed-back', LedgerEntryType.refund, 50, LedgerEntryStatus.posted),
+      ],
+    );
+    expect(_receivedRows(tester), ['received-payment-paid']);
+    expect(_paymentsMade(tester), '1');
+  });
+
+  testWidgets('a move-in payment made the month before move-in leaves that month before move-in',
+      (tester) async {
+    // Paid online on Aug 28 for a Sep 3 move-in, with $40 still owing: August
+    // used to show as red "Late".
+    await pump(
+      tester,
+      _tenant(moveInDate: DateTime(2026, 9, 3)),
+      [
+        _entry('c1', LedgerEntryType.rentCharge, 90),
+        LedgerEntry(
+          id: 'm1',
+          tenantId: 'tenant-1',
+          facilityId: 'facility-1',
+          type: LedgerEntryType.payment,
+          amount: -50,
+          entryDate: DateTime(2026, 8, 28, 15, 30),
+          status: LedgerEntryStatus.posted,
+          metadata: const {'paymentIntentId': 'pi_test_1', 'moveInPayment': true},
+          createdAt: DateTime(2026, 8, 28, 15, 30),
+          createdBy: 'system',
+        ),
+      ],
+    );
+    expect(find.text('Aug 28, 2026'), findsOneWidget);
+    expect(_monthColor(tester, '2026-08'), AppTheme.textTertiary);
+    expect(_monthColor(tester, '2026-09'), AppTheme.error);
+  });
+
+  testWidgets('a payment dated 12:00 UTC shows the day it names', (tester) async {
+    // Enter past history dates a payment 12:00 UTC on the day received, and
+    // Firestore hands it back in local time: still that day anywhere in the
+    // US (and from UTC-11 to UTC+11).
+    await pump(
+      tester,
+      _tenant(moveInDate: DateTime(2026, 1, 1), paidThrough: DateTime(2026, 9, 30)),
+      [
+        _historyPayment('d1', DateTime.utc(2026, 3, 4, 12).toLocal(), 65, reference: '401'),
+        _historyPayment('d2', DateTime.utc(2026, 5, 1, 12).toLocal(), 65, method: 'cash', monthOnly: true),
+      ],
+    );
+    expect(find.text('Mar 4, 2026'), findsOneWidget);
+    expect(find.text('Mar 3, 2026'), findsNothing);
+    expect(find.text('Mar 5, 2026'), findsNothing);
+    expect(find.text('May 2026'), findsOneWidget);
+  });
+
+  testWidgets('amounts show thousands separators and ACH is a bank transfer', (tester) async {
+    await pump(
+      tester,
+      _tenant(moveInDate: DateTime(2026, 1, 1), paidThrough: DateTime(2026, 9, 30)),
+      [
+        _historyPayment('big', DateTime(2026, 3, 4), 1234.5, reference: '501'),
+        // The move-in wizard stores ACH as 'ach'.
+        LedgerEntry(
+          id: 'ach1',
+          tenantId: 'tenant-1',
+          facilityId: 'facility-1',
+          type: LedgerEntryType.payment,
+          amount: -85,
+          entryDate: DateTime(2026, 1, 1, 10),
+          status: LedgerEntryStatus.posted,
+          metadata: const {'paymentMethod': 'ach', 'moveInPayment': true},
+          createdAt: DateTime(2026, 1, 1, 10),
+          createdBy: 'owner',
+        ),
+      ],
+    );
+    expect(find.text('\$1,234.50'), findsOneWidget);
+    expect(find.text('\$85.00'), findsOneWidget);
+    expect(find.text('Bank transfer (ACH)'), findsOneWidget);
+    expect(find.text('Other'), findsNothing);
   });
 }

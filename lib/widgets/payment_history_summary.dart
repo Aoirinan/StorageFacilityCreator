@@ -15,6 +15,8 @@ class PaymentHistorySummary extends StatelessWidget {
   /// How many payments are listed; View Ledger has the rest.
   static const int receivedListLimit = 12;
 
+  static final NumberFormat _money = NumberFormat.currency(symbol: r'$', decimalDigits: 2);
+
   final TenantModel tenant;
 
   /// The tenant's ledger (every status; only posted entries count towards
@@ -66,24 +68,19 @@ class PaymentHistorySummary extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // A refund is money handed back to the tenant, not a payment they made,
-    // so it is not counted here: a tenant who paid once and was refunded
-    // used to show two payments made.
-    final paymentCount = entries
-        .where((e) =>
-            e.status != LedgerEntryStatus.voided &&
-            (e.type == LedgerEntryType.payment ||
-                e.type == LedgerEntryType.credit))
-        .length;
+    final received = receivedPayments(entries);
+    // The payments listed below, so the count and the list agree: posted
+    // payment rows only. A refund is money handed back, not a payment made
+    // (a tenant who paid once and was refunded used to show two); a credit
+    // is not money received, and a pending row is still owed.
+    final paymentCount = received.length;
     final balance = sumPostedLedgerEntries(entries);
     final months = paymentHistoryMonths(today);
-    // Newest first, so the last one is the first payment on the ledger.
-    final received = receivedPayments(entries);
-    final firstReceived = received.isEmpty ? null : received.last.receivedOn;
+    final historyStart = firstPastHistoryPaymentDate(entries);
     final statuses = [
       for (final m in months)
         tenantPaymentMonthStatus(tenant, m,
-            balance: balance, today: today, firstPaymentReceived: firstReceived),
+            balance: balance, today: today, firstPastHistoryPayment: historyStart),
     ];
     int count(PaymentMonthStatus s) => statuses.where((x) => x == s).length;
     final lateMonths = count(PaymentMonthStatus.late);
@@ -193,7 +190,7 @@ class PaymentHistorySummary extends StatelessWidget {
           Expanded(child: Text(p.label, style: style, overflow: TextOverflow.ellipsis)),
           const SizedBox(width: 8),
           Text(
-            '\$${p.amount.toStringAsFixed(2)}',
+            _money.format(p.amount),
             style: style?.copyWith(fontWeight: FontWeight.w600, color: AppTheme.success),
           ),
         ],

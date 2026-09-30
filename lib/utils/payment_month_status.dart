@@ -1,4 +1,6 @@
+import 'package:sfcapp/models/ledger_entry_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/utils/past_history_math.dart' show isPastHistoryEntry;
 
 /// One month's square in the tenant page's Payment History grid.
 ///
@@ -11,7 +13,7 @@ enum PaymentMonthStatus {
   movedOut('moved_out'),
 
   /// The month ends before the tenant moved in (and before the first
-  /// payment on their ledger): nothing was owed.
+  /// payment entered with Enter past history): nothing was owed.
   beforeMoveIn(null),
 
   /// Not covered by paidThrough, and nothing shows it is late: a month still
@@ -42,18 +44,39 @@ String paymentMonthKey(DateTime month) =>
 
 /// The day the tenant's history starts: their move-in date, or the day the
 /// tenant record was made when no move-in date was saved; or the day of
-/// [firstPaymentReceived] when that is earlier.
+/// [firstPastHistoryPayment] when that is earlier.
 ///
 /// Enter past history only saves its move-in date on a tenant that has none,
 /// so a tenant typed in with the day they were entered as move-in kept that
 /// date, and every month of the checks entered before it showed as "Before
-/// move-in". Money received in a month means they were a tenant then.
-DateTime tenancyStart(TenantModel tenant, {DateTime? firstPaymentReceived}) {
+/// move-in". A check the owner says came in back then means they were a
+/// tenant then.
+///
+/// Only a past-history payment ([firstPastHistoryPaymentDate]) moves the
+/// start. Any payment used to: a renter who pays online on Sep 28 for an
+/// Oct 3 move-in then had September, before they moved in, in the grid as
+/// Late (or Paid).
+DateTime tenancyStart(TenantModel tenant, {DateTime? firstPastHistoryPayment}) {
   final start = tenant.moveInDate ?? tenant.createdAt;
-  if (firstPaymentReceived != null && firstPaymentReceived.isBefore(start)) {
-    return firstPaymentReceived;
+  if (firstPastHistoryPayment != null && firstPastHistoryPayment.isBefore(start)) {
+    return firstPastHistoryPayment;
   }
   return start;
+}
+
+/// The date of the oldest posted payment on [entries] that was entered with
+/// Enter past history (`metadata.source == 'past_history'`), null when there
+/// is none. Pending and voided rows (money not received, or an entry taken
+/// back with Undo) do not count, and neither does a payment taken any other
+/// way: see [tenancyStart].
+DateTime? firstPastHistoryPaymentDate(Iterable<LedgerEntry> entries) {
+  DateTime? first;
+  for (final e in entries) {
+    if (e.type != LedgerEntryType.payment || e.status != LedgerEntryStatus.posted) continue;
+    if (!isPastHistoryEntry(e)) continue;
+    if (first == null || e.entryDate.isBefore(first)) first = e.entryDate;
+  }
+  return first;
 }
 
 /// The status of [month] (any day in it) for the Payment History grid.
@@ -95,19 +118,19 @@ PaymentMonthStatus paymentMonthStatus({
   return PaymentMonthStatus.notRecorded;
 }
 
-/// [paymentMonthStatus] for [tenant]. [firstPaymentReceived] is the date of
-/// the oldest payment on their ledger, if any (see [tenancyStart]).
+/// [paymentMonthStatus] for [tenant]. [firstPastHistoryPayment] is
+/// [firstPastHistoryPaymentDate] of their ledger (see [tenancyStart]).
 PaymentMonthStatus tenantPaymentMonthStatus(
   TenantModel tenant,
   DateTime month, {
   required double balance,
   required DateTime today,
-  DateTime? firstPaymentReceived,
+  DateTime? firstPastHistoryPayment,
 }) =>
     paymentMonthStatus(
       month: month,
       overrides: tenant.monthStatusOverrides,
-      tenancyStart: tenancyStart(tenant, firstPaymentReceived: firstPaymentReceived),
+      tenancyStart: tenancyStart(tenant, firstPastHistoryPayment: firstPastHistoryPayment),
       paidThrough: tenant.paidThrough,
       balance: balance,
       today: today,

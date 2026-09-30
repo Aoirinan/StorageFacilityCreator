@@ -49,24 +49,40 @@ class ReceivedPayment {
 /// are money still owed and voided rows were taken back, so neither is
 /// listed.
 List<ReceivedPayment> receivedPayments(List<LedgerEntry> entries) {
-  final payments = <ReceivedPayment>[
+  final rows = [
     for (final e in entries)
-      if (e.type == LedgerEntryType.payment && e.status == LedgerEntryStatus.posted)
-        ReceivedPayment(
-          ledgerEntryId: e.id,
-          receivedOn: e.entryDate,
-          monthOnly: e.metadata?['dateIsMonthOnly'] == true,
-          amount: e.amount.abs(),
-          method: _methodOf(e.metadata),
-          reference: _trimmed(e.metadata?['reference']),
-        ),
+      if (e.type == LedgerEntryType.payment && e.status == LedgerEntryStatus.posted) e,
+  ]..sort(_newestFirst);
+  return [
+    for (final e in rows)
+      ReceivedPayment(
+        ledgerEntryId: e.id,
+        receivedOn: e.entryDate,
+        monthOnly: e.metadata?['dateIsMonthOnly'] == true,
+        amount: e.amount.abs(),
+        method: _methodOf(e.metadata),
+        reference: _trimmed(e.metadata?['reference']),
+      ),
   ];
-  payments.sort((a, b) => b.receivedOn.compareTo(a.receivedOn));
-  return payments;
+}
+
+/// Newest date first; on the same instant (two "month only" history
+/// payments are both the 1st at 12:00 UTC) the one recorded last first,
+/// then by id, so the order, and which rows make the Payment History
+/// block's cut, is the same on every load.
+int _newestFirst(LedgerEntry a, LedgerEntry b) {
+  final byDate = b.entryDate.compareTo(a.entryDate);
+  if (byDate != 0) return byDate;
+  final byCreated = b.createdAt.compareTo(a.createdAt);
+  if (byCreated != 0) return byCreated;
+  return a.id.compareTo(b.id);
 }
 
 String? _methodOf(Map<String, dynamic>? metadata) {
   final stored = _trimmed(metadata?['paymentMethod']);
+  // The move-in wizard stores 'ach', which [PaymentMethod] has no name for
+  // and so reads as Other.
+  if (stored == 'ach') return 'Bank transfer (ACH)';
   if (stored != null) return paymentMethodFromStored(stored).displayName;
   // The Stripe webhook's row has no method, only the payment intent.
   if (_trimmed(metadata?['paymentIntentId']) != null) return PaymentMethod.stripe.displayName;
