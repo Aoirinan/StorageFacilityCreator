@@ -6,6 +6,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/models/address_model.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/ledger_entry_model.dart';
+import 'package:sfcapp/models/payment_model.dart';
+import 'package:sfcapp/models/security_deposit_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/services/bulk_statement_service.dart';
 import 'package:sfcapp/utils/bulk_statements.dart';
@@ -515,6 +517,73 @@ void main() {
         throwsA(isA<BulkStatementsCancelled>()),
       );
       expect(done, 2, reason: 'the third statement was never laid out');
+    });
+
+    test('a held security deposit is noted under the balance; a combined '
+        'statement sums every merged record\'s; no balance or skip changes',
+        () async {
+      SecurityDeposit deposit(double amount, {bool settled = false}) =>
+          SecurityDeposit(
+            amount: amount,
+            receivedDate: SecurityDeposit.noonUtc(DateTime(2026, 9, 1)),
+            method: PaymentMethod.check,
+            status: settled
+                ? SecurityDepositStatus.settled
+                : SecurityDepositStatus.held,
+          );
+      final tenants = [
+        _patA1.copyWith(securityDeposit: deposit(25)),
+        _patA2.copyWith(securityDeposit: deposit(30)),
+        _samB1.copyWith(securityDeposit: deposit(40, settled: true)),
+        _samB2,
+        // Paid up: skipped for owing nothing, deposit or not.
+        _kim.copyWith(securityDeposit: deposit(60)),
+      ];
+      BulkStatementPlan planOf({required bool combine}) => planBulkStatements(
+          tenants, _ledgers,
+          period: _all, combineSamePerson: combine, skipNothingOwed: true);
+      int count(String words, String text) => text.allMatches(words).length;
+
+      final combined = planOf(combine: true);
+      expect(combined.jobs.map((j) => j.tenants.map((t) => t.id).join('+')),
+          ['pat1+pat2', 'sam1', 'sam2']);
+      expect(combined.skippedNothingOwed.map((t) => t.id), ['kim']);
+      expect(combined.jobs.first.lines.closingBalance, 140);
+
+      final result = await BulkStatementService.buildBulkStatementsPdf(
+        combined,
+        _facility,
+        printedOn: today,
+        period: _all,
+        compress: false,
+      );
+      expect(result.pageCount, 3);
+      final words = _words(result.bytes);
+      expect(
+          words,
+          contains(r'Current Balance: $140.00 Security deposits on file: '
+              r'$55.00 (held since 9/1/2026). Not part of the balance above.'));
+      // Pat's alone: Sam's is settled, his other record has none, and Kim
+      // has no statement.
+      expect(count(words, 'Security deposit'), 1);
+      expect(words.indexOf('Security deposit'),
+          lessThan(words.indexOf('Sam Sample')));
+      for (final wrong in [r'$195.00', r'$85.00']) {
+        expect(words, isNot(contains(wrong)), reason: wrong);
+      }
+
+      // Printed apart, each record notes its own.
+      final apart = await BulkStatementService.buildBulkStatementsPdf(
+        planOf(combine: false),
+        _facility,
+        printedOn: today,
+        period: _all,
+        compress: false,
+      );
+      final apartWords = _words(apart.bytes);
+      expect(apartWords, contains(r'Security deposit on file: $25.00 (held'));
+      expect(apartWords, contains(r'Security deposit on file: $30.00 (held'));
+      expect(count(apartWords, 'Security deposit'), 2);
     });
 
     test('an empty plan is an empty document', () async {

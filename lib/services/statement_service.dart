@@ -11,6 +11,7 @@ import 'ledger_service.dart';
 import 'tenant_service.dart';
 import 'facility_service.dart';
 import 'email_service.dart';
+import 'package:sfcapp/models/security_deposit_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/pdf_letterhead.dart';
 import 'package:sfcapp/utils/print_documents.dart' show tenantPrintAddress;
@@ -115,6 +116,97 @@ String _formatDate(DateTime date) => DateFormat('MMM d, yyyy').format(date);
 String _formatCurrency(double amount) =>
     NumberFormat.currency(symbol: '\$', decimalDigits: 2).format(amount);
 
+/// The line under the closing balance when the facility holds a security
+/// deposit for the account: "Security deposit on file: $25.00 (held since
+/// 9/1/2026). Not part of the balance above." Null when none is held, and
+/// the statement prints nothing: no deposit on file, or one settled (what
+/// was applied is a ledger row already; what was refunded is gone).
+///
+/// [deposits] are the `securityDeposit` of every record on the statement:
+/// the one tenant's, or each merged record's on a combined bulk statement,
+/// summed. The date prints when every held deposit has one and they are the
+/// same day; "held since" the earlier of two would misdate the later one.
+///
+/// A held deposit is owed back to the tenant and is never a ledger row
+/// ([SecurityDeposit]), so the note only states it: no balance on the page
+/// or in the email includes it.
+String? statementDepositNote(Iterable<SecurityDeposit?> deposits) {
+  final held = [
+    for (final d in deposits)
+      if (d != null && d.isHeld && d.amount > 0) d,
+  ];
+  if (held.isEmpty) return null;
+  final total =
+      SecurityDeposit.toCents(held.fold<double>(0, (sum, d) => sum + d.amount));
+  // The calendar day, as the tenant page's deposit summary reads it.
+  final days = {
+    for (final d in held)
+      if (d.receivedDate case final r?) DateTime(r.year, r.month, r.day) else null,
+  };
+  final since = days.length == 1 && days.single != null
+      ? ' (held since ${DateFormat('M/d/yyyy').format(days.single!)})'
+      : '';
+  final label =
+      held.length > 1 ? 'Security deposits on file' : 'Security deposit on file';
+  return '$label: ${_formatCurrency(total)}$since. '
+      'Not part of the balance above.';
+}
+
+/// The emailed statement: subject, HTML and plain text. [currentBalance] is
+/// the formatted balance the email calls "Current"; [depositNote]
+/// ([statementDepositNote]) goes on the line after it, when there is one.
+({String subject, String html, String text}) statementEmailContent({
+  required TenantModel tenant,
+  required FacilityModel facility,
+  required String periodText,
+  required String pdfUrl,
+  required String currentBalance,
+  String? depositNote,
+}) {
+  final depositHtml = depositNote == null ? '' : '\n  <p>$depositNote</p>';
+  final depositText = depositNote == null ? '' : '\n$depositNote';
+  final subject = 'Account Statement from ${facility.name}';
+  final html = '''
+<html>
+<body style="font-family: Arial, sans-serif;">
+  <h2>Account Statement</h2>
+  <p>Dear ${tenant.name},</p>
+  <p>Your account statement for $periodText is ready.</p>
+  <p><a href="$pdfUrl" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Download Statement PDF</a></p>
+  <p><strong>Current Balance:</strong> $currentBalance</p>$depositHtml
+  <p>Please review the statement and contact us if you have any questions.</p>
+  <p>Thank you for your business!</p>
+  <br>
+  <p>${facility.name}<br>
+  ${facility.email != null ? 'Email: ${facility.email}<br>' : ''}
+  ${facility.phone != null ? 'Phone: ${facility.phone}' : ''}
+  </p>
+</body>
+</html>
+      ''';
+
+  final text = '''
+Account Statement
+
+Dear ${tenant.name},
+
+Your account statement for $periodText is ready.
+
+Download it here: $pdfUrl
+
+Current Balance: $currentBalance$depositText
+
+Please review the statement and contact us if you have any questions.
+
+Thank you for your business!
+
+${facility.name}
+${facility.email != null ? 'Email: ${facility.email}' : ''}
+${facility.phone != null ? 'Phone: ${facility.phone}' : ''}
+      ''';
+  return (subject: subject, html: html, text: text);
+}
+
 /// Service for generating and sending account statements
 class StatementService {
   static final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -182,6 +274,9 @@ class StatementService {
   /// [lines] come from [buildStatementLines] over the tenant's ledger for
   /// the same [startDate] and [endDate]; [unitLabels] from
   /// [statementUnitLabels]. [printedOn] is the statement's date line.
+  /// [securityDeposits] are noted under the closing balance
+  /// ([statementDepositNote]); left null, the tenant's own. A combined bulk
+  /// statement passes every merged record's.
   static pw.MultiPage buildStatementPage({
     required StatementLines lines,
     required TenantModel tenant,
@@ -191,6 +286,7 @@ class StatementService {
     required DateTime printedOn,
     DateTime? startDate,
     DateTime? endDate,
+    Iterable<SecurityDeposit?>? securityDeposits,
   }) {
     final remitTo = PdfLetterhead.remitAddress(facility);
     // The letterhead already says where to mail payments when the facility
@@ -203,6 +299,8 @@ class StatementService {
     final balance = lines.closingBalance;
     final balanceLabel = statementBalanceLabel(endDate);
     final balanceColor = balance > 0 ? PdfColors.red700 : PdfColors.green700;
+    final depositNote =
+        statementDepositNote(securityDeposits ?? [tenant.securityDeposit]);
     final holderDetails = statementHolderDetails(tenant, unitLabels);
     // The date of the balance-forward row, or null for no row. With no start
     // date there is nothing before the period, so the row only ever appears
@@ -380,6 +478,21 @@ class StatementService {
                   ),
                 ),
 
+                // A held deposit, stated and never added in: it is owed
+                // back to the tenant, not paid toward rent. In this block
+                // so it stays on the page with the balance it is not part
+                // of.
+                if (depositNote != null) ...[
+                  pw.SizedBox(height: 3),
+                  pw.Align(
+                    alignment: pw.Alignment.centerRight,
+                    child: pw.Text(
+                      depositNote,
+                      style: const pw.TextStyle(fontSize: 9),
+                    ),
+                  ),
+                ],
+
                 pw.SizedBox(height: 12),
 
                 // Footer
@@ -540,52 +653,21 @@ class StatementService {
       final currentBalance =
           _formatCurrency(buildStatementLines(ledgerEntries).closingBalance);
 
-      final subject = 'Account Statement from ${facility.name}';
-      final htmlBody = '''
-<html>
-<body style="font-family: Arial, sans-serif;">
-  <h2>Account Statement</h2>
-  <p>Dear ${tenant.name},</p>
-  <p>Your account statement for $periodText is ready.</p>
-  <p><a href="$pdfUrl" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Download Statement PDF</a></p>
-  <p><strong>Current Balance:</strong> $currentBalance</p>
-  <p>Please review the statement and contact us if you have any questions.</p>
-  <p>Thank you for your business!</p>
-  <br>
-  <p>${facility.name}<br>
-  ${facility.email != null ? 'Email: ${facility.email}<br>' : ''}
-  ${facility.phone != null ? 'Phone: ${facility.phone}' : ''}
-  </p>
-</body>
-</html>
-      ''';
-
-      final textBody = '''
-Account Statement
-
-Dear ${tenant.name},
-
-Your account statement for $periodText is ready.
-
-Download it here: $pdfUrl
-
-Current Balance: $currentBalance
-
-Please review the statement and contact us if you have any questions.
-
-Thank you for your business!
-
-${facility.name}
-${facility.email != null ? 'Email: ${facility.email}' : ''}
-${facility.phone != null ? 'Phone: ${facility.phone}' : ''}
-      ''';
+      final email = statementEmailContent(
+        tenant: tenant,
+        facility: facility,
+        periodText: periodText,
+        pdfUrl: pdfUrl,
+        currentBalance: currentBalance,
+        depositNote: statementDepositNote([tenant.securityDeposit]),
+      );
 
       // Send email with PDF link
       final emailResult = await EmailService.sendEmail(
         to: tenant.email,
-        subject: subject,
-        html: htmlBody,
-        text: textBody,
+        subject: email.subject,
+        html: email.html,
+        text: email.text,
         facilityId: facilityId,
         tenantId: tenantId,
       );

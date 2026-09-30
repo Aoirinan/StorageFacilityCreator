@@ -121,6 +121,9 @@ class BulkStatementService {
         printedOn: printedOn,
         startDate: period.startDate,
         endDate: period.endDate,
+        // Every record's, so a combined statement notes the deposits held
+        // on all its units, summed.
+        securityDeposits: [for (final t in job.tenants) t.securityDeposit],
       ));
       if (duplex && (pages.length - before).isOdd) {
         doc.addPage(pw.Page(
