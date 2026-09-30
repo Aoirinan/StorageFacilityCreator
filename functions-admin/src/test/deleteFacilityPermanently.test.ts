@@ -15,6 +15,7 @@ const untouchable = new Proxy({} as admin.firestore.Firestore, {
 
 const noPurge = {
   cancelSubscriptions: async () => assert.fail('purged'),
+  legacyAutopayStripe: () => assert.fail('purged'),
   alignAccountSubscription: async () => assert.fail('purged'),
   deleteStoragePrefix: async () => assert.fail('purged'),
 };

@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import * as admin from 'firebase-admin';
 import * as functions from 'firebase-functions/v1';
 import type { CancelOutcome, CancellableSubscription } from '@sfc/functions-shared/stripe/subscriptionCleanup';
+import type { LegacySubscriptionStripe } from '@sfc/functions-shared/stripe/legacyTenantAutopay';
 
 import {
   FACILITY_BILLING_NOT_STOPPED_MESSAGE,
@@ -12,7 +15,7 @@ import {
   facilityHasActiveTenantsMessage,
   facilityHasAutopayTenantsMessage,
 } from '../../deleteFacilityPermanently';
-import { FACILITY_KEYED_COLLECTIONS, FacilityPurgeDeps } from '../../facilityPurge';
+import { FACILITY_KEYED_COLLECTIONS, FacilityPurgeDeps, stopAccountBilling } from '../../facilityPurge';
 import { TWO_FACTOR_REQUIRED_MESSAGE } from '../../recentTwoFactor';
 import { clearEmulator, emulatorDb, skipWithoutEmulator } from './firestoreEmulator';
 
@@ -33,12 +36,36 @@ type Calls = {
   storage: string[];
 };
 
+/**
+ * A platform Stripe client for the tenants' legacy AutoPay subscriptions:
+ * each cancel is recorded in [calls] as 'tenant-autopay'. [cancelError],
+ * when given, is what a cancel throws, and [status] what a lookup of the
+ * subscription then says.
+ */
+function fakeLegacyStripe(
+  calls: Calls,
+  opts: { cancelError?: (id: string) => Error | null; status?: (id: string) => string } = {},
+): LegacySubscriptionStripe {
+  return {
+    subscriptions: {
+      cancel: async (id: string) => {
+        const error = opts.cancelError?.(id) ?? null;
+        if (error) throw error;
+        calls.cancelled.push({ id, label: 'tenant-autopay' });
+        return {};
+      },
+      retrieve: async (id: string) => ({ status: opts.status?.(id) ?? 'active' }),
+    },
+  };
+}
+
 function fakePurge(calls: Calls, overrides: Partial<FacilityPurgeDeps> = {}): FacilityPurgeDeps {
   return {
     cancelSubscriptions: async (subs) => {
       calls.cancelled.push(...subs);
       return subs.map((s): CancelOutcome => ({ id: s.id, label: s.label, status: 'canceled' }));
     },
+    legacyAutopayStripe: () => fakeLegacyStripe(calls),
     alignAccountSubscription: async (id, count) => {
       calls.aligned.push([id, count]);
     },
@@ -329,14 +356,97 @@ test("a tenant's legacy subscription that won't cancel: nothing is deleted", { s
   await seedFacility();
   const fac = emulatorDb().collection('facilities').doc(FACILITY);
   await fac.collection('oldTenants').doc('o1').collection('billing').doc('default').set({ stripeSubscriptionId: 'sub_old' });
-  const purge = fakePurge(newCalls(), {
-    cancelSubscriptions: async (subs) =>
-      subs.map(
-        (s): CancelOutcome => ({ id: s.id, label: s.label, status: s.id === 'sub_old' ? 'failed' : 'canceled' }),
-      ),
+  const calls = newCalls();
+  // The cancel fails and Stripe still says it is active: it may be billing.
+  const purge = fakePurge(calls, {
+    legacyAutopayStripe: () => fakeLegacyStripe(calls, { cancelError: () => new Error('Rate limit exceeded') }),
   });
   await rejectsWith(run('admin-1', purge, { superadmin: true }), 'failed-precondition', FACILITY_BILLING_NOT_STOPPED_MESSAGE);
   await assertNothingDeleted();
+});
+
+test("a tenant's legacy subscription that already ended does not block the delete, whatever Stripe's wording", { skip: skipWithoutEmulator }, async () => {
+  // Through the generic cancelSubscriptions, an ended subscription whose
+  // cancel error matched none of the phrases it looks for read as 'failed'
+  // on every try, and the delete refused for good. The legacy cancel looks
+  // the subscription up: canceled or incomplete_expired is not billing.
+  await seedFacility();
+  const fac = emulatorDb().collection('facilities').doc(FACILITY);
+  await fac.collection('tenants').doc('t1').collection('billing').doc('default').set({ stripeSubscriptionId: 'sub_ended' });
+  await fac.collection('oldTenants').doc('o1').collection('billing').doc('default').set({ stripeSubscriptionId: 'sub_expired' });
+  const calls = newCalls();
+  const purge = fakePurge(calls, {
+    legacyAutopayStripe: () =>
+      fakeLegacyStripe(calls, {
+        cancelError: () => new Error('This subscription is no longer active.'),
+        status: (id) => (id === 'sub_ended' ? 'canceled' : 'incomplete_expired'),
+      }),
+  });
+  await run('admin-1', purge, { superadmin: true });
+  assert.deepEqual(calls.cancelled, [
+    { id: 'sub_platform', label: 'platform' },
+    { id: 'sub_website', label: 'website' },
+  ]);
+  assert.deepEqual(await docsUnder(`facilities/${FACILITY}`), []);
+});
+
+test("an account delete stops each facility's and the account's billing once, and its tenants' legacy autopay", { skip: skipWithoutEmulator }, async () => {
+  // superAdminDeleteFacilityCreatorAccount cancels through this before it
+  // deletes anything, and deletes nothing when an outcome failed.
+  const db = emulatorDb();
+  await db.collection('facilities').doc('fac-a').set({ ownerUid: OWNER, stripePlatformSubscriptionId: 'sub_shared' });
+  await db
+    .collection('facilities')
+    .doc('fac-b')
+    .set({ ownerUid: OWNER, stripePlatformSubscriptionId: 'sub_shared', stripeWebsiteSubscriptionId: 'sub_site_b' });
+  const billing = (facility: string, collection: string, tenant: string) =>
+    db.collection('facilities').doc(facility).collection(collection).doc(tenant).collection('billing').doc('default');
+  await db.collection('facilities').doc('fac-a').collection('tenants').doc('ta').set({ name: 'Tenant A' });
+  await billing('fac-a', 'tenants', 'ta').set({ stripeSubscriptionId: 'sub_tenant_a' });
+  await db.collection('facilities').doc('fac-b').collection('oldTenants').doc('tb').set({ name: 'Tenant B' });
+  await billing('fac-b', 'oldTenants', 'tb').set({ stripeSubscriptionId: 'sub_tenant_b' });
+  await db.collection('facilities').doc('fac-b').collection('tenants').doc('tc').set({ name: 'Tenant C' });
+  await billing('fac-b', 'tenants', 'tc').set({ autopayEnabled: false });
+  const facilities = (await db.collection('facilities').where('ownerUid', '==', OWNER).get()).docs;
+
+  const calls = newCalls();
+  const ended = new Set(['sub_tenant_b']);
+  const outcomes = await stopAccountBilling(db, facilities, { stripeSubscriptionId: 'sub_account' }, {
+    cancelSubscriptions: fakePurge(calls).cancelSubscriptions,
+    legacyAutopayStripe: () =>
+      fakeLegacyStripe(calls, {
+        cancelError: (id) => (ended.has(id) ? new Error('Something Stripe words differently') : null),
+        status: (id) => (ended.has(id) ? 'canceled' : 'active'),
+      }),
+  });
+  assert.deepEqual(
+    outcomes.map((o) => [o.id, o.label, o.status]),
+    [
+      ['sub_shared', 'platform', 'canceled'],
+      ['sub_site_b', 'website', 'canceled'],
+      ['sub_account', 'account', 'canceled'],
+      ['sub_tenant_a', 'tenant-autopay', 'canceled'],
+      ['sub_tenant_b', 'tenant-autopay', 'canceled'],
+    ],
+  );
+
+  // One that will not cancel and is still active: failed, so the account
+  // delete refuses before deleting anything.
+  const stuck = await stopAccountBilling(db, facilities, {}, {
+    cancelSubscriptions: fakePurge(newCalls()).cancelSubscriptions,
+    legacyAutopayStripe: () => fakeLegacyStripe(newCalls(), { cancelError: () => new Error('api_connection_error') }),
+  });
+  assert.deepEqual(
+    stuck.filter((o) => o.status === 'failed').map((o) => o.id),
+    ['sub_tenant_a', 'sub_tenant_b'],
+  );
+});
+
+test('the account delete callable stops billing through stopAccountBilling', () => {
+  const source = readFileSync(path.join(__dirname, '..', '..', '..', 'src', 'superAdminCallables.ts'), 'utf8');
+  assert.match(source, /await stopAccountBilling\(\s*db,\s*facilitiesSnap\.docs,\s*accountData,\s*stripeFacilityPurgeDeps\(\),?\s*\)/);
+  // Tenants' legacy subscriptions no longer go through the generic cancel.
+  assert.doesNotMatch(source, /tenantLegacySubscriptions/);
 });
 
 test('more than a few tenants with autopay: five are named, the rest counted', () => {

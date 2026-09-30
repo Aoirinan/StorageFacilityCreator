@@ -11,17 +11,10 @@ import { getOrCreateAddOnPriceId, getOrCreateBasePriceId } from '@sfc/functions-
 import {
   FacilityBillingNotStoppedError,
   purgeFacility,
+  stopAccountBilling,
   stripeFacilityPurgeDeps,
-  tenantBillingDocs,
-  tenantLegacySubscriptions,
 } from './facilityPurge';
-import {
-  anyCancelFailed,
-  cancelSubscriptions,
-  collectSubscriptionsToCancel,
-  summarizeCancelOutcomes,
-  type CancellableSubscription,
-} from '@sfc/functions-shared/stripe/subscriptionCleanup';
+import { anyCancelFailed, summarizeCancelOutcomes } from '@sfc/functions-shared/stripe/subscriptionCleanup';
 import { adminDeleteDocumentTree } from './admin_delete_document_tree';
 import { disableUserHandler } from './disableUser';
 import { SENDGRID_SECRETS, STRIPE_SECRETS, SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME } from './secrets';
@@ -234,24 +227,16 @@ export const superAdminDeleteFacilityCreatorAccount = functions
       .get();
 
     // Every subscription this owner has, across every facility plus the legacy
-    // account plan, cancelled before any of it is deleted. Collected in one
-    // pass so a subscription shared by two facilities is cancelled once.
-    // Their tenants' legacy AutoPay subscriptions too: on the platform
-    // account, they went on charging tenants of deleted facilities.
-    const tenantSubscriptions: CancellableSubscription[] = [];
-    for (const f of facilitiesSnap.docs) {
-      tenantSubscriptions.push(...tenantLegacySubscriptions(await tenantBillingDocs(db, f.ref)));
-    }
-    const allSubscriptions = [
-      ...facilitiesSnap.docs.flatMap((f) =>
-        collectSubscriptionsToCancel(f.data() as Record<string, unknown>, null),
-      ),
-      ...collectSubscriptionsToCancel(null, accountData),
-      ...tenantSubscriptions,
-    ].filter(
-      (sub, i, list) => list.findIndex((other) => other.id === sub.id) === i,
+    // account plan, cancelled before any of it is deleted, a subscription
+    // shared by two facilities once. Their tenants' legacy AutoPay
+    // subscriptions too: on the platform account, they went on charging
+    // tenants of deleted facilities (stopAccountBilling).
+    const accountCancelOutcomes = await stopAccountBilling(
+      db,
+      facilitiesSnap.docs,
+      accountData,
+      stripeFacilityPurgeDeps(),
     );
-    const accountCancelOutcomes = await cancelSubscriptions(getStripeClient(), allSubscriptions);
     if (anyCancelFailed(accountCancelOutcomes)) {
       throw new functions.https.HttpsError(
         'failed-precondition',

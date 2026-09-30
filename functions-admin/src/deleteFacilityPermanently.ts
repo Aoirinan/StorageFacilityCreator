@@ -96,7 +96,7 @@ export function facilityHasAutopayTenantsMessage(tenants: string[], oldTenants: 
  * set up: a Stripe subscription id or autopayEnabled on billing/default,
  * by collection. The owner switches it off first, so no tenant finds their
  * autopay gone with no word; a legacy subscription is also cancelled by
- * the purge itself (tenantLegacySubscriptions).
+ * the purge itself (cancelTenantLegacySubscriptions).
  */
 export async function tenantsWithAutopay(
   db: admin.firestore.Firestore,
