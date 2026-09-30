@@ -24,7 +24,7 @@ test('a row without a numeric amount is reported, not guessed at', () => {
 test('a wrong-sign credit overstates the balance by twice its amount', () => {
   // The balance holds +X where it should hold -X.
   assert.equal(overstatement(50), 100);
-  assert.equal(overstatement(24.52), 49.04);
+  assert.equal(overstatement(31.17), 62.34);
   assert.equal(overstatement(-50), 0);
   assert.equal(overstatement('x'), 0);
 });

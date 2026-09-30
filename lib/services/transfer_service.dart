@@ -270,9 +270,9 @@ class TransferService {
   /// used to be written positive, so leaving a unit with $30 of rent to
   /// give back put the tenant $30 further into debt instead of $30 ahead,
   /// and the two entries summed to fromUnit + toUnit rather than
-  /// [TransferModel.netAmount]. The statement PDF hid this: it takes the
-  /// absolute value of every credit. The balance on the tenant, the
-  /// delinquency list and the payment history do not.
+  /// [TransferModel.netAmount]. Every balance reader (statements, the
+  /// tenant's balance, the delinquency list, payment history) adds the
+  /// signed amounts, so the credit has to be stored negative.
   static List<TransferLedgerLine> ledgerLines(TransferModel transfer) {
     final lines = <TransferLedgerLine>[];
     if (transfer.fromUnitProratedRent > 0) {
