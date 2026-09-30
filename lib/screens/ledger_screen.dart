@@ -949,12 +949,16 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
       // The balance the header shows, less what live invoices already ask
       // for, is all an invoice may bill. Charges are taken newest first
       // until it is covered; the oldest taken may be for part of itself.
+      // Card disputes are neither billed nor counted towards that amount:
+      // they are collected with "Record payment for this dispute".
       final ledgerBalance = sumPostedLedgerEntries(entries);
+      final cardDisputeBalance = cardDisputeShareOfBalance(entries);
       final lines = openChargesForInvoice(
         charges: entries.map(SelectableCharge.fromLedgerEntry),
         idsOnLiveInvoices: coverage.ledgerEntryIds,
         ledgerBalance: ledgerBalance,
         liveInvoiceBalance: coverage.balance,
+        cardDisputeBalance: cardDisputeBalance,
       );
 
       if (lines.isEmpty) {
@@ -965,6 +969,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
             content: Text(nothingToInvoiceMessage(
               ledgerBalance: ledgerBalance,
               liveInvoiceBalance: coverage.balance,
+              cardDisputeBalance: cardDisputeBalance,
             )),
             backgroundColor: AppTheme.warning,
             duration: const Duration(seconds: 8),

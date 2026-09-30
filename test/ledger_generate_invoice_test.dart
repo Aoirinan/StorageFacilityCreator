@@ -414,4 +414,77 @@ void main() {
     expect(find.text('On invoice'), findsNWidgets(2));
     expect(find.text('Due: 09/01/2026'), findsOneWidget);
   });
+
+  // A card dispute stays in the balance but is never an invoice line. With
+  // only the line left out, its $130 still counted as owed, so the dialog
+  // walked back and billed September's rent, which the tenant had paid.
+  group('a card dispute on the ledger', () {
+    final dispute = _entry('dispute_du_test1',
+            amount: 130,
+            on: DateTime(2026, 9, 20),
+            type: LedgerEntryType.otherCharge,
+            description: 'Card dispute')
+        .copyWith(
+      storedType: disputeLedgerType,
+      metadata: {'disputeId': 'du_test1'},
+    );
+    final paidSeptember = [
+      _entry('rent-2026-09',
+          amount: 130,
+          on: DateTime(2026, 9, 1),
+          description: 'Rent - September 2026'),
+      _entry('check-1', amount: -130, on: DateTime(2026, 9, 3)),
+    ];
+
+    testWidgets('alone is not invoiced, and paid rent is not billed for it',
+        (tester) async {
+      final operations =
+          await _pumpLedger(tester, entries: [...paidSeptember, dispute]);
+      expect(find.text('\$130.00'), findsWidgets); // Current Balance
+
+      await tester.tap(_headerButton);
+      await tester.pumpAndSettle();
+
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(
+        find.textContaining("This tenant's balance is a card dispute"),
+        findsOneWidget,
+      );
+      expect(operations.requested, isEmpty);
+
+      await tester.pump(const Duration(seconds: 9));
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('beside unpaid rent leaves only the rent', (tester) async {
+      final operations = await _pumpLedger(tester, entries: [
+        ...paidSeptember,
+        dispute,
+        _entry('rent-2026-10',
+            amount: 130,
+            on: DateTime(2026, 10, 1),
+            description: 'Rent - October 2026'),
+      ]);
+
+      await tester.tap(_headerButton);
+      await tester.pumpAndSettle();
+
+      expect(
+        _inDialog('This will create an invoice for 1 charge(s) to invoice:'),
+        findsOneWidget,
+      );
+      expect(_inDialog('Rent - October 2026'), findsOneWidget);
+      expect(_inDialog('Rent - September 2026'), findsNothing);
+      expect(_inDialog('Card dispute'), findsNothing);
+
+      await tester.tap(_dialogButton);
+      await tester.pumpAndSettle();
+      expect(operations.requested, [
+        ['rent-2026-10'],
+      ]);
+
+      await tester.pump(const Duration(seconds: 9));
+      await tester.pumpAndSettle();
+    });
+  });
 }
