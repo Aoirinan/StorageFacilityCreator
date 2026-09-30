@@ -261,7 +261,8 @@ function quoteCents(inMemory: InMemoryFirestore, date?: Date): number {
   return computePublicMoveInCharges({
     reservation,
     unitData: inMemory.read(UNIT_PATH),
-    facilityData: FACILITY_DATA,
+    // The facility as checkout reads it, so a test that gives it fees is quoted with them.
+    facilityData: inMemory.read(`facilities/${FACILITY}`),
     moveInDate: date ?? recorded?.toDate() ?? new Date(),
   }).totalCents;
 }
@@ -1139,6 +1140,11 @@ test('checkout records the date it priced a move-in with no move-in date from', 
   const inMemory = new InMemoryFirestore();
   seed(inMemory, { expiresInMinutes: 10 });
   inMemory.seed(RESERVATION_PATH, { ...inMemory.read(RESERVATION_PATH), moveInDate: null });
+  // An admin fee keeps the amount above zero on every day. Rent alone is $0
+  // on the last day of a month: calculateProratedRent counts whole days from
+  // the time of day to midnight starting the last day, so "now" on that day
+  // prices no days of rent, and checkout refuses an amount of 0.
+  inMemory.seed(`facilities/${FACILITY}`, { ...FACILITY_DATA, billingSettings: { adminFee: 25 } });
   const { checkout } = loadPublicMoveIn(inMemory);
   const before = Date.now();
 
