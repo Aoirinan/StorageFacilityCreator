@@ -354,17 +354,45 @@ export {
   unitsHeldByTenant,
 } from './tenants/permanentDeleteRules';
 
-export type { UnitNotOfferedReason } from './units/onlineRental';
+export type { ActiveTenantUnitClaims, UnitNotOfferedReason } from './units/onlineRental';
 export {
+  activeTenantUnitClaims,
   enabledOnlineUnitTypes,
   facilityTakesOnlineRentals,
+  hasTenantLink,
   isArchivedForOnlineRental,
   isInternalUseUnit,
+  isUnitClaimedByActiveTenant,
+  isUnitHeldByTenant,
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
   isUnlistedUnit,
+  readActiveTenantUnitClaims,
   unitNotOfferedOnlineReason,
+  unitTypeOf,
 } from './units/onlineRental';
+
+export type { PaidCheckoutOutcome, PaidCheckoutParams } from './units/publicMoveInPaidCheckout';
+export {
+  CHECKOUT_PAID_AT_FIELD,
+  CHECKOUT_PAID_FIELD,
+  CHECKOUT_RETURN_WINDOW_MS,
+  CHECKOUT_SESSION_ACCOUNT_FIELD,
+  CHECKOUT_SESSION_EXPIRES_FIELD,
+  FINISH_AFTER_PAYMENT_MINUTES,
+  PAID_HOLD_MAX_HOURS,
+  PUBLIC_MOVE_IN_PAID_CHECKOUTS_COLLECTION,
+  PUBLIC_MOVE_IN_PAYMENTS_COLLECTION,
+  checkoutMayHaveBeenPaid,
+  holderMayBePaying,
+  isLiveHold,
+  laterExpiry,
+  paidHoldCap,
+  readHoldersReservation,
+  recordPaidPublicMoveInCheckout,
+  timestampToDate,
+  unitHoldRef,
+} from './units/publicMoveInPaidCheckout';
 
 export type { UnitLabelOptions, UnitLabelStyle } from './units/unitLabel';
 export { formatUnitLabel, tenantUnitLabel, unitLabelsIncludeArea } from './units/unitLabel';

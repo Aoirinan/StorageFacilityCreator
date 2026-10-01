@@ -1,14 +1,38 @@
 /**
  * A small in-memory Firestore for callable tests, modelled on the one in
  * functions-public-website/src/test/support. Only what the tests here use:
- * doc get/set/update, a whole-collection get, and transactions.
+ * doc get/set/update, a collection get with equality filters, and
+ * transactions.
  */
 import * as admin from 'firebase-admin';
 
 type DocData = Record<string, unknown>;
 
+/** Firestore's default for a transaction whose reads were written before it committed. */
+const MAX_TRANSACTION_ATTEMPTS = 5;
+
 export class InMemoryFirestore {
   private readonly store = new Map<string, DocData>();
+
+  /**
+   * Runs as each attempt of a transaction is about to commit, after its
+   * callback has made every read, as another request writing while it ran
+   * would. A write here to anything it read through `tx.get` (a doc, or a
+   * query's results) makes it run again, as Firestore does; a read made with
+   * a plain `get()` is not checked, so it can go stale.
+   */
+  beforeCommit: ((attempt: number) => void) | null = null;
+
+  /** Transaction attempts rerun because something they read was written before they committed. */
+  transactionRetries = 0;
+
+  /** For generated doc ids, which must differ while a transaction's writes are held. */
+  private autoIds = 0;
+
+  nextAutoId(): string {
+    this.autoIds += 1;
+    return `auto_${this.autoIds}`;
+  }
 
   seed(path: string, data: DocData): void {
     this.store.set(path, { ...data });
@@ -74,15 +98,30 @@ export class InMemoryFirestore {
       }
     }
 
+    /** A collection, or a query on one; only equality (`==`) filters are applied. */
     class CollectionRef {
-      constructor(readonly path: string) {}
+      constructor(
+        readonly path: string,
+        private readonly equals: Array<[string, unknown]> = [],
+      ) {}
 
       doc(id?: string): DocRef {
-        return new DocRef(`${this.path}/${id || `auto_${store.size + 1}`}`);
+        return new DocRef(`${this.path}/${id || owner.nextAutoId()}`);
+      }
+
+      where(field: string, op: string, value: unknown): CollectionRef {
+        if (op !== '==') throw new Error(`in-memory Firestore: unsupported where op ${op}`);
+        return new CollectionRef(this.path, [...this.equals, [field, value]]);
       }
 
       async get() {
-        const docs = owner.listCollection(this.path).map((key) => new DocSnapshot(new DocRef(key)));
+        const docs = owner
+          .listCollection(this.path)
+          .filter((key) => {
+            const data = store.get(key) || {};
+            return this.equals.every(([field, value]) => field in data && data[field] === value);
+          })
+          .map((key) => new DocSnapshot(new DocRef(key)));
         return {
           empty: docs.length === 0,
           size: docs.length,
@@ -92,15 +131,69 @@ export class InMemoryFirestore {
       }
     }
 
+    /**
+     * One attempt: reads first, writes held until the callback returns, then
+     * committed unless something it read through `tx.get` was written
+     * meanwhile (null: run it again). Every write replaces a doc's object, so
+     * a different object (or none) means the doc was written.
+     */
+    const attemptTransaction = async <T>(
+      fn: (tx: Record<string, unknown>) => Promise<T>,
+      attempt: number,
+    ): Promise<{ result: T } | null> => {
+      const docReads: Array<{ path: string; seen: DocData | undefined }> = [];
+      const queryReads: Array<{ query: CollectionRef; seen: Map<string, DocData | undefined> }> = [];
+      const writes: Array<() => Promise<void>> = [];
+      const tx = {
+        get: async (target: DocRef | CollectionRef) => {
+          if (writes.length > 0) {
+            throw new Error('Firestore transactions require all reads to be executed before all writes.');
+          }
+          if (target instanceof DocRef) {
+            docReads.push({ path: target.path, seen: store.get(target.path) });
+            return target.get();
+          }
+          const result = await target.get();
+          queryReads.push({
+            query: target,
+            seen: new Map(result.docs.map((doc) => [doc.ref.path, store.get(doc.ref.path)])),
+          });
+          return result;
+        },
+        set: (ref: DocRef, data: DocData) => {
+          writes.push(() => ref.set(data));
+          return tx;
+        },
+        update: (ref: DocRef, data: DocData) => {
+          writes.push(() => ref.update(data));
+          return tx;
+        },
+      };
+      const result = await fn(tx);
+      owner.beforeCommit?.(attempt);
+      let stale = docReads.some((read) => store.get(read.path) !== read.seen);
+      for (const read of queryReads) {
+        if (stale) break;
+        const now = (await read.query.get()).docs.map((doc) => doc.ref.path);
+        stale = now.length !== read.seen.size ||
+          now.some((p) => !read.seen.has(p) || read.seen.get(p) !== store.get(p));
+      }
+      if (stale) return null;
+      for (const write of writes) await write();
+      return { result };
+    };
+
     const db = {
       collection: (name: string) => new CollectionRef(name),
       doc: (path: string) => new DocRef(path),
-      runTransaction: <T>(fn: (tx: Record<string, unknown>) => Promise<T>): Promise<T> =>
-        fn({
-          get: (ref: DocRef) => ref.get(),
-          set: (ref: DocRef, data: DocData) => ref.set(data),
-          update: (ref: DocRef, data: DocData) => ref.update(data),
-        }),
+      runTransaction: async <T>(fn: (tx: Record<string, unknown>) => Promise<T>): Promise<T> => {
+        for (let attempt = 1; attempt <= MAX_TRANSACTION_ATTEMPTS; attempt += 1) {
+          const committed = await attemptTransaction(fn, attempt);
+          if (committed) return committed.result;
+          owner.transactionRetries += 1;
+        }
+        throw Object.assign(new Error('10 ABORTED: Too much contention on these documents.'), { code: 10 });
+      },
     };
     return db as unknown as admin.firestore.Firestore;
   }

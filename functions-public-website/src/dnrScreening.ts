@@ -70,6 +70,7 @@ export function globalEntryMatchesStrict(
 /**
  * Blocks public / online move-in when the person matches an active facility DNR (any facility)
  * or platform-wide global DNR, mirroring in-app `checkDNRScreening` / `findActiveMatchingEntries`.
+ * The refusal's wording is listed in checkoutSessionReuse.ts (REFUSALS_THAT_END_CHECKOUT); change both.
  */
 export async function assertOnlineRentalNotOnDnrList(
   db: admin.firestore.Firestore,

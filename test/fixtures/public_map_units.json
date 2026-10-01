@@ -1,10 +1,11 @@
 {
   "_about": [
-    "What the two writers of publicFacilityMaps/{slug}.units must both publish for the same unit and tenant docs, with default public settings.",
+    "What the two writers of publicFacilityMaps/{slug}.units must both publish for the same unit and tenant docs, with the case's publicSettings (the facility's settings/public doc; default settings when a case has none).",
     "The app side runs each case through the public map's unit and tenant reads and FacilityMapV2Service.buildPublicUnitInventoryMaps (test/public_map_units_parity_test.dart).",
     "The server side runs each case through syncPublicFacilityMapInventoryForFacility (functions-public-website/src/test/publicFacilityMapInventorySync.test.ts).",
     "expected is keyed by unit doc id and lists every unit that is published; a unit left out of it must not be published. Each entry names the published fields compared for that unit.",
-    "isRentable must be false for any unit the online rental callables refuse (isUnitOfferedOnline in functions-shared, and a status that lower-cases to 'available' or 'reserved'), or the site offers a unit the hold then turns down."
+    "isRentable must be false for any unit the online rental callables refuse (isUnitOfferedOnline in functions-shared, and a status that lower-cases to 'available' or 'reserved'), or the site offers a unit the hold then turns down.",
+    "The online rental holds run each case too (functions-public-website/src/test/unitClaimedByTenant.test.ts): a hold is taken for exactly the units published with isRentable true, so a unit the map shows rented (a tenant link, or an active tenant's claim: their unitId, or with none their unitNumber in their unitArea or any area) cannot be rented by a direct call. Checkout (same file) and the tenant portal's list and hold (functions-tenant-lifecycle/src/test/portalAdditionalUnit.test.ts) run them as well."
   ],
   "cases": [
     {
@@ -94,6 +95,108 @@
         "a2": { "isRentable": true, "status": "available" },
         "a3": { "isRentable": true, "status": "available" },
         "a4": { "isRentable": false, "status": "rented" }
+      }
+    },
+    {
+      "name": "an active tenant's unit number claims the unit whatever its case or spacing, on either side",
+      "units": [
+        { "id": "c1", "data": { "unitNumber": "C1", "status": "available", "unitType": "standard" } },
+        { "id": "padded", "data": { "unitNumber": " d2 ", "status": "available", "unitType": "standard" } },
+        { "id": "mixed", "data": { "unitNumber": "Row-E3", "status": "reserved", "unitType": "standard" } },
+        { "id": "moved-out", "data": { "unitNumber": "F4", "status": "available", "unitType": "standard" } },
+        { "id": "text-flag", "data": { "unitNumber": "G5", "status": "available", "unitType": "standard" } },
+        { "id": "free", "data": { "unitNumber": "H6", "status": "available", "unitType": "standard" } }
+      ],
+      "tenants": [
+        { "id": "t1", "data": { "name": "Al", "isActive": true, "unitNumber": "\tc1  " } },
+        { "id": "t2", "data": { "name": "Bo", "isActive": true, "unitNumber": "D2" } },
+        { "id": "t3", "data": { "name": "Cy", "isActive": true, "unitNumber": " rOW-e3" } },
+        { "id": "t4", "data": { "name": "Di", "isActive": false, "unitNumber": "F4" } },
+        { "id": "t5", "data": { "name": "Ed", "isActive": "true", "unitNumber": "G5" } },
+        { "id": "t6", "data": { "name": "Fy", "isActive": true, "unitNumber": "   " } }
+      ],
+      "expected": {
+        "c1": { "isRentable": false, "status": "rented" },
+        "padded": { "isRentable": false, "status": "rented" },
+        "mixed": { "isRentable": false, "status": "rented" },
+        "moved-out": { "isRentable": true, "status": "available" },
+        "text-flag": { "isRentable": true, "status": "available" },
+        "free": { "isRentable": true, "status": "available" }
+      }
+    },
+    {
+      "name": "a unit two active tenants claim by number, with status available and no tenant link, is rented (a shared parking space, as found in production)",
+      "units": [
+        { "id": "uncovered", "data": { "unitNumber": "Uncovered", "status": "available", "unitType": "standard" } },
+        { "id": "covered", "data": { "unitNumber": "Covered", "status": "available", "unitType": "standard" } }
+      ],
+      "tenants": [
+        { "id": "t1", "data": { "name": "Al", "isActive": true, "unitNumber": "Uncovered" } },
+        { "id": "t2", "data": { "name": "Bo", "isActive": true, "unitNumber": "Uncovered" } }
+      ],
+      "expected": {
+        "uncovered": { "isRentable": false, "status": "rented" },
+        "covered": { "isRentable": true, "status": "available" }
+      }
+    },
+    {
+      "name": "where unit numbers repeat across areas, a tenant with a unitId claims that unit only, not the same number in another area",
+      "units": [
+        { "id": "c2-12", "data": { "unitNumber": "12", "area": "Complex 2", "status": "available", "unitType": "standard" } },
+        { "id": "c3-12", "data": { "unitNumber": "12", "area": "Complex 3", "status": "available", "unitType": "standard" } },
+        { "id": "c2-13", "data": { "unitNumber": "13", "area": "Complex 2", "status": "available", "unitType": "standard" } },
+        { "id": "c3-13", "data": { "unitNumber": "13", "area": "Complex 3", "status": "available", "unitType": "standard" } },
+        { "id": "stale-label", "data": { "unitNumber": "OLD", "status": "available", "unitType": "standard" } },
+        { "id": "renamed", "data": { "unitNumber": "NEW", "status": "available", "unitType": "standard" } }
+      ],
+      "tenants": [
+        { "id": "t1", "data": { "name": "Al", "isActive": true, "unitNumber": "12", "unitId": "c3-12", "unitArea": "Complex 3" } },
+        { "id": "t2", "data": { "name": "Bo", "isActive": false, "unitNumber": "13", "unitId": "c2-13", "unitArea": "Complex 2" } },
+        { "id": "t3", "data": { "name": "Cy", "isActive": true, "unitNumber": "OLD", "unitId": " renamed " } }
+      ],
+      "expected": {
+        "c2-12": { "isRentable": true, "status": "available" },
+        "c3-12": { "isRentable": false, "status": "rented" },
+        "c2-13": { "isRentable": true, "status": "available" },
+        "c3-13": { "isRentable": true, "status": "available" },
+        "stale-label": { "isRentable": true, "status": "available" },
+        "renamed": { "isRentable": false, "status": "rented" }
+      }
+    },
+    {
+      "name": "a tenant with no unitId claims their number in their unitArea when they have one, and in every area when not",
+      "units": [
+        { "id": "c2-14", "data": { "unitNumber": "14", "area": "Complex 2", "status": "available", "unitType": "standard" } },
+        { "id": "c3-14", "data": { "unitNumber": "14", "area": "Complex 3", "status": "available", "unitType": "standard" } },
+        { "id": "c2-15", "data": { "unitNumber": "15", "area": "Complex 2", "status": "available", "unitType": "standard" } },
+        { "id": "c3-15", "data": { "unitNumber": "15", "area": "Complex 3", "status": "available", "unitType": "standard" } },
+        { "id": "blank-id", "data": { "unitNumber": "17", "area": "Complex 3", "status": "available", "unitType": "standard" } }
+      ],
+      "tenants": [
+        { "id": "t1", "data": { "name": "Al", "isActive": true, "unitNumber": "14", "unitArea": " complex  2 " } },
+        { "id": "t2", "data": { "name": "Bo", "isActive": true, "unitNumber": "15" } },
+        { "id": "t3", "data": { "name": "Cy", "isActive": true, "unitNumber": "17", "unitId": "  " } }
+      ],
+      "expected": {
+        "c2-14": { "isRentable": false, "status": "rented" },
+        "c3-14": { "isRentable": true, "status": "available" },
+        "c2-15": { "isRentable": false, "status": "rented" },
+        "c3-15": { "isRentable": false, "status": "rented" },
+        "blank-id": { "isRentable": false, "status": "rented" }
+      }
+    },
+    {
+      "name": "a tenant with no unitId still labelled with a unit's number from before a renumbering claims it",
+      "units": [
+        { "id": "c2-16", "data": { "unitNumber": "16", "area": "Complex 2", "legacyUnitNumber": " C2-16 ", "status": "available", "unitType": "standard" } },
+        { "id": "c3-16", "data": { "unitNumber": "16", "area": "Complex 3", "legacyUnitNumber": "C3-16", "status": "available", "unitType": "standard" } }
+      ],
+      "tenants": [
+        { "id": "t1", "data": { "name": "Al", "isActive": true, "unitNumber": "c2-16" } }
+      ],
+      "expected": {
+        "c2-16": { "isRentable": false, "status": "rented" },
+        "c3-16": { "isRentable": true, "status": "available" }
       }
     },
     {
@@ -213,6 +316,29 @@
       }
     },
     {
+      "name": "a unit whose type is missing or not text is standard, as the app reads it, and offered when standard is",
+      "publicSettings": { "enabledPublicUnitTypes": ["standard"] },
+      "units": [
+        { "id": "missing", "data": { "unitNumber": "T1", "status": "available" } },
+        { "id": "nul", "data": { "unitNumber": "T2", "status": "available", "unitType": null } },
+        { "id": "map", "data": { "unitNumber": "T3", "status": "available", "unitType": { "name": "vehicle" } } },
+        { "id": "standard", "data": { "unitNumber": "T4", "status": "available", "unitType": "standard" } },
+        { "id": "vehicle", "data": { "unitNumber": "T5", "status": "available", "unitType": "vehicle" } },
+        { "id": "blank", "data": { "unitNumber": "T6", "status": "available", "unitType": "" } },
+        { "id": "zero", "data": { "unitNumber": "T7", "status": "available", "unitType": 0 } }
+      ],
+      "tenants": [],
+      "expected": {
+        "missing": { "isRentable": true, "status": "available", "unitType": "standard", "categorySlug": "standard" },
+        "nul": { "isRentable": true, "status": "available", "unitType": "standard", "categorySlug": "standard" },
+        "map": { "isRentable": true, "status": "available", "unitType": "standard", "categorySlug": "standard" },
+        "standard": { "isRentable": true, "status": "available", "unitType": "standard", "categorySlug": "standard" },
+        "vehicle": { "isRentable": false, "status": "available", "unitType": "vehicle", "categorySlug": "vehicle" },
+        "blank": { "isRentable": false, "status": "available", "unitType": "", "categorySlug": "facility-map" },
+        "zero": { "isRentable": false, "status": "available", "unitType": "0", "categorySlug": "0" }
+        }
+      },
+      {
       "name": "a tenant's unit number claims its unit as the server reads it, whatever else the tenant doc holds",
       "units": [
         { "id": "u101", "data": { "unitNumber": "101", "status": "available", "unitType": "standard" } },

@@ -33,15 +33,18 @@ class UnitNumbersRepeatSetting extends StatelessWidget {
       'repeated number must have an area. Statements, invoices and texts '
       'will show the area next to the unit number.';
 
-  /// Online rentals still match rented units by unit number (a follow-up
-  /// changes that), so the website can count both of two units numbered
-  /// alike as rented when one is.
+  /// Online rentals match a tenant to the unit their record is linked to
+  /// (unitId), but a tenant with none by number in their area, and in every
+  /// area when they have no area either (TenantUnitClaims,
+  /// activeTenantUnitClaims in functions-shared). Such an older record can
+  /// still make every unit with its number read as rented.
   static const onlineRentalsWarning =
-      'Online rentals are on for this facility. Until a follow-up update '
-      'ships, online availability for a repeated unit number may be '
-      'understated: when one unit 12 is rented, the website may show every '
-      'unit 12 as rented. This can only hide free units from online '
-      'renters, not offer rented ones.';
+      'Online rentals are on for this facility. The website matches each '
+      'tenant to the unit their record is linked to. An older tenant record '
+      'with no linked unit and no area is matched by unit number alone, so '
+      'while that tenant rents a unit 12, the website may show every unit 12 '
+      'as rented. This can only hide free units from online renters, not '
+      'offer rented ones.';
 
   @override
   Widget build(BuildContext context) {

@@ -104,8 +104,9 @@ class TenantModel {
   final String unitNumber;
 
   /// The unit [unitNumber] names (its doc id), when the writer knew it: the
-  /// tenant's primary (label) unit. Null for tenants written before it was
-  /// kept, and for online move-ins until their next edit or the backfill
+  /// tenant's primary (label) unit. Every tenant writer sets it, the online
+  /// move-in (completePublicMoveIn) included; null for tenants written
+  /// before it was kept, until their next edit or the backfill
   /// (scripts/backfill-tenant-unit-id.mjs). Which units a tenant holds is
   /// still `units/{id}.tenantId`; this only says which one the label is, and
   /// does not by itself mean they hold it.

@@ -13,6 +13,7 @@ import {
   updateFacilityFromWebsiteSubscription,
 } from './stripeWebhookSubscriptionInternal';
 import { reconcileAccountSubscription } from './accountSubscriptionReconcile';
+import { PUBLIC_MOVE_IN_CHECKOUT_TYPE, handlePublicMoveInCheckoutCompleted } from './stripeWebhookPublicMoveIn';
 
 /**
  * Did this completed platform checkout carry the owner's free month? Read from the
@@ -36,7 +37,24 @@ export function platformOfferUsageFromCheckoutSession(session: Stripe.Checkout.S
   };
 }
 
-export async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
+/**
+ * checkout.session.completed, from either destination. An online move-in
+ * session (metadata type public_move_in, on a facility's connected account:
+ * [connectedAccountId] is the event's account) goes to
+ * handlePublicMoveInCheckoutCompleted; every other session is a platform
+ * checkout (subscriptions, the website add-on, the owner's free month), as
+ * before. [eventCreatedSeconds]: when Stripe saw the session complete.
+ */
+export async function handleCheckoutCompleted(
+  session: Stripe.Checkout.Session,
+  connectedAccountId?: string,
+  eventCreatedSeconds?: number,
+) {
+  if (session.metadata?.type === PUBLIC_MOVE_IN_CHECKOUT_TYPE) {
+    await handlePublicMoveInCheckoutCompleted(session, connectedAccountId, eventCreatedSeconds);
+    return;
+  }
+
   const accountId = session.metadata?.accountId;
   const facilityId = session.metadata?.facilityId;
   if (!accountId) {

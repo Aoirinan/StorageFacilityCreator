@@ -199,7 +199,7 @@ void main() {
     final log = FakeQueryLog();
     serveTenants(FakeCollection(_tenants, log: log));
 
-    await FacilityMapV2Service.readTenantClaimedUnitNumbersOrThrow('fac1');
+    await FacilityMapV2Service.readTenantUnitClaimsOrThrow('fac1');
 
     expect(log.equalityFilters, [('isActive', true)]);
   });

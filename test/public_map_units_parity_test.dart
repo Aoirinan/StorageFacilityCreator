@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sfcapp/models/facility_public_settings_model.dart';
 import 'package:sfcapp/services/facility_map_v2_service.dart';
 import 'package:sfcapp/services/facility_subcollections.dart';
 
@@ -48,15 +49,21 @@ void main() {
       );
 
       // What publish and refreshPublicMapInventoryFromLiveUnits do between
-      // reading the public settings (none here: the defaults) and writing,
-      // through the same unit and tenant-claim reads.
+      // reading the public settings (FacilityPublicService.getPublicSettings,
+      // null when the facility has none) and writing, through the same unit
+      // and tenant-claim reads.
+      final settings = c['publicSettings'] as Map?;
       final units =
           await FacilityMapV2Service.fetchActiveUnitsForTesting('fac1');
       final maps = FacilityMapV2Service.buildPublicUnitInventoryMaps(
         units: units,
-        publicSettings: null,
-        tenantClaimedUnitNumbers: await FacilityMapV2Service
-            .readTenantClaimedUnitNumbersOrThrow('fac1'),
+        publicSettings: settings == null
+            ? null
+            : FacilityPublicSettings.fromMap(
+                {...Map<String, dynamic>.from(settings), 'facilityId': 'fac1'},
+              ),
+        tenantClaims:
+            await FacilityMapV2Service.readTenantUnitClaimsOrThrow('fac1'),
       );
 
       // The fields each unit's entry names (isRentable and status in all of

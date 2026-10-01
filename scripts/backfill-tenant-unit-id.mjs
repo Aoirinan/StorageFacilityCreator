@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Backfill tenant.unitId and tenant.unitArea (the tenant's primary unit) for
- * tenants written before the app kept them, and for online move-ins.
+ * tenants written before the app kept them, and for online move-ins
+ * completed before completePublicMoveIn wrote them too.
  *
  * For each ACTIVE tenant with a unitNumber and no unitId, it looks for the
  * unit whose tenantId is the tenant and whose number matches the label
