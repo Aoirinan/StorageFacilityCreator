@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/services/audit_service.dart';
 import 'package:sfcapp/services/move_out_card_refund.dart';
@@ -68,6 +69,27 @@ class _FakeProcessRefund {
     return answer as Map<String, dynamic>;
   }
 }
+
+const _contractPath = 'facilities/fac-1/contracts/contract-1';
+
+/// The contract processMoveOut commits with a card refund left to the
+/// screen, in a fake Firestore: its `moveOutCardRefund` is 'pending', or
+/// [record] when another press has written it since.
+Future<FakeFirebaseFirestore> _contractLeftPending(DateTime movedOut, {Map<String, dynamic>? record}) async {
+  final firestore = FakeFirebaseFirestore();
+  await firestore.doc(_contractPath).set({
+    'facilityId': 'fac-1',
+    'tenantId': 'tenant-1',
+    'moveOutStatus': 'completed',
+    'moveOutCardRefund':
+        record ?? {'status': 'pending', 'requested': 36.67, 'refunded': 0, 'at': Timestamp.fromDate(movedOut)},
+  });
+  return firestore;
+}
+
+/// The contract's card refund record, as it is now.
+Future<Map<String, dynamic>> _cardRecord(FakeFirebaseFirestore firestore) async =>
+    Map<String, dynamic>.from((await firestore.doc(_contractPath).get()).data()!['moveOutCardRefund'] as Map);
 
 void main() {
   final sep = DateTime(2026, 9, 3);
@@ -738,10 +760,12 @@ void main() {
         ...ledger,
         _refund('re_test_other', 30, referencePi: 'pi_test_sep', at: movedOut.add(const Duration(seconds: 20))),
       ];
+      late FakeFirebaseFirestore contract;
       Future<(MoveOutResult, _FakeProcessRefund)> firstPress(
         Map<String, dynamic> data,
         List<Map<String, dynamic>> rows,
       ) async {
+        contract = await _contractLeftPending(movedOut);
         final fake = _FakeProcessRefund([
           {'success': true, 'stripeRefundId': 're_test_a'},
           {'success': true, 'stripeRefundId': 're_test_b'},
@@ -754,6 +778,7 @@ void main() {
           contractId: 'contract-1',
           readLedger: () async => rows,
           call: fake.call,
+          firestore: contract,
         );
         return (result, fake);
       }
@@ -764,15 +789,20 @@ void main() {
       expect(blocked.refund, isNull);
       expect(blocked.refundAlertTitle, 'Card refund may already be made');
       expect(blocked.refundAlert, startsWith('The move-out is done, but the app did not refund'));
-      // Recorded as not made; the contract write is made only while the
-      // refund is still pending, so the other press's record stands.
+      // Recorded as not made, by the press that took it off pending.
       expect(logged.single.after?['status'], 'notMade');
+      expect(logged.single.after?['recordedOnContract'], isTrue);
+      expect((await _cardRecord(contract))['status'], 'notMade');
 
       // Nothing since the commit: refunded as planned.
       final (made, madeCalls) = await firstPress(answer, ledger);
       expect(madeCalls.calls.map((c) => (c['referenceId'], c['amount'])), [('pi_test_sep', 30.0), ('pi_test_aug', 6.67)]);
       expect(made.refund, 36.67);
       expect(made.refundAlert, isNull);
+      final record = await _cardRecord(contract);
+      expect(record['status'], 'refunded');
+      expect(record['refunded'], 36.67);
+      expect((record['refunds'] as List).map((r) => (r as Map)['stripeRefundId']), ['re_test_a', 're_test_b']);
 
       // A refund from before the move-out is not part of it.
       final (older, olderCalls) = await firstPress(answer, [
@@ -801,15 +831,32 @@ void main() {
       final logged = <AuditLogEntry>[];
       AuditService.recordForTesting = logged.add;
       addTearDown(() => AuditService.recordForTesting = null);
-      await MoveOutCardRefund.recordLeftToOwner(
+      final contract = await _contractLeftPending(movedOut);
+      final found = await MoveOutCardRefund.recordLeftToOwner(
         facilityId: 'fac-1',
         tenantId: 'tenant-1',
         contractId: 'contract-1',
         requested: 36.67,
+        firestore: contract,
       );
-      expect(logged.map((e) => (e.eventType, e.targetId, e.after?['status'])), [
-        ('moveout.cardRefund', 'contract-1', 'manual'),
+      expect(found, CardRefundClaim.ours);
+      expect(MoveOutCardRefund.takenAlert(found, 36.67), isNull);
+      expect(await _cardRecord(contract), containsPair('status', 'manual'));
+      expect(MoveOutCardRefund.stillPending((await contract.doc(_contractPath).get()).data()), isFalse);
+      expect(logged.map((e) => (e.eventType, e.targetId, e.after?['status'], e.after?['recordedOnContract'])), [
+        ('moveout.cardRefund', 'contract-1', 'manual', true),
       ]);
+      // A contract that cannot be written: logged all the same, as not on it.
+      expect(
+        await MoveOutCardRefund.recordLeftToOwner(
+          facilityId: 'fac-1',
+          tenantId: 'tenant-1',
+          contractId: 'contract-1',
+          requested: 36.67,
+        ),
+        CardRefundClaim.unknown,
+      );
+      expect(logged.last.after?['recordedOnContract'], isFalse);
       // So is one the app would not make, with why: left pending, a reload
       // and another press of Complete showed the alert again.
       expect(
@@ -849,12 +896,295 @@ void main() {
       final recorded = screen.indexOf('MoveOutCardRefund.recordLeftToOwner(', declined);
       expect(recorded, greaterThan(declined));
       expect(recorded, lessThan(screen.indexOf('MoveOutCardRefund.pendingAlert(pending.requested)', declined)));
-      // So is one the app would not offer, and its alert has its own title.
+      // So is one the app would not offer, and its alert has its own title,
+      // unless the ledger could not be read: that one stays pending.
       final blocked = screen.indexOf('if (plan == null) {');
       final recordedBlocked = screen.indexOf('MoveOutCardRefund.recordLeftToOwner(', blocked);
       expect(recordedBlocked, greaterThan(blocked));
-      expect(recordedBlocked, lessThan(screen.indexOf('_showRefundAlert(choice.title, choice.alert!)', blocked)));
+      expect(screen.indexOf('reason == null', blocked), allOf(greaterThan(blocked), lessThan(recordedBlocked)));
+      expect(
+        recordedBlocked,
+        lessThan(screen.indexOf('_showRefundAlert(taken?.title ?? choice.title, taken?.alert ?? choice.alert!)', blocked)),
+      );
       expect(screen, isNot(contains('_showRefundAlert(null, choice.alert!)')));
+      // Either way, a refund another press had taken says so, not "refund it".
+      expect(screen, contains('MoveOutCardRefund.takenAlert(found, pending.requested)'));
+      expect(
+        screen,
+        contains('_showRefundAlert(taken?.title, taken?.alert ?? MoveOutCardRefund.pendingAlert(pending.requested))'),
+      );
+    });
+  });
+
+  group('the contract says which press makes a pending card refund', () {
+    final movedOut = DateTime.utc(2026, 9, 23, 15);
+    final ledger = [
+      _payment('payment_pi_test_sep', 30, pi: 'pi_test_sep', on: sep),
+      _payment('payment_pi_test_aug', 40, pi: 'pi_test_aug', on: aug),
+    ];
+    final calculation = MoveOutCalculation(
+      lineItems: const [],
+      currentBalance: 0,
+      newCharges: -36.67,
+      finalBalance: -36.67,
+      refundAmount: 36.67,
+    );
+    final firstAnswer = {
+      'success': true,
+      'alreadyCompleted': false,
+      'refundRecorded': false,
+      'refundPosted': false,
+      'cardRefundDue': 36.67,
+      'cardRefundSince': '2026-09-23T15:00:00.000Z',
+    };
+    late List<AuditLogEntry> logged;
+    setUp(() {
+      logged = [];
+      AuditService.recordForTesting = logged.add;
+    });
+    tearDown(() => AuditService.recordForTesting = null);
+
+    Future<CardRefundOutcome> offeredPress(FakeFirebaseFirestore? contract, _FakeProcessRefund fake) =>
+        MoveOutCardRefund.refundAfterMoveOut(
+          facilityId: 'fac-1',
+          tenantId: 'tenant-1',
+          contractId: 'contract-1',
+          amount: 36.67,
+          since: movedOut,
+          offered: true,
+          readLedger: () async => ledger,
+          call: fake.call,
+          firestore: contract,
+        );
+
+    test('the first press refunds nothing once a second session has left it to the owner', () async {
+      // A second session, answered "already completed" while the first
+      // press's answer was on its way, chose "Refund it in Stripe myself"
+      // (no reason), or was shown a blocked offer. Neither leaves anything
+      // on the ledger, so the ledger the first press reads is clean.
+      for (final reason in [null, 'The app found no card payment from this tenant that it can refund.']) {
+        final contract = await _contractLeftPending(movedOut);
+        final left = await MoveOutCardRefund.recordLeftToOwner(
+          facilityId: 'fac-1',
+          tenantId: 'tenant-1',
+          contractId: 'contract-1',
+          requested: 36.67,
+          reason: reason,
+          firestore: contract,
+        );
+        expect(left, CardRefundClaim.ours);
+
+        final fake = _FakeProcessRefund([
+          {'success': true, 'stripeRefundId': 're_test_a'},
+          {'success': true, 'stripeRefundId': 're_test_b'},
+        ]);
+        final first = await MoveOutService.afterProcessMoveOut(
+          firstAnswer,
+          calculation,
+          facilityId: 'fac-1',
+          tenantId: 'tenant-1',
+          contractId: 'contract-1',
+          readLedger: () async => ledger,
+          call: fake.call,
+          firestore: contract,
+        );
+        expect(fake.calls, isEmpty, reason: reason);
+        expect(first.success, isTrue);
+        expect(first.refund, isNull);
+        expect(first.refundAlertTitle, 'Card refund may already be made');
+        expect(
+          first.refundAlert,
+          startsWith(r'The move-out is done, but the app did not refund the $36.67 to their card, rather than '
+              'risk refunding it twice: another press of Complete, on this device or another, has dealt with this '
+              'refund since: it may have made it, or left it to you to make in Stripe.'),
+        );
+        expect(first.refundAlert, contains(r'Whatever of the $36.67 they do not cover is still owed'));
+        // The owner's choice stands on the contract, and the first press
+        // logs what it did without writing over it.
+        final record = await _cardRecord(contract);
+        expect(record['status'], 'manual');
+        expect(record['reason'], reason ?? 'the owner chose to refund it in Stripe themselves');
+        expect(logged.last.after?['status'], 'notMade');
+        expect(logged.last.after?['recordedOnContract'], isFalse);
+
+        // Nor does a third session's offered refund.
+        final third = _FakeProcessRefund([]);
+        expect((await offeredPress(contract, third)).notClaimed, CardRefundClaim.settled);
+        expect(third.calls, isEmpty);
+      }
+    });
+
+    test('while one press makes it, another makes none and is told so, and neither writes over the other', () async {
+      final contract = await _contractLeftPending(movedOut);
+      final second = _FakeProcessRefund([]);
+      CardRefundOutcome? secondPress;
+      CardRefundClaim? declined;
+      final first = await MoveOutCardRefund.refundAfterMoveOut(
+        facilityId: 'fac-1',
+        tenantId: 'tenant-1',
+        contractId: 'contract-1',
+        amount: 36.67,
+        since: movedOut,
+        readLedger: () async => ledger,
+        call: (payload) async {
+          // While processRefund is on its way: taken, but still pending, so
+          // processMoveOut still sends it back to a later press.
+          final during = (await contract.doc(_contractPath).get()).data();
+          expect(MoveOutCardRefund.stillPending(during), isTrue);
+          expect(MoveOutCardRefund.claimFound(during), CardRefundClaim.claimed);
+          // A second session offered the refund presses "Make the refund"...
+          secondPress ??= await offeredPress(contract, second);
+          // ...or "Refund it in Stripe myself".
+          declined ??= await MoveOutCardRefund.recordLeftToOwner(
+            facilityId: 'fac-1',
+            tenantId: 'tenant-1',
+            contractId: 'contract-1',
+            requested: 36.67,
+            firestore: contract,
+          );
+          return {'success': true, 'stripeRefundId': payload['referenceId'] == 'pi_test_sep' ? 're_test_a' : 're_test_b'};
+        },
+        firestore: contract,
+      );
+      expect(second.calls, isEmpty);
+      expect(secondPress!.notClaimed, CardRefundClaim.claimed);
+      expect(secondPress!.refunded, 0);
+      expect(secondPress!.alertTitle, 'Card refund may already be made');
+      expect(
+        secondPress!.ownerAlert,
+        contains('has taken this refund to make it and has not yet recorded what it did. It may be making it right '
+            'now, so wait a minute before you look at their ledger.'),
+      );
+      // The owner who chose to refund it themselves is told not to yet.
+      expect(declined, CardRefundClaim.claimed);
+      final taken = MoveOutCardRefund.takenAlert(declined!, 36.67)!;
+      expect(taken.title, 'Card refund may already be made');
+      expect(
+        taken.alert,
+        startsWith(r'Before you refund the $36.67 yourself: another press of Complete, on this device or another, '
+            'has taken this refund to make it'),
+      );
+      expect(taken.alert, contains('To finish it: look at their ledger'));
+
+      expect(first.status, CardRefundStatus.refunded);
+      final record = await _cardRecord(contract);
+      expect(record['status'], 'refunded');
+      expect(record['refunded'], 36.67);
+      expect(
+        logged.map((e) => (e.after?['status'], e.after?['recordedOnContract'])),
+        [('notMade', false), ('manual', false), ('refunded', true)],
+      );
+      // Taken off pending: any later press makes nothing.
+      final later = await MoveOutCardRefund.claim(facilityId: 'fac-1', contractId: 'contract-1', firestore: contract);
+      expect(later.found, CardRefundClaim.settled);
+      expect(later.id, isNull);
+    });
+
+    test("a failed or uncertain outcome never writes over another press's refund", () async {
+      // Another press refunded it and recorded that.
+      final refunded = {
+        'status': 'refunded',
+        'requested': 36.67,
+        'refunded': 36.67,
+        'leftOnLedger': 0.0,
+        'refunds': [
+          {'paymentIntentId': 'pi_test_sep', 'stripeRefundId': 're_test_other', 'amount': 36.67},
+        ],
+        'reason': null,
+      };
+      final contract = await _contractLeftPending(movedOut, record: refunded);
+      final fake = _FakeProcessRefund([Exception('deadline-exceeded')]);
+      final outcome = await MoveOutCardRefund.refundAfterMoveOut(
+        facilityId: 'fac-1',
+        tenantId: 'tenant-1',
+        contractId: 'contract-1',
+        amount: 36.67,
+        since: movedOut,
+        readLedger: () async => ledger,
+        call: fake.call,
+        firestore: contract,
+      );
+      expect(fake.calls, isEmpty);
+      expect(outcome.notClaimed, CardRefundClaim.settled);
+      expect(await _cardRecord(contract), containsPair('status', 'refunded'));
+
+      // Nor does the press that took it, once it is off pending: a failure
+      // (here, uncertain) is written only over its own claim.
+      final pending = await _contractLeftPending(movedOut);
+      final mine = await MoveOutCardRefund.claim(facilityId: 'fac-1', contractId: 'contract-1', firestore: pending);
+      expect(mine.found, CardRefundClaim.ours);
+      expect(mine.id, isNotNull);
+      const uncertain = CardRefundOutcome(requested: 36.67, failure: 'deadline-exceeded', uncertain: true);
+      Future<CardRefundClaim> write(CardRefundOutcome outcome, String? claimId) => MoveOutCardRefund.writeRecord(
+            facilityId: 'fac-1',
+            contractId: 'contract-1',
+            details: outcome.contractRecord(),
+            refunded: outcome.refunded,
+            claimId: claimId,
+            firestore: pending,
+          );
+      // Not by a press holding no claim, or another's.
+      expect(await write(uncertain, null), CardRefundClaim.claimed);
+      expect(await write(uncertain, 'someone-else'), CardRefundClaim.claimed);
+      expect((await _cardRecord(pending))['status'], 'pending');
+      const made = CardRefundOutcome(requested: 36.67, refunds: [
+        (paymentIntentId: 'pi_test_sep', stripeRefundId: 're_test_a', amount: 36.67),
+      ]);
+      expect(await write(made, mine.id), CardRefundClaim.ours);
+      expect(await write(uncertain, mine.id), CardRefundClaim.settled);
+      expect(await _cardRecord(pending), containsPair('status', 'refunded'));
+    });
+
+    test('a contract the app cannot read: nothing is refunded, and it is not taken off pending', () async {
+      // No Firebase app here: the contract cannot be read.
+      final fake = _FakeProcessRefund([
+        {'success': true, 'stripeRefundId': 're_test_a'},
+      ]);
+      final outcome = await offeredPress(null, fake);
+      expect(fake.calls, isEmpty);
+      expect(outcome.notClaimed, CardRefundClaim.unknown);
+      expect(outcome.alertTitle, 'Card refund may already be made');
+      expect(outcome.ownerAlert, contains('the app could not check its record of this refund on the contract ('));
+      expect(outcome.ownerAlert, contains('so it cannot tell whether another press of Complete has made it.'));
+      expect(logged.single.after?['recordedOnContract'], isFalse);
+      expect(MoveOutCardRefund.takenAlert(CardRefundClaim.unknown, 36.67), isNull);
+    });
+
+    test('a ledger that cannot be read leaves the offered refund pending, not left to the owner', () async {
+      final PendingCardRefund pending = (requested: 36.67, since: movedOut);
+      // No Firebase app here: the ledger cannot be read.
+      final unread = await MoveOutCardRefund.pendingChoice(facilityId: 'fac-1', tenantId: 'tenant-1', pending: pending);
+      expect(unread.plan, isNull);
+      expect(unread.title, 'Card refund may already be made');
+      expect(unread.alert, contains('The app could not read their ledger ('));
+      expect(unread.reason, isNull);
+      // Read, and showing a refund since, or no card payment: recorded.
+      final since = [
+        ...ledger,
+        _refund('re_test_other', 30, referencePi: 'pi_test_sep', at: movedOut.add(const Duration(minutes: 1))),
+      ];
+      expect(MoveOutCardRefund.pendingChoiceFrom(pending, since).reason, isNotNull);
+      expect(MoveOutCardRefund.pendingChoiceFrom(pending, [_payment('cash1', 100, on: sep)]).reason, isNotNull);
+    });
+
+    test('only a pending record is taken, and only by no press or the one holding it', () {
+      final pending = {'status': 'pending', 'requested': 36.67};
+      final held = {
+        ...pending,
+        'claim': {'id': 'claim-a'},
+      };
+      expect(MoveOutCardRefund.claimFound({'moveOutCardRefund': pending}), CardRefundClaim.ours);
+      expect(MoveOutCardRefund.claimFound({'moveOutCardRefund': held}), CardRefundClaim.claimed);
+      expect(MoveOutCardRefund.claimFound({'moveOutCardRefund': held}, claimId: 'claim-b'), CardRefundClaim.claimed);
+      expect(MoveOutCardRefund.claimFound({'moveOutCardRefund': held}, claimId: 'claim-a'), CardRefundClaim.ours);
+      for (final contract in <Map<String, dynamic>?>[
+        null,
+        {},
+        {'moveOutCardRefund': {'status': 'manual'}},
+        {'moveOutCardRefund': {'status': 'notMade', 'claim': {'id': 'claim-a'}}},
+      ]) {
+        expect(MoveOutCardRefund.claimFound(contract, claimId: 'claim-a'), CardRefundClaim.settled, reason: '$contract');
+      }
     });
   });
 
