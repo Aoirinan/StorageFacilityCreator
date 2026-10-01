@@ -274,7 +274,7 @@ const app = (
 const covered = (rows: ReadonlyArray<Record<string, any>>, month: number, year: number) =>
   moveInRentCoversForMonth(rows, month, year);
 
-test('Keepsake: an online move-in dated 1 Oct, charged all of October at move-in, covers October', () => {
+test('Pinewood: an online move-in dated 1 Oct, charged all of October at move-in, covers October', () => {
   // Unit TEST-1, $1 a month, moved in online in September for a tenancy
   // starting 1 Oct. The job posted "Monthly Rent - October 2026" on top.
   const rows = [

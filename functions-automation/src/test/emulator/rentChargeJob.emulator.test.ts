@@ -56,7 +56,7 @@ const appRent = (lineItemType: 'proratedRent' | 'rent', moveInDate: string, entr
 });
 
 /**
- * - keepsake: $1, moved in online in September dated 1 Oct, October charged at move-in.
+ * - pinewood: $1, moved in online in September dated 1 Oct, October charged at move-in.
  * - nextMonth: online move-in on 20 Sep with "Next Month Rent" for October.
  * - midSep: app move-in on 15 Sep, prorated: October is owed.
  * - twoUnits: unit A at $50 held since August, unit B at $100 moved in dated 1 Oct.
@@ -67,9 +67,9 @@ const appRent = (lineItemType: 'proratedRent' | 'rent', moveInDate: string, entr
 async function seed() {
   await fac().set({ name: 'Demo Storage', ownerUid: OWNER, active: true, roles: { [OWNER]: 'owner' } });
 
-  await tenant('keepsake', 1, 'TEST-1', [['TEST-1', 1]]);
-  await row('keepsake', onlineRent('proratedRent', '2026-10-01T00:00:00Z', 1, 'c-keepsake'));
-  await row('keepsake', { type: 'payment', amount: -1, referenceId: 'pi_1', entryDate: at('2026-09-23T18:12:00Z') });
+  await tenant('pinewood', 1, 'TEST-1', [['TEST-1', 1]]);
+  await row('pinewood', onlineRent('proratedRent', '2026-10-01T00:00:00Z', 1, 'c-pinewood'));
+  await row('pinewood', { type: 'payment', amount: -1, referenceId: 'pi_1', entryDate: at('2026-09-23T18:12:00Z') });
 
   await tenant('nextMonth', 120, 'N1', [['N1', 120]]);
   await row('nextMonth', onlineRent('proratedRent', '2026-09-20T00:00:00Z', 44, 'c-next'));

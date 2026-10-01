@@ -710,7 +710,7 @@ test("facility owners cannot write the owner account standing their staff are le
   await testEnv.withSecurityRulesDisabled(async (context) => {
     await context.firestore().collection('facilities').doc(FACILITY_ID).set({
       ownerUid: OWNER_UID,
-      name: 'Keepsake',
+      name: 'Pinewood',
       roles: { [OWNER_UID]: 'owner', [STAFF_UID]: 'employee' },
       ownerAccountStanding: { accountId: 'account-1', subscriptionStatus: 'cancelled', suspended: true },
     });
@@ -726,7 +726,7 @@ test("facility owners cannot write the owner account standing their staff are le
   await assertFails(facilityRef.update({ 'ownerAccountStanding.suspended': false }));
   await assertFails(facilityRef.update({ ownerAccountStanding: deleteField() }));
   // Other edits still go through with the copy in place.
-  await assertSucceeds(facilityRef.update({ name: 'Keepsake Storage' }));
+  await assertSucceeds(facilityRef.update({ name: 'Pinewood Storage' }));
 
   // Nor can a new facility start out with one.
   await assertFails(
@@ -1344,7 +1344,7 @@ test('an operator cannot seize another operator’s public storefront slug', asy
   // any operator PUT their own facilityId over someone else's slug and either
   // disable that storefront or repoint its rent/pay links at their own site.
   const RIVAL_FACILITY = 'fac-rival-1';
-  const SLUG = 'keepsake-self-storage';
+  const SLUG = 'pinewood-self-storage';
   await seedFacility();
   await testEnv.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();

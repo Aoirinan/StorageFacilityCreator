@@ -305,8 +305,8 @@ void main() {
 
   group('labels', () {
     test('one wording, naming the facility, attested by the owner', () {
-      expect(smsConsentCheckboxLabel('Keepsake Storage'),
-          'Keepsake Storage may text this tenant rent reminders and account notices (tenant agreed)');
+      expect(smsConsentCheckboxLabel('Pinewood Storage'),
+          'Pinewood Storage may text this tenant rent reminders and account notices (tenant agreed)');
       expect(smsConsentHelperText,
           'Only tick this if the tenant agreed — in writing, on their lease, or by texting START to (855) 526-4544.');
     });
@@ -351,7 +351,7 @@ void main() {
     test('the START number is the facility\'s own once it is approved', () {
       FacilityModel facility({bool approved = true, String? number}) => FacilityModel(
             id: 'f1',
-            name: 'Keepsake',
+            name: 'Pinewood',
             ownerUid: 'o',
             createdAt: DateTime(2025),
             textingPlatformApproved: approved,
@@ -376,14 +376,14 @@ void main() {
       await pump(
           tester,
           SmsConsentCheckbox(
-            facilityName: 'Keepsake',
+            facilityName: 'Pinewood',
             savedState: SmsConsentState.none,
             value: false,
             onChanged: (_) {},
             method: null,
             onMethodChanged: (_) {},
           ));
-      expect(find.text(smsConsentCheckboxLabel('Keepsake')), findsOneWidget);
+      expect(find.text(smsConsentCheckboxLabel('Pinewood')), findsOneWidget);
       expect(find.text(smsConsentHelperText), findsOneWidget);
       expect(find.byKey(const Key('sms-consent-method')), findsNothing);
     });
@@ -392,7 +392,7 @@ void main() {
       await pump(
           tester,
           SmsConsentCheckbox(
-            facilityName: 'Keepsake',
+            facilityName: 'Pinewood',
             savedState: SmsConsentState.none,
             value: true,
             onChanged: (_) {},
@@ -407,7 +407,7 @@ void main() {
       await pump(
           tester,
           SmsConsentCheckbox(
-            facilityName: 'Keepsake',
+            facilityName: 'Pinewood',
             savedState: SmsConsentState.optedOut,
             value: false,
             onChanged: (v) => changed = v,
@@ -435,7 +435,7 @@ void main() {
             builder: (context) => TextButton(
               onPressed: () async {
                 holder.update = await showRecordSmsConsentDialog(context,
-                    facilityName: 'Keepsake', plan: plan, today: now);
+                    facilityName: 'Pinewood', plan: plan, today: now);
                 holder.done = true;
               },
               child: const Text('open'),
@@ -461,7 +461,7 @@ void main() {
       ], grant: true);
       final result = await open(tester, plan);
 
-      expect(find.text('2 tenants will be marked as agreeing to texts from Keepsake.'),
+      expect(find.text('2 tenants will be marked as agreeing to texts from Pinewood.'),
           findsOneWidget);
       expect(find.textContaining('1 tenant with no phone number that can take texts'), findsOneWidget);
       expect(find.textContaining('1 tenant who opted out or declined texts themselves'), findsOneWidget);
@@ -470,7 +470,7 @@ void main() {
       await tester.tap(find.byKey(const Key('bulk-consent-method-written_lease')));
       await tester.pump();
       expect(save(tester).onPressed, isNull, reason: 'not yet confirmed');
-      await tester.tap(find.text('These tenants agreed to receive texts from Keepsake'));
+      await tester.tap(find.text('These tenants agreed to receive texts from Pinewood'));
       await tester.pump();
       expect(save(tester).onPressed, isNotNull);
 

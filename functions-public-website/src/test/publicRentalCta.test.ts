@@ -6,7 +6,7 @@
  * a "Reserve Now" form at every facility, reading only each unit's published
  * isRentable. createPublicReservationHold also refuses every unit while the
  * owner's online rentals switch (settings/public publicRentalsEnabled) is off,
- * so at a facility such as Caprock, with rentals off, every one of those
+ * so at a facility such as Oakvale, with rentals off, every one of those
  * buttons ended in "This facility is not taking online rentals right now".
  */
 import test from 'node:test';
@@ -18,8 +18,8 @@ import { MAX_ACTIVE_TENANTS_PER_FACILITY } from '../tenantCapacity';
 const testEnv = firebaseFunctionsTest({ projectId: 'in-memory-test' });
 const callableContext = { app: { appId: 'test-app-check' } };
 
-const FACILITY = 'fac-caprock';
-const SLUG = 'caprock';
+const FACILITY = 'fac-oakvale';
+const SLUG = 'oakvale';
 const UNIT = 'unit-a1';
 const PHONE = '(806) 555-0100';
 
@@ -66,7 +66,7 @@ function seedSite(
   options: { phone?: string; snapshotRentalsEnabled?: boolean; websiteConfig?: Record<string, unknown> } = {},
 ) {
   // billingExempt: the site is served without a website subscription.
-  inMemory.seed(`facilities/${FACILITY}`, { name: 'Caprock Storage', billingExempt: true });
+  inMemory.seed(`facilities/${FACILITY}`, { name: 'Oakvale Storage', billingExempt: true });
   if (scenario.settings) {
     inMemory.seed(`facilities/${FACILITY}/settings/public`, scenario.settings);
   }
@@ -81,7 +81,7 @@ function seedSite(
   });
   inMemory.seed(`publicFacilityMaps/${SLUG}`, {
     facilityId: FACILITY,
-    facilityName: 'Caprock Storage',
+    facilityName: 'Oakvale Storage',
     facilityPhone: options.phone ?? PHONE,
     publicSettings: {
       enabled: true,
@@ -225,7 +225,7 @@ test('with online rentals on, the page keeps its rental actions and the owner wo
   );
 
   assert.ok(html.includes('Reserve Your Unit'));
-  assert.ok(html.includes('data-rent-base="https://app.storagefacilitycreator.com/#/f/caprock/standard?embed=1"'));
+  assert.ok(html.includes('data-rent-base="https://app.storagefacilitycreator.com/#/f/oakvale/standard?embed=1"'));
   assert.equal(html.includes('Call to rent'), false);
 });
 

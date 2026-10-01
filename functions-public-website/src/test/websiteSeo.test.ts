@@ -51,14 +51,14 @@ test('normalizeState rejects things that are not states', () => {
 // --- location ---------------------------------------------------------------
 
 test('resolveLocationLabel prefers explicit city and state', () => {
-  assert.equal(resolveLocationLabel({ city: 'Paris', state: 'tx' }), 'Paris, TX');
+  assert.equal(resolveLocationLabel({ city: 'Anytown', state: 'tx' }), 'Anytown, TX');
 });
 
 test('resolveLocationLabel reads the tail of a free-text address', () => {
   // What facilities actually have on file today.
   assert.equal(
-    resolveLocationLabel({ address: '4180 US Hwy 82 East Paris Texas' }),
-    'Paris, TX',
+    resolveLocationLabel({ address: '1200 US Hwy 9 East Anytown Texas' }),
+    'Anytown, TX',
   );
   assert.equal(
     resolveLocationLabel({ address: '123 Main St, Santa Fe, New Mexico 87501' }),
@@ -68,7 +68,7 @@ test('resolveLocationLabel reads the tail of a free-text address', () => {
 
 test('resolveLocationLabel returns null rather than guessing badly', () => {
   // A wrong town in the H1 is worse than no town.
-  assert.equal(resolveLocationLabel({ address: '4180 US Hwy 82 East' }), null);
+  assert.equal(resolveLocationLabel({ address: '1200 US Hwy 9 East' }), null);
   assert.equal(resolveLocationLabel({ address: '' }), null);
   assert.equal(resolveLocationLabel({}), null);
   // Street number where a city should be must not become the city.
@@ -79,8 +79,8 @@ test('resolveLocationLabel returns null rather than guessing badly', () => {
 
 test('resolveHeroHeadline keeps genuine operator copy', () => {
   assert.equal(
-    resolveHeroHeadline({ configured: 'Paris Texas Boat & RV Storage', location: 'Paris, TX' }),
-    'Paris Texas Boat & RV Storage',
+    resolveHeroHeadline({ configured: 'Anytown Texas Boat & RV Storage', location: 'Anytown, TX' }),
+    'Anytown Texas Boat & RV Storage',
   );
 });
 
@@ -90,10 +90,10 @@ test('resolveHeroHeadline replaces the seeded placeholder with a local headline'
   assert.equal(
     resolveHeroHeadline({
       configured: 'Secure Self Storage, Rented Online in Minutes',
-      location: 'Paris, TX',
-      facilityName: 'Keepsake Self Storage',
+      location: 'Anytown, TX',
+      facilityName: 'Pinewood Self Storage',
     }),
-    'Self Storage in Paris, TX',
+    'Self Storage in Anytown, TX',
   );
 });
 
@@ -102,14 +102,14 @@ test('resolveHeroHeadline falls back to the facility name without a location', (
     resolveHeroHeadline({
       configured: 'Secure Self Storage, Rented Online in Minutes',
       location: null,
-      facilityName: 'Keepsake Self Storage',
+      facilityName: 'Pinewood Self Storage',
     }),
-    'Keepsake Self Storage',
+    'Pinewood Self Storage',
   );
 });
 
 test('resolveHeroHeadline builds a local headline when nothing is configured', () => {
-  assert.equal(resolveHeroHeadline({ location: 'Paris, TX' }), 'Self Storage in Paris, TX');
+  assert.equal(resolveHeroHeadline({ location: 'Anytown, TX' }), 'Self Storage in Anytown, TX');
 });
 
 // --- hero image -------------------------------------------------------------

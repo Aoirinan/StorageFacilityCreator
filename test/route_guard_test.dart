@@ -558,7 +558,7 @@ void main() {
           fetch: (uid, {required includeArchived}) async {
             facilityReads += 1;
             return [
-              FacilityModel(id: 'f1', name: 'Keepsake', ownerUid: uid, createdAt: DateTime(2026)),
+              FacilityModel(id: 'f1', name: 'Pinewood', ownerUid: uid, createdAt: DateTime(2026)),
             ];
           },
         );
@@ -692,7 +692,7 @@ void main() {
     late List<List<FacilityModel>> facilitiesSeen;
 
     const paidOwner = OwnerAccountStanding(
-      accountId: 'acct_keepsake',
+      accountId: 'acct_pinewood',
       subscriptionStatus: SubscriptionStatus.active,
     );
 
@@ -740,7 +740,7 @@ void main() {
     }
 
     /// What the facility list gives [user] from the fakes: their own
-    /// facilities, and the ones an active role reaches (Keepsake's, paid).
+    /// facilities, and the ones an active role reaches (Pinewood's, paid).
     List<FacilityModel> facilitiesOf(User user) => [
           for (final f in owned)
             FacilityModel(
@@ -754,10 +754,10 @@ void main() {
             if (r.data()['isActive'] == true && !owned.any((f) => f.id == r.data()['facilityId']))
               FacilityModel(
                 id: r.data()['facilityId'] as String,
-                name: 'Keepsake Storage',
-                ownerUid: 'keepsake-owner',
+                name: 'Pinewood Storage',
+                ownerUid: 'pinewood-owner',
                 createdAt: DateTime(2026),
-                facilityCreatorAccountId: 'acct_keepsake',
+                facilityCreatorAccountId: 'acct_pinewood',
                 ownerAccountStanding: paidOwner,
                 currentUserOwnsFacility: false,
               ),
@@ -790,12 +790,12 @@ void main() {
     }
 
     FakeDoc pendingInvite(String email) => FakeDoc('inv_1', {
-          'facilityId': 'keepsake',
+          'facilityId': 'pinewood',
           'email': email,
           'emailLower': email.toLowerCase(),
           'roleType': 'employee',
           'status': 'pending',
-          'invitedBy': 'keepsake-owner',
+          'invitedBy': 'pinewood-owner',
         });
 
     test('a verified invitee with a pending invite and no roles gets no account, and lands with their role',
@@ -811,11 +811,11 @@ void main() {
 
       expect(await go(tab, '/dashboard', user), isNull);
       expect(accountWrites.writes, isEmpty, reason: 'no account for an invited team member');
-      expect(roles.single.data(), containsPair('facilityId', 'keepsake'));
+      expect(roles.single.data(), containsPair('facilityId', 'pinewood'));
       expect(invites.single.data()['status'], 'accepted');
-      // The access check already saw them as Keepsake's staff.
+      // The access check already saw them as Pinewood's staff.
       expect(facilitiesSeen.last.map((f) => (f.id, f.currentUserOwnsFacility)), [
-        ('keepsake', false),
+        ('pinewood', false),
       ]);
     });
 

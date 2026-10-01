@@ -13,7 +13,7 @@ import {
 const admins = new Set(['russell_forsyth_1992@outlook.com']);
 const isAdmin = (e: string) => admins.has(e);
 
-const KEEPSAKE = 'eXnWPuwuqzBVFcZWv1ZL';
+const PINEWOOD = 'kT4mZ8vLr2QpWx7NbY3d';
 const OTHER = 'facilityOther123';
 
 const email = (facilityId: string | null | undefined): OutboundTarget => ({ facilityId, channel: 'email' });
@@ -61,14 +61,14 @@ test('decision matrix: flag x blocked facility x recipient kind x channel', () =
       const c = cfg({
         customerEmailsEnabled: flag,
         allowedTestRecipients: [tester],
-        blockedFacilityIds: [KEEPSAKE],
+        blockedFacilityIds: [PINEWOOD],
       });
       const t = (f: string | null) => ({ facilityId: f, channel });
       const label = `${channel} flag=${flag}`;
 
       // Super admins and test recipients pass everywhere, even a blocked facility.
       for (const who of [tester, admin]) {
-        for (const f of [KEEPSAKE, OTHER, null]) {
+        for (const f of [PINEWOOD, OTHER, null]) {
           const d = decideCustomerRecipient(who, t(f), c, isAdmin);
           assert.equal(d.allowed, true, `${label} ${who} ${f}`);
           assert.equal(d.reason, 'test_recipient');
@@ -76,7 +76,7 @@ test('decision matrix: flag x blocked facility x recipient kind x channel', () =
       }
 
       // A blocked facility never reaches a customer, whatever the flag says.
-      assert.deepEqual(decideCustomerRecipient(tenant, t(KEEPSAKE), c, isAdmin), {
+      assert.deepEqual(decideCustomerRecipient(tenant, t(PINEWOOD), c, isAdmin), {
         allowed: false,
         reason: 'facility_blocked',
       });
@@ -109,10 +109,10 @@ test('with no block list, a send without a facility id follows the flag as befor
 });
 
 test('the block list matches whole ids only, trimmed', () => {
-  const c = cfg({ customerEmailsEnabled: true, blockedFacilityIds: [KEEPSAKE] });
-  assert.equal(isCustomerRecipientAllowed('t@example.com', email(` ${KEEPSAKE} `), c, isAdmin), false);
-  assert.equal(isCustomerRecipientAllowed('t@example.com', email(KEEPSAKE.toLowerCase()), c, isAdmin), true);
-  assert.equal(isCustomerRecipientAllowed('t@example.com', email(KEEPSAKE.slice(0, 10)), c, isAdmin), true);
+  const c = cfg({ customerEmailsEnabled: true, blockedFacilityIds: [PINEWOOD] });
+  assert.equal(isCustomerRecipientAllowed('t@example.com', email(` ${PINEWOOD} `), c, isAdmin), false);
+  assert.equal(isCustomerRecipientAllowed('t@example.com', email(PINEWOOD.toLowerCase()), c, isAdmin), true);
+  assert.equal(isCustomerRecipientAllowed('t@example.com', email(PINEWOOD.slice(0, 10)), c, isAdmin), true);
 });
 
 test('config parsing defaults closed and ignores junk in the allowlist', () => {
@@ -121,13 +121,13 @@ test('config parsing defaults closed and ignores junk in the allowlist', () => {
     parseOutboundGateConfig({
       customerEmailsEnabled: 'true',
       allowedTestRecipients: ['a@b.com', 5, null],
-      blockedFacilityIds: [` ${KEEPSAKE} `],
+      blockedFacilityIds: [` ${PINEWOOD} `],
     }),
-    { customerEmailsEnabled: false, allowedTestRecipients: ['a@b.com'], blockedFacilityIds: [KEEPSAKE] },
+    { customerEmailsEnabled: false, allowedTestRecipients: ['a@b.com'], blockedFacilityIds: [PINEWOOD] },
   );
   assert.deepEqual(
-    parseOutboundGateConfig({ customerEmailsEnabled: true, blockedFacilityIds: [KEEPSAKE] }),
-    { customerEmailsEnabled: true, allowedTestRecipients: [], blockedFacilityIds: [KEEPSAKE] },
+    parseOutboundGateConfig({ customerEmailsEnabled: true, blockedFacilityIds: [PINEWOOD] }),
+    { customerEmailsEnabled: true, allowedTestRecipients: [], blockedFacilityIds: [PINEWOOD] },
   );
   // Absent means nothing is blocked; an empty list says the same.
   for (const data of [{ customerEmailsEnabled: true }, { customerEmailsEnabled: true, blockedFacilityIds: [] }]) {
@@ -137,17 +137,17 @@ test('config parsing defaults closed and ignores junk in the allowlist', () => {
   }
 });
 
-// A damaged block list must close the gate, not quietly unblock Keepsake.
+// A damaged block list must close the gate, not quietly unblock Pinewood.
 test('a malformed blockedFacilityIds turns customer contact off for everyone', () => {
   const malformed: unknown[] = [
-    KEEPSAKE, // a string, not a list
+    PINEWOOD, // a string, not a list
     null,
     {},
     5,
-    [KEEPSAKE, 7],
-    [KEEPSAKE, ''],
-    [KEEPSAKE, '   '],
-    [KEEPSAKE, null],
+    [PINEWOOD, 7],
+    [PINEWOOD, ''],
+    [PINEWOOD, '   '],
+    [PINEWOOD, null],
   ];
   for (const blockedFacilityIds of malformed) {
     const label = JSON.stringify(blockedFacilityIds);
@@ -158,13 +158,13 @@ test('a malformed blockedFacilityIds turns customer contact off for everyone', (
     });
     assert.equal(parsed.problems.length, 1, label);
     assert.equal(parsed.config.customerEmailsEnabled, false, label);
-    for (const f of [KEEPSAKE, OTHER]) {
+    for (const f of [PINEWOOD, OTHER]) {
       assert.equal(isCustomerRecipientAllowed('tenant@example.com', email(f), parsed.config, isAdmin), false, label);
       assert.equal(isCustomerRecipientAllowed('+19035550000', sms(f), parsed.config, isAdmin), false, label);
     }
     // The team can still test end to end.
     assert.equal(isCustomerRecipientAllowed('+19035551234', sms(OTHER), parsed.config, isAdmin), true, label);
     // Whatever valid ids were readable stay blocked.
-    if (Array.isArray(blockedFacilityIds)) assert.ok(parsed.config.blockedFacilityIds.includes(KEEPSAKE), label);
+    if (Array.isArray(blockedFacilityIds)) assert.ok(parsed.config.blockedFacilityIds.includes(PINEWOOD), label);
   }
 });

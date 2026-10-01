@@ -14,7 +14,7 @@ import 'package:sfcapp/widgets/unit_availability_widget.dart';
 /// createPublicReservationHold refuses every unit while the facility's online
 /// rentals switch (settings/public publicRentalsEnabled) is off. The public
 /// pages still offered "Rent Now" and "Reserve", so at a facility with rentals
-/// off (Caprock) every one of those buttons ended in that refusal.
+/// off (Oakvale) every one of those buttons ended in that refusal.
 
 /// The switch as a publicFacilityMaps doc carries it: on, off, or never set.
 const _switches = <String, Map<String, dynamic>>{
@@ -48,18 +48,18 @@ PublicFacilityMapSnapshot _snapshot(
 }) =>
     PublicFacilityMapSnapshot(
       facilityId: 'fac1',
-      facilitySlug: 'caprock',
+      facilitySlug: 'oakvale',
       publishedVersionId: 'v1',
       publishedAt: DateTime(2026, 9, 24),
       publicSettings: {
         'enabled': true,
-        'facilityName': 'Caprock Storage',
+        'facilityName': 'Oakvale Storage',
         ...contact,
         ...rentalSwitch,
       },
       elements: elements,
       units: units,
-      rentalRouteTemplate: '/f/caprock/rent?unitId={unitId}',
+      rentalRouteTemplate: '/f/oakvale/rent?unitId={unitId}',
       moveInRouteTemplate: '/public-move-in?token={token}',
     );
 
@@ -105,7 +105,7 @@ void main() {
       await _useTallView(tester);
       await tester.pumpWidget(MaterialApp(
         home: PublicFacilityMapScreen(
-          facilitySlug: 'caprock',
+          facilitySlug: 'oakvale',
           loadSnapshot: (_) async => snapshot,
         ),
       ));
@@ -193,7 +193,7 @@ void main() {
       await _useTallView(tester);
       await tester.pumpWidget(MaterialApp(
         home: PublicRentalPortalScreen(
-          facilitySlug: 'caprock',
+          facilitySlug: 'oakvale',
           loadSnapshot: (_) async => snapshot ?? _snapshot(rentalSwitch),
           queryParamsForTesting: query,
           openUrl: (uri) async {
@@ -215,7 +215,7 @@ void main() {
             ),
         ];
 
-    // Caprock: website not live, online rentals off. Every unit a renter can
+    // Oakvale: website not live, online rentals off. Every unit a renter can
     // take must offer a way to rent it that works, not a greyed-out
     // "Reserve" with no reason.
     testWidgets('with rentals off, every available unit type offers a call',
@@ -276,15 +276,15 @@ void main() {
         tester,
         _switches['off']!,
         snapshot: _snapshot(_switches['off']!, contact: {
-          'websiteConfig': {'contactEmail': 'office@caprock.example'},
+          'websiteConfig': {'contactEmail': 'office@oakvale.example'},
         }),
       );
 
       expect(cardButtons(tester),
-          [('Email office@caprock.example to rent', true)]);
-      await tester.tap(find.text('Email office@caprock.example to rent'));
+          [('Email office@oakvale.example to rent', true)]);
+      await tester.tap(find.text('Email office@oakvale.example to rent'));
       await tester.pumpAndSettle();
-      expect(opened, [Uri(scheme: 'mailto', path: 'office@caprock.example')]);
+      expect(opened, [Uri(scheme: 'mailto', path: 'office@oakvale.example')]);
     });
 
     testWidgets('with no phone or email, the card says why instead of a dead '
@@ -354,7 +354,7 @@ void main() {
   group('public facility page', () {
     final facility = FacilityModel(
       id: 'fac1',
-      name: 'Caprock Storage',
+      name: 'Oakvale Storage',
       ownerUid: 'owner1',
       createdAt: DateTime(2026, 1, 1),
     );
@@ -364,7 +364,7 @@ void main() {
       await tester.pumpWidget(MaterialApp(
         home: PublicFacilityPageScreen(
           facilityId: 'fac1',
-          loadForTesting: (_) async => (facility, settings, 'caprock'),
+          loadForTesting: (_) async => (facility, settings, 'oakvale'),
         ),
       ));
       await tester.pumpAndSettle();
@@ -403,7 +403,7 @@ void main() {
   group('renter account message', () {
     final facility = FacilityModel(
       id: 'fac1',
-      name: 'Caprock Storage',
+      name: 'Oakvale Storage',
       ownerUid: 'owner1',
       createdAt: DateTime(2026, 1, 1),
       phone: '(806) 555-0100',
@@ -412,17 +412,17 @@ void main() {
     test('carries the rent link only while online rentals are on', () {
       String message(bool on) => buildRenterAccountMessage(
             facility: facility,
-            slug: 'caprock',
+            slug: 'oakvale',
             linkBaseUrl: 'https://app.storagefacilitycreator.com',
             onlineRentalsEnabled: on,
           );
 
       expect(message(true), contains('Rent or reserve a unit online:'));
-      expect(message(true), contains('/f/caprock'));
+      expect(message(true), contains('/f/oakvale'));
 
       final off = message(false);
       expect(off, isNot(contains('Rent or reserve')));
-      expect(off, isNot(contains('/f/caprock')));
+      expect(off, isNot(contains('/f/oakvale')));
       expect(off, isNot(contains('online rentals')));
       // The rest of the message is unchanged.
       expect(off, contains('https://app.storagefacilitycreator.com/#/tenant-portal'));

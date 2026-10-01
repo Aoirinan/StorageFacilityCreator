@@ -10,7 +10,7 @@ void main() {
     });
 
     test('accepts ordinary addresses', () {
-      expect(validateOptionalTenantEmail('alexa@examplestorage.com'), isNull);
+      expect(validateOptionalTenantEmail('jamie@examplestorage.com'), isNull);
       expect(validateOptionalTenantEmail('first.last+unit12@gmail.com'), isNull);
     });
 
@@ -39,7 +39,7 @@ void main() {
     });
 
     test('a real address is sendable', () {
-      expect(isSendableTenantEmail(' alexa@examplestorage.com '), isTrue);
+      expect(isSendableTenantEmail(' jamie@examplestorage.com '), isTrue);
     });
   });
 }

@@ -816,12 +816,12 @@ void main() {
         store.data('facilities/$facilityId/invites/inv_$facilityId')?['status'] as String?;
 
     test('a genuinely new invitee lands on the team, with no account', () async {
-      pendingInvite('keepsake');
+      pendingInvite('pinewood');
       expect(
         await FacilityCreatorAccountService.ensureAccountOnce(user, createOnlyForNewSignups: true),
         isTrue,
       );
-      expect(inviteStatus('keepsake'), 'accepted');
+      expect(inviteStatus('pinewood'), 'accepted');
       expect(store.idsIn('facilityCreatorAccounts'), isEmpty);
     });
 
@@ -916,9 +916,9 @@ void main() {
           'roleType': 'employee',
           'isActive': isActive,
         });
-        pendingInvite('keepsake');
+        pendingInvite('pinewood');
         await FacilityCreatorAccountService.ensureAccountOnce(user, createOnlyForNewSignups: true);
-        expect(inviteStatus('keepsake'), 'pending', reason: 'isActive: $isActive');
+        expect(inviteStatus('pinewood'), 'pending', reason: 'isActive: $isActive');
         expect(store.idsIn('user_roles'), ['r1']);
         expect(store.idsIn('facilityCreatorAccounts'), isEmpty);
       }
@@ -1095,7 +1095,7 @@ void main() {
       // dashboard with no role for the rest of the session.
       final invites = [
         FakeDoc('inv_1', {
-          'facilityId': 'keepsake',
+          'facilityId': 'pinewood',
           'emailLower': 'new@example.com',
           'status': 'pending',
           // Recent: only an invite the guard may accept is waited on.
@@ -1118,7 +1118,7 @@ void main() {
           attempts += 1;
           if (!accepting) return false;
           invites.single.data()['status'] = 'accepted';
-          roles.add(FakeDoc('role_1', {'userId': u.uid, 'isActive': true, 'facilityId': 'keepsake'}));
+          roles.add(FakeDoc('role_1', {'userId': u.uid, 'isActive': true, 'facilityId': 'pinewood'}));
           return true;
         },
       );
@@ -1134,7 +1134,7 @@ void main() {
       accepting = true;
       expect(await at(FacilityCreatorAccountService.ensureRetryAfter), isTrue);
       expect(attempts, 2);
-      expect(roles.single.data()['facilityId'], 'keepsake');
+      expect(roles.single.data()['facilityId'], 'pinewood');
     });
 
     test('by default it runs the real ensure (which fails here, with no Firebase) without throwing',
