@@ -29,6 +29,7 @@ import {
 import { SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, STRIPE_SECRETS } from './secrets';
 import { optionalStripeCheckoutCustomerEmail } from './stripeHelpers';
 import {
+  CHECKOUT_ALREADY_PAID_MESSAGE,
   expireRecordedSessionOnRefusal,
   paymentIntentIdOf,
   recordCheckoutSession,
@@ -51,6 +52,7 @@ import {
   checkoutFieldsOf,
   checkoutHoldWindow,
   checkoutMayHaveBeenPaid,
+  holdCapCountsFrom,
   holdForPaidCheckout,
   holderMayBePaying,
   laterExpiry,
@@ -889,7 +891,7 @@ export const createPublicMoveInCheckout = functions
   // a paid session gives the time to finish the form (holdForPaidCheckout).
   // Written before Stripe is called: if this fails, there is no payable
   // session that the hold does not cover.
-  const holdWindow = checkoutHoldWindow(new Date(), timestampToDate(reservation.reservedAt));
+  const holdWindow = checkoutHoldWindow(new Date(), holdCapCountsFrom(reservation));
   if (!holdWindow) {
     throw new functions.https.HttpsError('failed-precondition', CHECKOUT_RUN_OUT_MESSAGE);
   }
@@ -901,6 +903,17 @@ export const createPublicMoveInCheckout = functions
     const current = (currentSnap.data() || {}) as Record<string, any>;
     if (current.status !== 'pending' && current.status !== 'confirmed') {
       throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
+    }
+    // Paid already (from a tab opened before the payment, say): refused
+    // before anything is written. Before, it was found paid only when Stripe
+    // was asked, after the writes below: its amount and priced day were
+    // overwritten until restoreHoldAfterFailedCheckout put them back, and a
+    // completion in between, or a restore that failed, could check the
+    // payment against them and refund it as 'charges changed'. A refund for
+    // changed charges clears the field, so that renter can still pay the new
+    // amount.
+    if (textOf(current[CHECKOUT_PAID_FIELD])) {
+      throw new functions.https.HttpsError('failed-precondition', CHECKOUT_ALREADY_PAID_MESSAGE);
     }
     // The unit and its tenants, read again here: checked only before the
     // transaction, a unit another renter completed onto (or the owner

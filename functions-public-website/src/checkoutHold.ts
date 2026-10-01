@@ -67,11 +67,30 @@ export const CHECKOUT_SESSION_MINUTES = 35;
 export const RETURN_AFTER_CHECKOUT_MINUTES = 10;
 
 /**
- * No checkout extends a hold past this, counted from when the unit was held,
+ * No checkout extends a hold past this, counted from when the unit was held
+ * (or held again after a refund for changed charges: holdCapCountsFrom),
  * however often checkout is restarted: a hold keeps the unit from everyone
  * else. Room for a 60-minute portal hold with checkout begun at its end.
  */
 export const MAX_HOLD_MINUTES = 3 * 60;
+
+/**
+ * How long a renter refunded because the charges changed keeps the
+ * reservation and the unit to start paying the new amount
+ * (paidMoveInRefund.ts). The Connect webhook had held both until a day after
+ * the payment, and the refund left them so: from 2 hours 15 minutes after the
+ * unit was held, when a new checkout's hold would end past MAX_HOLD_MINUTES,
+ * the renter's new checkout was refused as out of time, and choosing the unit
+ * again was refused as in checkout, for them and for everyone else, until
+ * that day was up.
+ */
+export const REPAY_AFTER_REFUND_MINUTES = 10;
+
+/**
+ * On the reservation: when a refund for changed charges left it open to pay
+ * again. MAX_HOLD_MINUTES count from then (holdCapCountsFrom).
+ */
+export const CHECKOUT_REOPENED_AT_FIELD = 'checkoutReopenedAt';
 
 export const CHECKOUT_RUN_OUT_MESSAGE =
   'This reservation has run out of time. Please choose your unit again.';
@@ -84,9 +103,22 @@ function isInstant(value: unknown, date: Date): boolean {
 }
 
 /**
+ * When [reservation]'s MAX_HOLD_MINUTES count from: when the unit was held
+ * (reservedAt), or when a refund for changed charges left the reservation
+ * open to pay again (CHECKOUT_REOPENED_AT_FIELD), whichever is later.
+ */
+export function holdCapCountsFrom(reservation: Record<string, unknown>): Date | null {
+  const reservedAt = timestampToDate(reservation.reservedAt);
+  const reopenedAt = timestampToDate(reservation[CHECKOUT_REOPENED_AT_FIELD]);
+  if (!reservedAt) return reopenedAt;
+  return reopenedAt && reopenedAt > reservedAt ? reopenedAt : reservedAt;
+}
+
+/**
  * When a Checkout Session created at [now] expires, and when the hold covering
- * it ends. Null when that hold would outlive MAX_HOLD_MINUTES from [reservedAt];
- * both holds record reservedAt, so a reservation without one is not capped.
+ * it ends. Null when that hold would outlive MAX_HOLD_MINUTES from [reservedAt]
+ * (holdCapCountsFrom). Both holds record reservedAt, so only a reservation
+ * recording neither time is not capped.
  */
 export function checkoutHoldWindow(
   now: Date,
