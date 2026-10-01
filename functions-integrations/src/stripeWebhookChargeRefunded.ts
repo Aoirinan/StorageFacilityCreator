@@ -2,7 +2,9 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
 import { getStripeClient } from '@sfc/functions-shared';
+import { eventAccountMatchesFacility } from './connectedAccountGuard';
 import { isAlreadyExistsError } from './firestoreErrors';
+import { isMoveInPaymentIntent, moveInPaymentFacilityId, resolveMoveInTenantOrRecord } from './moveInPaymentTenant';
 
 /**
  * Who a refund row belongs to once this event is merged into it: the
@@ -50,10 +52,17 @@ function hasText(value: unknown): boolean {
  *    of $10 record $10 and then $20 — crediting $30 against $20 actually
  *    returned. Each individual refund is recorded once instead, keyed by its
  *    own id so redelivery and partial refunds are both safe.
+ *
+ * Errors propagate: the webhook returns 500 and Stripe redelivers. Swallowing
+ * them marked the event processed with the refund never on the ledger, so the
+ * tenant kept a credit for money already handed back and autopay and the
+ * delinquency job under-collected by that much. Every write is keyed on the
+ * refund, so a retry converges.
  */
 export async function handleChargeRefunded(
   charge: Stripe.Charge,
   connectedAccountId?: string,
+  eventId?: string,
 ) {
   try {
     const paymentIntentId = charge.payment_intent as string;
@@ -66,13 +75,79 @@ export async function handleChargeRefunded(
     const requestOptions = connectedAccountId ? { stripeAccount: connectedAccountId } : {};
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, requestOptions);
 
-    const facilityId = paymentIntent.metadata?.facilityId;
-    const tenantId = paymentIntent.metadata?.tenantId;
+    // An online move-in's PaymentIntent names no facility: found through the
+    // move-in's records instead, and still checked against the account below.
+    const facilityId =
+      paymentIntent.metadata?.facilityId ||
+      (isMoveInPaymentIntent(paymentIntent) ? await moveInPaymentFacilityId(paymentIntent) : null);
+    const tenantId: string | null = paymentIntent.metadata?.tenantId || null;
+    // A refund of a payment staff took for a card dispute (the charge or
+    // link carried the dispute's id) reopens that dispute, not rent. Untagged,
+    // its +amount landed in what autopay collects, and autopay charged the
+    // refunded money straight back to the card.
+    const disputeId = paymentIntent.metadata?.disputeId || null;
 
     if (!facilityId) {
-      functions.logger.warn('Charge refunded but missing facilityId metadata');
+      functions.logger.warn(
+        isMoveInPaymentIntent(paymentIntent)
+          ? 'Charge refunded on an online move-in payment that no move-in record names a facility for'
+          : 'Charge refunded but missing facilityId metadata',
+        { paymentIntentId, chargeId: charge.id },
+      );
       return;
     }
+
+    // A refund posts a charge (+amount) to the tenant: only the facility's own
+    // account may do that, whatever facilityId the PaymentIntent carries.
+    const accountMatches = await eventAccountMatchesFacility({
+      facilityId,
+      connectedAccountId,
+      eventType: 'charge.refunded',
+      objectId: charge.id,
+      eventId,
+      tenantId,
+      amount: charge.amount_refunded / 100,
+    });
+    if (!accountMatches) return;
+
+    // Refund objects may not be expanded on the event payload; fetch them so
+    // each one can be recorded individually.
+    const refunds =
+      charge.refunds?.data && charge.refunds.data.length > 0
+        ? charge.refunds.data
+        : (await stripe.refunds.list({ charge: charge.id, limit: 100 }, requestOptions)).data;
+    const succeeded = refunds.filter((refund) => !refund.status || refund.status === 'succeeded');
+
+    // An online move-in's PaymentIntent names no tenant. Its refund used to
+    // go on the ledger with tenantId null: on nobody's ledger, while the
+    // tenant it moved in kept the credit for money handed back. Found through
+    // the refund's own row when the app made it (processRefund writes
+    // `refund_<id>` with the tenant it refunded), else the move-in's records;
+    // with no tenant (refunded before the move-in was completed) it goes on
+    // no ledger at all, and is recorded on the move-in payment for the owner
+    // (moveInPaymentTenant.ts).
+    // Each refund is resolved on its own: one recorded before the move-in
+    // completed has no tenant, and a later one may.
+    const tenantByRefund = new Map<string, string | null>();
+    if (!tenantId && isMoveInPaymentIntent(paymentIntent)) {
+      for (const refund of succeeded) {
+        const resolved = await resolveMoveInTenantOrRecord({
+          facilityId,
+          paymentIntent,
+          connectedAccountId,
+          money: { kind: 'refund', id: refund.id, amountCents: refund.amount, status: refund.status ?? null },
+        });
+        tenantByRefund.set(refund.id, resolved.tenantId);
+      }
+      if (![...tenantByRefund.values()].some((id) => id !== null)) return;
+    }
+    // A move-in refund with no tenant was recorded on the move-in payment
+    // instead, and goes on no ledger.
+    const refundsToPost = succeeded.flatMap((refund) => {
+      if (!tenantByRefund.has(refund.id)) return [{ refund, tenantId }];
+      const resolved = tenantByRefund.get(refund.id) ?? null;
+      return resolved ? [{ refund, tenantId: resolved }] : [];
+    });
 
     const facilityRef = admin.firestore().collection('facilities').doc(facilityId);
     const paymentsRef = facilityRef.collection('payments');
@@ -91,17 +166,8 @@ export async function handleChargeRefunded(
       });
     }
 
-    // Refund objects may not be expanded on the event payload; fetch them so
-    // each one can be recorded individually.
-    const refunds =
-      charge.refunds?.data && charge.refunds.data.length > 0
-        ? charge.refunds.data
-        : (await stripe.refunds.list({ charge: charge.id, limit: 100 }, requestOptions)).data;
-
     const referenceId = existingPayments.empty ? null : existingPayments.docs[0].id;
-    for (const refund of refunds) {
-      if (refund.status && refund.status !== 'succeeded') continue;
-
+    for (const { refund, tenantId: refundTenantId } of refundsToPost) {
       // Deterministic id per refund: redelivery of the same event, or a later
       // event listing this refund again, updates one entry instead of adding
       // another. A ledger that double-counts refunds understates what a tenant
@@ -112,10 +178,11 @@ export async function handleChargeRefunded(
         paymentIntentId,
         refundId: refund.id,
         connectedAccountId: connectedAccountId || null,
+        ...(disputeId ? { disputeId } : {}),
       };
       try {
         await ledgerRef.create({
-          tenantId: tenantId || null,
+          tenantId: refundTenantId || null,
           facilityId,
           type: 'refund',
           // Positive: a refund reverses a payment, so what the tenant owes goes
@@ -136,11 +203,10 @@ export async function handleChargeRefunded(
         // row replaced processRefund's createdBy (the staff member who
         // refunded) with this webhook, and its date and description too, and
         // for a PaymentIntent that names no tenant wrote tenantId null over
-        // the tenant processRefund refunded. Reading the row first and then
-        // merging did that too when processRefund wrote between the two.
-        // Only what the row lacks is filled in: the metadata this event adds,
-        // and its tenant, reference and author (refundRowOwner) when it has
-        // none. An existing tenantId is never replaced or nulled.
+        // the tenant processRefund refunded. Only what the row lacks is filled
+        // in: the metadata this event adds, and its tenant, reference and
+        // author (refundRowOwner) when it has none. An existing tenantId is
+        // never replaced or nulled.
         const existing = await ledgerRef.get();
         const existingData = (existing.data() ?? {}) as Record<string, unknown>;
         const existingMetadata = (existingData.metadata as Record<string, unknown> | undefined) ?? {};
@@ -148,7 +214,7 @@ export async function handleChargeRefunded(
         for (const [key, value] of Object.entries(metadata)) {
           if (value !== null && existingMetadata[key] === undefined) update[`metadata.${key}`] = value;
         }
-        const owner = refundRowOwner(existingData, { tenantId, referenceId });
+        const owner = refundRowOwner(existingData, { tenantId: refundTenantId, referenceId });
         for (const key of ['tenantId', 'referenceId', 'createdBy'] as const) {
           if (!hasText(existingData[key]) && owner[key] !== null) update[key] = owner[key];
         }
@@ -162,5 +228,6 @@ export async function handleChargeRefunded(
     );
   } catch (error: any) {
     functions.logger.error('Error handling charge refunded:', error);
+    throw error;
   }
 }

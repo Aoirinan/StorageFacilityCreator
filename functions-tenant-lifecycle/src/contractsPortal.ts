@@ -39,6 +39,27 @@ const SIGNING_TOKEN_TTL_DAYS = 14;
  */
 const MAX_PORTAL_PAYMENT_AMOUNT = 50000;
 
+/**
+ * Whether a payment record still asks the tenant for money in the portal:
+ * no status yet, or pending. Exported for tests.
+ *
+ * An allowlist, like the app's paymentNotProcessableReason. The portal counted
+ * every status except paid and completed, so a payment the Stripe webhook had
+ * marked `disputed` was added to the balance and to Pay now: the tenant was
+ * asked to pay the disputed amount again, and paid it twice when the facility
+ * won. Refunded, part-refunded and cancelled records were counted the same
+ * way. A disputed amount is for staff to collect by hand.
+ *
+ * Not `failed` either. Only the Stripe webhook writes a failed payment
+ * record, one per failed PaymentIntent: a record of an attempt, not a bill.
+ * The rent it was for is still on the ledger. Counted as owed, an autopay
+ * decline followed by a successful retry (a new PaymentIntent) left the
+ * failed record asking for the same rent again forever, with Pay now.
+ */
+export function portalPaymentIsOwed(status: unknown): boolean {
+  return status === undefined || status === null || status === 'pending';
+}
+
 async function enforceSigningTokenRateLimit(context: functions.https.CallableContext): Promise<void> {
   const ip = (context.rawRequest?.ip || context.rawRequest?.connection?.remoteAddress || 'unknown');
   const forwarded = context.rawRequest?.headers?.['x-forwarded-for'];
@@ -713,6 +734,7 @@ export const tenantPortalFetch = functions.https.onCall(async (data: TenantPorta
       const amount = typeof amountRaw === 'number' ? amountRaw : Number(amountRaw) || 0;
       const statusRaw = paymentData.status;
       const status = typeof statusRaw === 'string' ? statusRaw : 'pending';
+      const isOwed = portalPaymentIsOwed(statusRaw);
       const dueDateRaw = paymentData.dueDate;
       const dueDate = dueDateRaw instanceof admin.firestore.Timestamp
         ? dueDateRaw
@@ -722,8 +744,7 @@ export const tenantPortalFetch = functions.https.onCall(async (data: TenantPorta
       const method = paymentData.method ? String(paymentData.method) : null;
       const paymentTenantId = (paymentData.tenantId ?? '').toString();
 
-      const isPaid = status === 'paid' || status === 'completed';
-      if (!isPaid && perTenantStats.has(paymentTenantId)) {
+      if (isOwed && perTenantStats.has(paymentTenantId)) {
         const stat = perTenantStats.get(paymentTenantId)!;
         stat.outstandingBalance += amount;
         if (!stat.nextDueDate || dueDate.toMillis() < stat.nextDueDate.toMillis()) {

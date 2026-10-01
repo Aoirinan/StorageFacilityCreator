@@ -291,6 +291,8 @@ class PaymentOperationsNotifier extends StateNotifier<AsyncValue<void>> {
     required PaymentMethod method,
     String? notes,
     String? reference,
+    String? disputeId,
+    String? disputeRequestId,
   }) async {
     state = const AsyncValue.loading();
     try {
@@ -301,6 +303,8 @@ class PaymentOperationsNotifier extends StateNotifier<AsyncValue<void>> {
         method: method,
         notes: notes,
         reference: reference,
+        disputeId: disputeId,
+        disputeRequestId: disputeRequestId,
       );
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {

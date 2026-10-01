@@ -260,6 +260,22 @@ void main() {
     expect(inkWells.every((w) => w.onTap == null), isTrue);
   });
 
+  testWidgets('a card dispute alone does not make months late', (tester) async {
+    // What stripeWebhookDisputeCreated.ts posts once the money is withdrawn.
+    final dispute = _entry('dispute_du_1', LedgerEntryType.otherCharge, 100)
+        .copyWith(storedType: 'dispute', metadata: {'disputeId': 'du_1'});
+    final paidThroughAugust = _tenant(moveInDate: DateTime(2026, 1, 1), paidThrough: DateTime(2026, 8, 31));
+
+    await pump(tester, paidThroughAugust, [dispute]);
+    // Before: the $100 dispute made September late, though the delinquency
+    // job, the notices and autopay all leave disputes to staff.
+    expect(_monthColor(tester, '2026-09'), isNot(AppTheme.error));
+
+    // September's rent unpaid still is.
+    await pump(tester, paidThroughAugust, [dispute, _entry('september', LedgerEntryType.rentCharge, 50)]);
+    expect(_monthColor(tester, '2026-09'), AppTheme.error);
+  });
+
   testWidgets('a refund is not a payment made', (tester) async {
     await pump(
       tester,

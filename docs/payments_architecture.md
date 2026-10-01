@@ -138,7 +138,8 @@ When a facility admin enables billing or a tenant needs to save a payment method
 
 **Events Handled:**
 - `payment_intent.succeeded` → Update payment status in Firestore
-- `payment_intent.payment_failed` → Log failure, update status
+- `payment_intent.payment_failed` → records the failed attempt on `payments/stripe_{pi}` (never over a payment
+  that went through; a failed record is not owed, see below)
 - `setup_intent.succeeded` → Log success (payment method already attached)
 - `invoice.payment_succeeded` → Update subscription status
 - `invoice.payment_failed` → Mark subscription as past_due
@@ -312,8 +313,146 @@ All new functions check feature flags before processing:
 
 ### New Event Handlers
 
-- `charge.refunded` → Updates payment status, creates ledger entry
-- `charge.dispute.created` → Updates payment status, creates ledger entry
+- `charge.refunded` → Updates payment status, creates one ledger entry per refund (`refund_{refundId}`)
+- `charge.dispute.*` (`created`, `updated`, `closed`, `funds_withdrawn`, `funds_reinstated`) → records
+  `disputeStatus` on the payment (newest event wins; a same-second tie goes to the later stage). `created`
+  sets status `disputed` (the earlier status is kept in `statusBeforeDispute`); a win, a closed inquiry or the
+  money coming back restores it. The ledger only follows the money: `dispute_{disputeId}` (+amount) once Stripe
+  has withdrawn the funds or the dispute is lost (never for an inquiry, status `warning_*`), and
+  `dispute_{disputeId}_reinstated` (the same amount, negative) once they come back (`funds_reinstated`, or
+  closed as `won`). A reversed dispute row is marked settled (`metadata.allocatedAmount`) and any unpaid invoice
+  staff made from it is voided. See `functions-integrations/src/stripeWebhookDisputeCreated.ts`.
+- Dispute rows stay on the ledger and in the balance staff see (the ledger screen says how much of it is
+  disputes), but nothing automatic collects them: autopay, the delinquency job (late-fee basis, notices,
+  lockout), the payment reminder email and the rent reminder text all use the balance without them
+  (`functions-shared/src/ledger/disputeEntries.ts`, same rule in `lib/models/ledger_entry_model.dart`), and the
+  tenant portal's balance and Pay now count only payments still owed (no status, `pending`), not `disputed`
+  ones. Charging a disputed amount back to the same card is re-billing without consent; staff collect it by
+  hand.
+- A dispute with reason `fraudulent` switches the tenant's autopay off (every armed card, `billing/default`,
+  the tenant's `autopay` state, with `autopay.pausedForDisputeId`) and sends staff a notification, once per
+  dispute (`functions-integrations/src/disputeFraudAutopayPause.ts`). The tenant portal will not turn autopay
+  back on while the pause is set; staff turn it back on from the tenant's page (`setTenantAutopay`), which
+  clears it. This runs whether or not the dispute ledger switch is on.
+- Online move-in payments carry no `tenantId`. A refund or dispute on one is posted to the tenant found through
+  `publicMoveInPayments/{paymentIntentId}` (or, for older move-ins, the reservation's `paymentIntentId` and
+  `tenantId`). A refund the app made (`processRefund`, e.g. the move-out card refund) is posted to the tenant on
+  its own `refund_<id>` row, which is read first: move-ins completed before about 2026-09-24 name their tenant in
+  no other record. If the webhook got there before that row was written, `processRefund` withdraws what the
+  webhook recorded and its owner notification. With no tenant (refunded or disputed before the move-in
+  completed) nothing goes on any ledger: it is recorded on `publicMoveInPayments/{paymentIntentId}`
+  (`untenantedRefunds` / `untenantedDisputes`), which also stops that payment completing a move-in, and the owner
+  gets a notification (`functions-integrations/src/moveInPaymentTenant.ts`). The reservation that payment paid
+  for (`checkoutPaidPaymentIntentId`), if still open, is cancelled (`cancelReason`
+  `paid-move-in-returned:refund|dispute`) and its hold on the unit released, instead of keeping the unit for up
+  to a day for a renter who can no longer finish; `confirmPublicMoveInCheckout` no longer reports such a payment
+  as paid.
+- A lost dispute is collected with **Record payment for this dispute** on its ledger row (cash, check, Venmo,
+  Zelle, bank transfer, other, the card on file, or a payment link). Every one of these puts the dispute's id on
+  the payment's ledger row (`metadata.disputeId`), so the payment nets against the dispute and stays out of what
+  automation collects; as an ordinary payment it counted as rent, and autopay and the delinquency job then saw
+  the next month's rent as paid. By hand it is written by the `recordDisputePaymentByHand` callable, in one
+  transaction with the check (so two staff cannot both take the full amount), and does not move paid-through;
+  the card and the link carry `disputeId` to the PaymentIntent (`chargeTenantOffSession`,
+  `createPublicPaymentLink`). All three check it is the tenant's open dispute and that the amount is no more
+  than it still has out (`functions-shared/src/ledger/disputePayment.ts`). The card on file also needs
+  `tenantConsent: true` (staff confirming the tenant agreed): refused without it, and kept on the PaymentIntent
+  metadata (`tenantConsent`, `tenantConsentBy`, `tenantConsentAt`) and in the audit log
+  (`payment.dispute_card_charge`). Enter past history counts dispute rows in the balance only, never as rent
+  paid.
+- `payment_intent.payment_failed` writes `payments/stripe_{pi}` (or the record already carrying the
+  PaymentIntent) in a transaction, and never over a payment that is paid, completed, refunded, part-refunded or
+  disputed: Stripe sends events out of order and concurrently. `payment_intent.succeeded` likewise upgrades only
+  a record not yet paid (or failed). A failed record is the history of an attempt, not a bill: the portal does
+  not count it as owed and the app does not let it be processed, since the rent it was for is still on the
+  ledger. An autopay decline followed by a successful retry (a new PaymentIntent) leaves one failed record and
+  one completed one, and nothing owed.
+
+Connected-account events (`event.account` set) for `payment_intent.succeeded`, `payment_intent.payment_failed`,
+`setup_intent.succeeded`, `charge.refunded`, `charge.dispute.*`, link `checkout.session.completed` and
+`account.updated` only write to the facility whose `stripeConnectAccountId` is that account; anything else is
+refused and logged as an error (Sentry when configured). The metadata that names the facility is written by
+whoever created the object, which on a Standard account can be the account owner. Refused money events
+(payments, refunds, disputes, link checkouts) are also recorded in `stripeWebhookRefusals`, one row per account
+and object with the facility, tenant, amount, reason (`previous_account`, `unknown_account`,
+`facility_has_no_account`) and what to do (`action`); Stripe does not resend a refused event, so a genuine one
+is posted by hand. A facility's previous account is refused too: only a person can tell a late refund on it
+from a former owner's forgery. Platform-only events (owner subscriptions and their invoices, subscription
+checkouts) from a connected account are ignored.
+
+Connected accounts' test-mode events (`livemode: false`) are ignored: Stripe sends them to live Connect
+endpoints too, and anyone with the account's test key makes them for free. The emulator accepts them, and a
+test-mode deployment sets `STRIPE_ACCEPT_TEST_MODE_EVENTS=true` in the integrations codebase's environment;
+production never sets it.
+
+Before deploying these handlers, run the read-only check `npm run stripe:predeploy-check --prefix
+functions-admin -- --project=<id>` (old dispute rows on ledgers, money events from accounts that will be
+refused, refusals already recorded, the dispute ledger switch). It prints the deploy order below.
+
+The Connect webhook destination must subscribe to `payment_intent.succeeded`, `payment_intent.payment_failed`,
+`checkout.session.completed`, `charge.refunded`, all five `charge.dispute.*` events above,
+`setup_intent.succeeded` and `account.updated`. Add `payment_intent.payment_failed` (missing as of 2026-09-24)
+only after functions integrations and tenant-lifecycle are deployed (step 7 below).
+
+### Dispute ledger switch and deploy order
+
+`appConfig/payments.disputeLedgerEnabled` (boolean, super admin, Firebase console) gates every dispute write
+to ledgers and payments (`functions-integrations/src/disputeLedgerGate.ts`). Production's handler before this
+change never wrote a connected-account dispute, so the webhook writes the first real `dispute_*` rows and
+`disputed` payments. Code still on the old version would treat them as rent owed: autopay would charge the
+disputed amount back to the same card, the delinquency job would add late fees and lock the gate, the portal
+would ask the tenant to pay it again, and the old app would put it on an invoice. While the switch is off
+(false or missing) the webhook posts nothing for a dispute, records it in `stripeWebhookRefusals` with reason
+`dispute_ledger_off`, and does not mark the event processed. The fraud autopay pause and move-in records still
+happen.
+
+Required order. It covers the whole train this branch carries: payment links and disputes (PR #57), online
+move-in (#55), move-out and refunds (#56), team invites (#58) and move-in pricing (#60). When they ship
+together it replaces each of their own deploy notes. The pre-deploy check prints the same steps
+(`functions-admin/scripts/stripe-predeploy-check.cjs`, `REQUIRED_DEPLOY_ORDER`; a test checks the two agree).
+
+Before step 1: run the pre-deploy check and `node scripts/predeploy-online-move-in-checks.mjs` (both read-only),
+vendor functions-shared, and build the Flutter app (`flutter build web --release --no-wasm-dry-run`), so steps 3
+to 6 run back to back. Do not use `./deploy.ps1` for this: it deploys indexes after functions, and rules before
+hosting.
+
+1. `firebase deploy --only firestore:indexes`, then wait until `Notifications (type, readAt, createdAt)` and
+   `publicMoveInPayments (refund.status, createdAt)` are Enabled. Without them the move-in refund sweep fails
+   every run and the move-in alerts banner shows nothing.
+2. `firebase deploy --only functions:automation,functions:messaging-twilio,functions:admin`: autopay, the
+   delinquency job, the reminders and the rent reminder text leave card disputes and failed attempts out of
+   what they collect; admin is facility and account delete and platform purge.
+3. `firebase deploy --only functions:public-website`: online move-in and its refund sweep, first-month
+   proration, payment links (`confirmPublicPaymentCheckout` is new).
+4. `firebase deploy --only functions:integrations`, straight after step 3: it holds the unit for a paid move-in,
+   which only the step-3 sweep settles. The switch stays off.
+5. `firebase deploy --only functions:tenant-lifecycle`, straight after step 4: the portal balance, and
+   `processMoveOut`, which no longer posts a card refund as made. No card move-outs from here until step 6 is
+   live: the old move-out screen shows no refund and makes none.
+6. `firebase deploy --only hosting` (the build made before step 1), straight after step 5. Never before steps 3
+   to 5: the old server ignores the app's `disputeId`, has no `confirmPublicPaymentCheckout`, and posts card
+   move-out refunds as made.
+7. In the Stripe Dashboard, add `payment_intent.payment_failed` to the Connect destination (it needs steps 4 and
+   5: the old portal counts a failed record as owed).
+8. `node scripts/audit-team-access.mjs` (read-only) and decide each finding, then
+   `firebase deploy --only firestore:rules`. After hosting: the new rules refuse the old app's invite
+   acceptance.
+9. Last, set `appConfig/payments.disputeLedgerEnabled` to true, and re-run the pre-deploy check with
+   `--after-deploy`. A held dispute posts on its next Stripe event (every dispute sends
+   `charge.dispute.closed` when it ends); to post one sooner, resend one of its `eventIds` from the Stripe
+   Dashboard. Posting closes its held row (`resolved: true`). The switch needs steps 1 to 7; if step 8 is held
+   up, it may go first.
+
+What the order cannot give every PR, and why:
+- #60 asks for public-website and hosting together. Steps 4 and 5 sit between them, because integrations must
+  follow public-website at once (#55) and hosting must follow integrations and tenant-lifecycle (#56 and this
+  PR). In that gap a renter in a US evening with no move-in date is refused at checkout ("refresh the page")
+  before any money is taken, so run steps 3 to 6 back to back.
+- #58 lists functions integrations after the rules. Here it goes before hosting, and so before the rules,
+  because the new app needs it and the new rules need the new app. Nothing in #58's integrations change (the
+  suspended-owner checkout refusal) reads or depends on the rules.
+- #56 asks for the window between tenant-lifecycle and hosting to be as short as possible: it is one deploy,
+  step 5 to step 6.
 
 ### Enhanced Idempotency
 

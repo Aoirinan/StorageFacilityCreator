@@ -13,8 +13,11 @@ import {
   CHECKOUT_PAID_FIELD,
   CHECKOUT_SESSION_EXPIRES_FIELD,
   PAID_HOLD_MAX_HOURS,
+  UNTENANTED_DISPUTES_FIELD,
+  UNTENANTED_REFUNDS_FIELD,
   holderMayBePaying,
   laterExpiry,
+  moveInPaymentReturnedBeforeMoveIn,
   paidHoldCap,
   recordPaidPublicMoveInCheckout,
 } from '../units/publicMoveInPaidCheckout';
@@ -85,7 +88,28 @@ test('the paid-checkout rules are exported for the webhook and the move-in codeb
     'paidHoldCap',
     'PUBLIC_MOVE_IN_PAID_CHECKOUTS_COLLECTION',
     'PUBLIC_MOVE_IN_PAYMENTS_COLLECTION',
+    'UNTENANTED_REFUNDS_FIELD',
+    'UNTENANTED_DISPUTES_FIELD',
+    'moveInPaymentReturnedBeforeMoveIn',
   ]) {
     assert.ok(name in shared, name);
   }
+});
+
+test('a use record that holds only a Stripe refund or dispute made before any move-in was returned, not used', () => {
+  // What the Connect webhook writes (functions-integrations moveInPaymentTenant.ts).
+  const refunds = { [UNTENANTED_REFUNDS_FIELD]: { re_1: { amountCents: 1000 } } };
+  const disputes = { [UNTENANTED_DISPUTES_FIELD]: { du_1: { amountCents: 2500 } } };
+  assert.equal(moveInPaymentReturnedBeforeMoveIn({ paymentIntentId: 'pi_1', ...refunds }), true);
+  assert.equal(moveInPaymentReturnedBeforeMoveIn({ paymentIntentId: 'pi_1', ...disputes }), true);
+  assert.equal(moveInPaymentReturnedBeforeMoveIn({ ...refunds, tenantId: null }), true);
+
+  // It moved a tenant in.
+  assert.equal(moveInPaymentReturnedBeforeMoveIn({ ...refunds, tenantId: 't1' }), false);
+  // The move-in's own refund (paidMoveInRefund.ts) is 'refunded', as before.
+  assert.equal(moveInPaymentReturnedBeforeMoveIn({ ...refunds, refund: { status: 'pending' } }), false);
+  // Nothing recorded.
+  assert.equal(moveInPaymentReturnedBeforeMoveIn({ [UNTENANTED_REFUNDS_FIELD]: {} }), false);
+  assert.equal(moveInPaymentReturnedBeforeMoveIn({ tenantId: 't1', contractId: 'c1' }), false);
+  assert.equal(moveInPaymentReturnedBeforeMoveIn(undefined), false);
 });

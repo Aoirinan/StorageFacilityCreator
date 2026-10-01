@@ -176,6 +176,25 @@ export type {
   PlatformOfferHistory,
   PlatformOfferHistoryInput,
 } from './stripe/platformCheckoutTrial';
+export {
+  PUBLIC_LINK_PAYMENT_TYPE,
+  PUBLIC_LINK_SFC_KIND,
+  PUBLIC_PAYMENT_LINKS_COLLECTION,
+  PUBLIC_PAYMENT_LINK_EXCEPTIONS_COLLECTION,
+  buildPublicLinkPaymentIntentMetadata,
+  completePublicLinkPayment,
+  isPublicLinkCheckoutSession,
+  isPublicLinkPaymentIntent,
+  publicLinkAmountCents,
+  publicLinkNotificationId,
+} from './stripe/completePublicLinkPayment';
+export type {
+  CompletePublicLinkPaymentResult,
+  PublicLinkCheckoutSessionLike,
+  PublicLinkCompletionSource,
+  PublicLinkExceptionReason,
+} from './stripe/completePublicLinkPayment';
+export { STRIPE_WEBHOOK_REFUSALS_COLLECTION } from './stripe/webhookRefusals';
 export { computeAccountRollup, isLocalTrialExpired } from './subscription/accountRollup';
 export type {
   AccountSubscriptionStatus,
@@ -356,6 +375,29 @@ export {
   unitsHeldByTenant,
 } from './tenants/permanentDeleteRules';
 
+export type { LedgerBalanceSplit } from './ledger/disputeEntries';
+export {
+  DISPUTE_LEDGER_TYPE,
+  DISPUTE_REVERSAL_LEDGER_TYPE,
+  disputeCredit,
+  isDisputeLedgerRow,
+  splitLedgerBalance,
+} from './ledger/disputeEntries';
+export type { DisputeHandPaymentResult, DisputePaymentCheck, DisputePaymentRefusal } from './ledger/disputePayment';
+export {
+  checkDisputeForPayment,
+  checkDisputeForPaymentInTransaction,
+  DISPUTE_HAND_PAYMENT_METHODS,
+  DISPUTE_OVERPAID_NOTIFICATION_PREFIX,
+  disputeHandPaymentDescription,
+  disputeHandPaymentDocId,
+  disputeLedgerEntryId,
+  disputeOutstanding,
+  disputeOverpaidNotificationId,
+  notifyIfDisputeOverpaid,
+  recordDisputeHandPayment,
+} from './ledger/disputePayment';
+
 export type { ActiveTenantUnitClaims, UnitNotOfferedReason } from './units/onlineRental';
 export {
   activeTenantUnitClaims,
@@ -385,10 +427,13 @@ export {
   PAID_HOLD_MAX_HOURS,
   PUBLIC_MOVE_IN_PAID_CHECKOUTS_COLLECTION,
   PUBLIC_MOVE_IN_PAYMENTS_COLLECTION,
+  UNTENANTED_DISPUTES_FIELD,
+  UNTENANTED_REFUNDS_FIELD,
   checkoutMayHaveBeenPaid,
   holderMayBePaying,
   isLiveHold,
   laterExpiry,
+  moveInPaymentReturnedBeforeMoveIn,
   paidHoldCap,
   readHoldersReservation,
   recordPaidPublicMoveInCheckout,

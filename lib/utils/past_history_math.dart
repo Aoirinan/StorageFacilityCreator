@@ -304,7 +304,10 @@ PaidThroughChoice defaultPaidThroughChoice({required bool voidsPayment}) =>
 /// * an unticked (free) month right after a paid month counts as paid;
 /// * months past the last charged month are bought only with real credit
 ///   (the whole balance below zero, fees and deposits included), in whole
-///   months at [monthlyRate]; less than a month is a credit.
+///   months at [monthlyRate]; less than a month is a credit;
+/// * card-dispute rows ([LedgerEntry.isCardDispute]) count in the balance
+///   only: a reversal, or a payment staff took for a lost dispute, settles
+///   the dispute, and in the pool it bought a rent month nobody paid for.
 HistoryPreview computeHistoryPreview({
   required List<LedgerEntry> existing,
   required List<ProposedHistoryCharge> charges,
@@ -317,6 +320,7 @@ HistoryPreview computeHistoryPreview({
   final rentByMonth = <int, double>{};
   var pool = 0.0;
   var balance = 0.0;
+  var disputed = 0.0;
   var existingCharges = 0;
   var existingChargeTotal = 0.0;
   var existingPayments = 0;
@@ -338,11 +342,19 @@ HistoryPreview computeHistoryPreview({
     if (e.amount < 0) {
       existingPayments++;
       existingPaymentTotal -= e.amount;
-      pool += -e.amount;
+      if (e.isCardDispute) {
+        disputed += e.amount;
+      } else {
+        pool += -e.amount;
+      }
       continue;
     }
     existingCharges++;
     existingChargeTotal += e.amount;
+    if (e.isCardDispute) {
+      disputed += e.amount;
+      continue;
+    }
     final m = rentChargeMonthOfEntry(e);
     if (m != null) {
       final key = _monthKey(m.year, m.month);
@@ -392,11 +404,12 @@ HistoryPreview computeHistoryPreview({
     lastCovered += 1;
   }
   // Months past the last charged one are bought only with real credit: the
-  // whole balance below zero, fees and deposits included, so money that paid
-  // a deposit or a fee does not buy future rent.
+  // whole balance below zero, fees and deposits included (dispute rows
+  // aside), so money that paid a deposit or a fee does not buy future rent.
   var prepaidMonths = 0;
   if (firstUnpaid == null) {
-    final credit = balance < 0 ? _cents(-balance) : 0.0;
+    final rentBalance = balance - disputed;
+    final credit = rentBalance < 0 ? _cents(-rentBalance) : 0.0;
     if (lastCovered != null && monthlyRate > 0) {
       prepaidMonths = ((credit + 0.005) / monthlyRate).floor();
       lastCovered += prepaidMonths;

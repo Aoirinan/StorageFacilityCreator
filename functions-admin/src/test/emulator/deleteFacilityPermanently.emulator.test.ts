@@ -15,7 +15,8 @@ import {
   facilityHasActiveTenantsMessage,
   facilityHasAutopayTenantsMessage,
 } from '../../deleteFacilityPermanently';
-import { FACILITY_KEYED_COLLECTIONS, FacilityPurgeDeps, stopAccountBilling } from '../../facilityPurge';
+import { superAdminDeleteFacilityCreatorAccountHandler } from '../../deleteFacilityCreatorAccount';
+import { FacilityPurgeDeps, stopAccountBilling } from '../../facilityPurge';
 import { TWO_FACTOR_REQUIRED_MESSAGE } from '../../recentTwoFactor';
 import { clearEmulator, emulatorDb, skipWithoutEmulator } from './firestoreEmulator';
 
@@ -154,13 +155,51 @@ async function seedFacility(): Promise<void> {
       .doc(`token-${suffix}`)
       .set({ facilityId, tenantId: 't1', amount: 50, status: 'pending' });
     await db.collection('customDomainClaims').doc(`${suffix}.example.com`).set({ facilityId });
+    await db
+      .collection('publicPaymentLinkExceptions')
+      .doc(`cs-${suffix}`)
+      .set({ facilityId, tenantId: 't1', amountCents: 5000, reason: 'duplicate_payment' });
+    await db
+      .collection('stripeWebhookRefusals')
+      .doc(`acct_x__pi-${suffix}`)
+      .set({ facilityId, tenantId: 't1', amount: 50, reason: 'unknown_account' });
+    await db
+      .collection('stripeWebhookEvents')
+      .doc(`evt_${suffix}`)
+      .set({ eventType: 'payment_intent.succeeded', account: 'acct_x', facilityId, tenantId: 't1' });
+    await db
+      .collection('publicMoveInPayments')
+      .doc(`pi_used_${suffix}`)
+      .set({ paymentIntentId: `pi_used_${suffix}`, facilityId, reservationId: `res-${suffix}`, tenantId: 't1' });
+    await db
+      .collection('publicMoveInPaidCheckouts')
+      .doc(`pi_paid_${suffix}`)
+      .set({ paymentIntentId: `pi_paid_${suffix}`, facilityId, reservationId: `res-${suffix}`, amountCents: 5000 });
   }
 }
+
+/**
+ * Every collection seedKeyedRows writes, named here rather than read from
+ * FACILITY_KEYED_COLLECTIONS: a collection dropped from that list must show
+ * up as rows left behind.
+ */
+const SEEDED_KEYED_COLLECTIONS = [
+  'publicFacilityMaps',
+  'user_roles',
+  'publicReservations',
+  'publicPaymentLinks',
+  'customDomainClaims',
+  'publicPaymentLinkExceptions',
+  'stripeWebhookRefusals',
+  'stripeWebhookEvents',
+  'publicMoveInPayments',
+  'publicMoveInPaidCheckouts',
+];
 
 /** The keyed rows left, as 'collection/id'. */
 async function keyedRowsLeft(): Promise<string[]> {
   const left: string[] = [];
-  for (const collection of FACILITY_KEYED_COLLECTIONS) {
+  for (const collection of SEEDED_KEYED_COLLECTIONS) {
     for (const doc of (await emulatorDb().collection(collection).get()).docs) left.push(`${collection}/${doc.id}`);
   }
   return left.sort();
@@ -168,8 +207,13 @@ async function keyedRowsLeft(): Promise<string[]> {
 
 const THEIR_KEYED_ROWS = [
   'customDomainClaims/theirs.example.com',
+  'publicMoveInPaidCheckouts/pi_paid_theirs',
+  'publicMoveInPayments/pi_used_theirs',
+  'publicPaymentLinkExceptions/cs-theirs',
   'publicPaymentLinks/token-theirs',
   'publicReservations/res-theirs',
+  'stripeWebhookEvents/evt_theirs',
+  'stripeWebhookRefusals/acct_x__pi-theirs',
   'user_roles/role-theirs',
 
   'publicFacilityMaps/moved-theirs',
@@ -178,8 +222,13 @@ const THEIR_KEYED_ROWS = [
 const ALL_KEYED_ROWS = [
   ...THEIR_KEYED_ROWS,
   'customDomainClaims/mine.example.com',
+  'publicMoveInPaidCheckouts/pi_paid_mine',
+  'publicMoveInPayments/pi_used_mine',
+  'publicPaymentLinkExceptions/cs-mine',
   'publicPaymentLinks/token-mine',
   'publicReservations/res-mine',
+  'stripeWebhookEvents/evt_mine',
+  'stripeWebhookRefusals/acct_x__pi-mine',
   'user_roles/role-mine',
 
   // The current slug's (mapEngine/meta.publicSlug 'Acme'), and old ones.
@@ -443,10 +492,17 @@ test("an account delete stops each facility's and the account's billing once, an
 });
 
 test('the account delete callable stops billing through stopAccountBilling', () => {
-  const source = readFileSync(path.join(__dirname, '..', '..', '..', 'src', 'superAdminCallables.ts'), 'utf8');
-  assert.match(source, /await stopAccountBilling\(\s*db,\s*facilitiesSnap\.docs,\s*accountData,\s*stripeFacilityPurgeDeps\(\),?\s*\)/);
+  // The callable (superAdminCallables.ts) hands its body
+  // (deleteFacilityCreatorAccount.ts) the purge's production Stripe deps,
+  // legacy AutoPay included; the body cancels through stopAccountBilling.
+  const source = (file: string) => readFileSync(path.join(__dirname, '..', '..', '..', 'src', file), 'utf8');
+  const callable = source('superAdminCallables.ts');
+  const body = source('deleteFacilityCreatorAccount.ts');
+  assert.match(body, /await stopAccountBilling\(\s*db,\s*facilitiesSnap\.docs,\s*accountData,\s*deps,?\s*\)/);
+  assert.match(callable, /const purge = stripeFacilityPurgeDeps\(\);/);
+  assert.match(callable, /legacyAutopayStripe:\s*purge\.legacyAutopayStripe,/);
   // Tenants' legacy subscriptions no longer go through the generic cancel.
-  assert.doesNotMatch(source, /tenantLegacySubscriptions/);
+  assert.doesNotMatch(callable + body, /tenantLegacySubscriptions/);
 });
 
 test('more than a few tenants with autopay: five are named, the rest counted', () => {
@@ -617,4 +673,60 @@ test('the deployed callable, production deps and all, deletes an unbilled facili
   assert.deepEqual(await callable.run({ facilityId: FACILITY }, context(OWNER)), { success: true });
   assert.deepEqual(await docsUnder(`facilities/${FACILITY}`), []);
   assert.deepEqual(await keyedRowsLeft(), THEIR_KEYED_ROWS);
+});
+
+test("a super admin deleting the owner's whole account deletes each facility's keyed rows too", { skip: skipWithoutEmulator }, async () => {
+  // superAdminDeleteFacilityCreatorAccount deleted each facility's tree but
+  // not the rows keyed by it outside the tree: payment links, reservations,
+  // staff roles, domain claims, link exceptions and Stripe refusals (tenant
+  // names, ids and amounts) outlived the account.
+  await seedFacility();
+  const db = emulatorDb();
+  await db.collection('facilityCreatorAccounts').doc('acct-1').update({ ownerEmail: 'owner@example.test' });
+  await db.collection('users').doc(OWNER).set({ email: 'owner@example.test' });
+  // A tenant's legacy AutoPay subscription: on the platform account, so it is
+  // cancelled with the account's billing (stopAccountBilling).
+  await db
+    .collection('facilities')
+    .doc(FACILITY)
+    .collection('tenants')
+    .doc('t1')
+    .collection('billing')
+    .doc('default')
+    .set({ stripeSubscriptionId: 'sub_tenant' });
+  const saved = process.env.SUPER_ADMIN_EMAILS;
+  process.env.SUPER_ADMIN_EMAILS = 'admin@example.test';
+  const cancelled: string[] = [];
+  const legacyCalls = newCalls();
+  const authDeleted: string[] = [];
+  try {
+    const result = await superAdminDeleteFacilityCreatorAccountHandler(
+      { accountId: 'acct-1', ownerEmailConfirmation: 'Owner@Example.test' },
+      { auth: { uid: 'admin-1', token: { email: 'admin@example.test' } }, rawRequest: {} } as unknown as functions.https.CallableContext,
+      {
+        db,
+        cancelSubscriptions: async (subs) => {
+          cancelled.push(...subs.map((sub) => sub.id));
+          return subs.map((sub): CancelOutcome => ({ id: sub.id, label: sub.label, status: 'canceled' }));
+        },
+        legacyAutopayStripe: () => fakeLegacyStripe(legacyCalls),
+        deleteAuthUser: async (uid) => {
+          authDeleted.push(uid);
+        },
+      },
+    );
+    assert.deepEqual(result, { success: true, facilitiesDeleted: 1 });
+  } finally {
+    if (saved === undefined) delete process.env.SUPER_ADMIN_EMAILS;
+    else process.env.SUPER_ADMIN_EMAILS = saved;
+  }
+
+  assert.deepEqual(await docsUnder(`facilities/${FACILITY}`), []);
+  // Only fac-2's rows stay: that facility is not this owner's.
+  assert.deepEqual(await keyedRowsLeft(), THEIR_KEYED_ROWS);
+  assert.equal((await db.collection('facilityCreatorAccounts').doc('acct-1').get()).exists, false);
+  assert.equal((await db.collection('users').doc(OWNER).get()).exists, false);
+  assert.deepEqual(cancelled.sort(), ['sub_account', 'sub_platform', 'sub_website']);
+  assert.deepEqual(legacyCalls.cancelled, [{ id: 'sub_tenant', label: 'tenant-autopay' }]);
+  assert.deepEqual(authDeleted, [OWNER]);
 });

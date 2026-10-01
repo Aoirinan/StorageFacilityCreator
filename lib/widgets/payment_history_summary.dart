@@ -9,8 +9,9 @@ import 'package:sfcapp/utils/received_payments.dart';
 
 /// The Payment History block in the tenant page's Financial Summary: counts,
 /// the last 12 months, each worked out by [tenantPaymentMonthStatus] from the
-/// tenant and the balance of [entries], and the payments received on the
-/// ledger ([receivedPayments]) with their dates and check numbers.
+/// tenant and the collectible balance of [entries] (card disputes left out,
+/// see [splitPostedLedgerEntries]), and the payments received on the ledger
+/// ([receivedPayments]) with their dates and check numbers.
 class PaymentHistorySummary extends StatelessWidget {
   /// How many payments are listed; View Ledger has the rest.
   static const int receivedListLimit = 12;
@@ -74,7 +75,12 @@ class PaymentHistorySummary extends StatelessWidget {
     // (a tenant who paid once and was refunded used to show two); a credit
     // is not money received, and a pending row is still owed.
     final paymentCount = received.length;
-    final balance = sumPostedLedgerEntries(entries);
+    // The collectible part: a month is late only for money the tenant owes
+    // the facility's own way. Card-dispute rows are staff's to collect by
+    // hand, and the delinquency job (late fees, notices) leaves them out
+    // too, so an open or lost dispute alone showed months late that no job
+    // or notice ever treats as late.
+    final balance = splitPostedLedgerEntries(entries).collectible;
     final months = paymentHistoryMonths(today);
     final historyStart = firstPastHistoryPaymentDate(entries);
     final statuses = [

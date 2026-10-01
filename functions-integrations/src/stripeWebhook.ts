@@ -10,6 +10,10 @@ import {
 import { isStripeEventProcessed, markStripeEventProcessed } from './stripeWebhookIdempotency';
 import { handleConnectAccountDeauthorized } from './stripeFacilityConnectOffboarding';
 import {
+  refusePlatformOnlyEventFromConnectedAccount,
+  refuseTestModeConnectedEvent,
+} from './connectedAccountGuard';
+import {
   handleChargeRefunded,
   handleDisputeCreated,
   handlePaymentIntentFailed,
@@ -25,13 +29,30 @@ import {
   handleSubscriptionUpdate,
 } from './stripeWebhookSubscriptionHandlers';
 
-async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<void> {
+/**
+ * What dispatching one event did. `held`: a card dispute event the handler
+ * did not post because `appConfig/payments.disputeLedgerEnabled` is off
+ * (disputeLedgerGate.ts). The webhook does not mark a held event processed,
+ * so resending it from the Stripe Dashboard once the switch is on posts it.
+ */
+export type StripeWebhookDispatchOutcome = { held: boolean };
+
+/** Exported for tests; the deployed entry point is `stripeWebhook` below. */
+export async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<StripeWebhookDispatchOutcome> {
+  // A connected account's test-mode event is not real money; in production it
+  // must not reach a handler at all (see connectedAccountGuard.ts).
+  const envelope = event as { id?: string; type?: string; account?: string; livemode?: boolean };
+  if (refuseTestModeConnectedEvent(envelope)) return { held: false };
+  if (refusePlatformOnlyEventFromConnectedAccount(envelope)) return { held: false };
   switch (event.type) {
     case 'checkout.session.completed': {
       const session = event.data.object as Stripe.Checkout.Session;
-      // A connected account's (online move-in) session carries its account
-      // on the event, not on the object.
-      await handleCheckoutCompleted(session, (event as any).account as string | undefined, event.created);
+      // Public payment-link and online move-in sessions live on the
+      // facility's connected account, which the event carries, not the
+      // object; completing one checks that account against the facility's.
+      // event.created is when Stripe saw the session complete.
+      const connectedAccountId = (event as any).account as string | undefined;
+      await handleCheckoutCompleted(session, connectedAccountId, event.created, event.id);
       break;
     }
     case 'customer.subscription.created':
@@ -57,7 +78,9 @@ async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<void> {
     }
     case 'account.updated': {
       const account = event.data.object as Stripe.Account;
-      await handleConnectAccountUpdated(account);
+      // The facility comes from the account's metadata; only the account the
+      // facility is connected to now may change its Stripe status.
+      await handleConnectAccountUpdated(account, (event as any).account as string | undefined, event.id);
       break;
     }
     case 'account.application.deauthorized': {
@@ -68,27 +91,37 @@ async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<void> {
     }
     case 'payment_intent.succeeded': {
       const paymentIntent = event.data.object as Stripe.PaymentIntent;
-      await handlePaymentIntentSucceeded(paymentIntent);
+      // The handler only credits a connected-account payment when the account
+      // is the facility's own, so it needs to know which account sent it.
+      const connectedAccountId = (event as any).account as string | undefined;
+      await handlePaymentIntentSucceeded(paymentIntent, connectedAccountId, event.id);
       break;
     }
+    case 'charge.dispute.created':
+    case 'charge.dispute.updated':
     case 'charge.dispute.closed':
-    case 'charge.dispute.updated': {
-      // Disputes change state after they are opened; without these the record
-      // would be frozen at "created" and an operator could not tell whether
-      // they had won or lost.
+    case 'charge.dispute.funds_withdrawn':
+    case 'charge.dispute.funds_reinstated': {
+      // The tenant is charged for a dispute only once money has actually left
+      // the facility's account, and credited back when it returns; inquiries
+      // move no money. See stripeWebhookDisputeCreated.ts for the rule.
+      // Tenant charges live on the connected account, so the handler needs it.
       const dispute = event.data.object as Stripe.Dispute;
-      await handleDisputeCreated(dispute);
-      break;
+      const connectedAccountId = (event as any).account as string | undefined;
+      return handleDisputeCreated(dispute, connectedAccountId, event.type, event.created, event.id);
     }
     case 'payment_intent.payment_failed': {
       const paymentIntent = event.data.object as Stripe.PaymentIntent;
-      await handlePaymentIntentFailed(paymentIntent);
+      // Like a success, a failure names its facility in metadata anyone on
+      // any account can write, so the handler checks the account first.
+      const connectedAccountId = (event as any).account as string | undefined;
+      await handlePaymentIntentFailed(paymentIntent, connectedAccountId, event.id);
       break;
     }
     case 'setup_intent.succeeded': {
       const setupIntent = event.data.object as Stripe.SetupIntent;
       const connectedAccountId = (event as any).account as string | undefined;
-      await handleSetupIntentSucceeded(setupIntent, connectedAccountId);
+      await handleSetupIntentSucceeded(setupIntent, connectedAccountId, event.id);
       break;
     }
     case 'charge.refunded': {
@@ -96,17 +129,13 @@ async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<void> {
       // Tenant charges live on the facility's connected account, so the
       // handler needs the account to look anything up.
       const connectedAccountId = (event as any).account as string | undefined;
-      await handleChargeRefunded(charge, connectedAccountId);
-      break;
-    }
-    case 'charge.dispute.created': {
-      const dispute = event.data.object as Stripe.Dispute;
-      await handleDisputeCreated(dispute);
+      await handleChargeRefunded(charge, connectedAccountId, event.id);
       break;
     }
     default:
       functions.logger.info(`Unhandled event type: ${event.type}`);
   }
+  return { held: false };
 }
 
 /**
@@ -174,7 +203,13 @@ export const stripeWebhook = functions.runWith({ secrets: STRIPE_WEBHOOK_SECRETS
       return;
     }
 
-    await dispatchStripeWebhookEvent(event);
+    const outcome = await dispatchStripeWebhookEvent(event);
+    if (outcome.held) {
+      // Acknowledged, so Stripe does not retry it for days, but not marked
+      // processed: a resend after the dispute ledger is switched on posts it.
+      res.json({ received: true, held: true });
+      return;
+    }
 
     const account = (event as any).account || null;
     let facilityId: string | undefined;

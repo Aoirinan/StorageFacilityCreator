@@ -13,6 +13,7 @@
  */
 
 import { createHash } from 'crypto';
+import { isDisputeLedgerRow } from '@sfc/functions-shared';
 
 /** Tag on every ledger entry and payment doc this tool writes. */
 export const PAST_HISTORY_SOURCE = 'past_history';
@@ -474,6 +475,12 @@ export interface HistoryOutcome {
  * with real credit (the whole balance below zero, fees and deposits
  * included), in whole months at `monthlyRate`; less than a month is a
  * credit.
+ *
+ * Card-dispute rows (functions-shared ledger/disputeEntries.ts) count in the
+ * balance only. A dispute's reversal, and a payment staff took for a lost
+ * dispute, settle the dispute, not rent: in the pool they bought a rent
+ * month nobody paid for, the same money autopay and the delinquency job
+ * leave out.
  */
 export function computeHistoryOutcome(params: {
   existing: ReadonlyArray<LedgerRow>;
@@ -486,12 +493,17 @@ export function computeHistoryOutcome(params: {
   const rentByMonth = new Map<number, number>();
   let pool = 0;
   let balance = 0;
+  let disputed = 0;
 
   for (const row of existing) {
     if (row.status !== 'posted') continue;
     const amount = typeof row.amount === 'number' && Number.isFinite(row.amount) ? row.amount : 0;
     if (amount === 0) continue;
     balance += amount;
+    if (isDisputeLedgerRow(row)) {
+      disputed += amount;
+      continue;
+    }
     if (amount < 0) {
       pool += -amount;
       continue;
@@ -547,13 +559,13 @@ export function computeHistoryOutcome(params: {
   extendThroughFree();
 
   // Months past the last charged one are bought only with real credit: the
-  // whole balance below zero, fees and deposits included. Money that paid a
-  // deposit or a fee must not buy future rent just because rent was applied
-  // first on the charged months.
+  // whole balance below zero, fees and deposits included (dispute rows
+  // aside, as above). Money that paid a deposit or a fee must not buy future
+  // rent just because rent was applied first on the charged months.
   let prepaidMonths = 0;
   const rate = params.monthlyRate ?? 0;
   if (firstUnpaid === null) {
-    const credit = Math.max(0, roundCents(-balance));
+    const credit = Math.max(0, roundCents(disputed - balance));
     if (lastCovered !== null && rate > 0) {
       prepaidMonths = Math.floor((credit + 0.005) / rate);
       lastCovered += prepaidMonths;

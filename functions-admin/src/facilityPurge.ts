@@ -10,6 +10,8 @@ import {
   cancelSubscriptions,
   collectSubscriptionsToCancel,
 } from '@sfc/functions-shared/stripe/subscriptionCleanup';
+import { PUBLIC_PAYMENT_LINK_EXCEPTIONS_COLLECTION } from '@sfc/functions-shared/stripe/completePublicLinkPayment';
+import { STRIPE_WEBHOOK_REFUSALS_COLLECTION } from '@sfc/functions-shared/stripe/webhookRefusals';
 import {
   LegacyCancelOutcome,
   LegacySubscriptionStripe,
@@ -256,6 +258,20 @@ export const FACILITY_KEYED_COLLECTIONS = [
   'publicReservations',
   'publicPaymentLinks',
   'customDomainClaims',
+  // Link payments staff must look at, and refused Stripe money events: both
+  // carry the facility's tenant ids and amounts, like the links.
+  PUBLIC_PAYMENT_LINK_EXCEPTIONS_COLLECTION,
+  STRIPE_WEBHOOK_REFUSALS_COLLECTION,
+  // The webhook's processed-event marks name the facility and tenant too.
+  // Platform purge already wipes them; a facility or account delete left them.
+  'stripeWebhookEvents',
+  // One per online move-in payment: the tenant it moved in and the amount,
+  // and, for one refunded or disputed before the move-in completed, the
+  // refund or dispute the Stripe webhook recorded there.
+  'publicMoveInPayments',
+  // One per paid online move-in not yet moved in or refunded: the
+  // reservation, the connected account and the amount, for the sweep.
+  'publicMoveInPaidCheckouts',
 ] as const;
 
 /** Deletes every row of [FACILITY_KEYED_COLLECTIONS] whose facilityId is [facilityId]. */

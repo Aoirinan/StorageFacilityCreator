@@ -36,6 +36,7 @@ export {
 export {
   createOneTimePaymentIntentOnConnectedAccount,
   chargeTenantOffSession,
+  recordDisputePaymentByHand,
 } from './stripeFacilityPayments';
 /** Alias for stripeConnectGetStatus — get facility Stripe status (state machine). */
 export { stripeConnectGetStatus as getFacilityStripeStatus } from './stripeFacilityConnectLifecycle';

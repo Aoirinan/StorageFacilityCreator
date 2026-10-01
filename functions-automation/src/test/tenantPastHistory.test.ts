@@ -836,3 +836,67 @@ test('two voided payments never claim the same row, and one with no row is repor
   const missing = result.warnings.filter((w) => /Couldn't find the matching Payment History row for \$80\.00 on 9\/27\/2026/.test(w));
   assert.equal(missing.length, 1);
 });
+
+// --- Card disputes settle the dispute, not rent ------------------------------
+
+/** A lost dispute on an August payment, which staff then collected by hand. */
+function seedDisputeCollectedByHand(store: Store, settle: 'hand' | 'won') {
+  const entryDate = new Date('2026-08-20T12:00:00Z');
+  store.ledgers['dispute_du_1'] = {
+    tenantId: TENANT_ID,
+    type: 'dispute',
+    status: 'posted',
+    amount: 80,
+    entryDate,
+    metadata: { disputeId: 'du_1', paymentIntentId: 'pi_aug' },
+  };
+  store.ledgers[settle === 'hand' ? 'hand_du_1' : 'dispute_du_1_reinstated'] = {
+    tenantId: TENANT_ID,
+    // The app's "Record payment for this dispute", or the webhook's reversal on a win.
+    type: settle === 'hand' ? 'payment' : 'dispute_reversal',
+    status: 'posted',
+    amount: -80,
+    entryDate,
+    metadata: settle === 'hand' ? { paymentMethod: 'cash', paymentId: 'p_hand', disputeId: 'du_1' } : { disputeId: 'du_1' },
+  };
+}
+
+for (const settle of ['hand', 'won'] as const) {
+  test(`a dispute settled (${settle}) buys no rent month: August paid, September still owed`, () => {
+    const store = fullStore();
+    seedDisputeCollectedByHand(store, settle);
+    const { result } = recordFull(store, {
+      charges: [
+        { year: 2026, month: 8, day: 1, amount: 80 },
+        { year: 2026, month: 9, day: 1, amount: 80 },
+      ],
+      payments: [venmo('2026-08-01', 80)],
+    });
+    // Before: the $80 that settled the dispute went into the rent pool and
+    // bought September, so paidThrough read 9/30 with September unpaid.
+    assert.equal(result.paidThrough, '2026-08-31');
+    assert.equal(result.balance, 80);
+    assert.equal(result.credit, 0);
+  });
+}
+
+test('a dispute credit (collected by hand, then won) buys no months ahead either', () => {
+  const store = fullStore();
+  seedDisputeCollectedByHand(store, 'hand');
+  store.ledgers['dispute_du_1_reinstated'] = {
+    tenantId: TENANT_ID,
+    type: 'dispute_reversal',
+    status: 'posted',
+    amount: -80,
+    entryDate: new Date('2026-09-10T12:00:00Z'),
+    metadata: { disputeId: 'du_1' },
+  };
+  const { result } = recordFull(store, {
+    charges: [{ year: 2026, month: 9, day: 1, amount: 80 }],
+    payments: [venmo('2026-09-01', 80)],
+  });
+  // The tenant paid the dispute twice: staff refund it. It is not rent paid ahead.
+  assert.equal(result.balance, -80);
+  assert.equal(result.paidThrough, '2026-09-30');
+  assert.equal(result.prepaidMonths, 0);
+});

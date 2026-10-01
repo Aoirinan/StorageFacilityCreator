@@ -10,6 +10,27 @@ class PublicPaymentLinkService {
   static final FirebaseFunctions _functions = FirebaseFunctions.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
 
+  /// What [createPaymentLink] sends. [disputeId] (the Ledger's "Record
+  /// payment for this dispute") rides on the link to the PaymentIntent, so
+  /// the webhook books the payment against that card dispute instead of as
+  /// rent; the callable checks it is the tenant's open dispute.
+  static Map<String, dynamic> createPaymentLinkPayload({
+    required String facilityId,
+    required String tenantId,
+    required double amount,
+    String? description,
+    required DateTime expiresAt,
+    String? disputeId,
+  }) =>
+      <String, dynamic>{
+        'facilityId': facilityId,
+        'tenantId': tenantId,
+        'amount': amount,
+        'description': description ?? 'Payment',
+        'expiresAt': expiresAt.toUtc().toIso8601String(),
+        if (disputeId != null && disputeId.isNotEmpty) 'disputeId': disputeId,
+      };
+
   /// Create a public payment link for a tenant
   /// Returns a secure token that can be used in a public URL
   static Future<String> createPaymentLink({
@@ -18,6 +39,7 @@ class PublicPaymentLinkService {
     required double amount,
     String? description,
     DateTime? expiresAt,
+    String? disputeId,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -27,13 +49,14 @@ class PublicPaymentLinkService {
       final expiration =
           expiresAt ?? DateTime.now().add(const Duration(days: 30));
       final callable = _functions.httpsCallable('createPublicPaymentLink');
-      final result = await callable.call(<String, dynamic>{
-        'facilityId': facilityId,
-        'tenantId': tenantId,
-        'amount': amount,
-        'description': description ?? 'Payment',
-        'expiresAt': expiration.toUtc().toIso8601String(),
-      });
+      final result = await callable.call(createPaymentLinkPayload(
+        facilityId: facilityId,
+        tenantId: tenantId,
+        amount: amount,
+        description: description,
+        expiresAt: expiration,
+        disputeId: disputeId,
+      ));
       final payload = Map<String, dynamic>.from(result.data as Map);
       final token = payload['token']?.toString() ?? '';
       if (token.isEmpty) {
@@ -71,6 +94,42 @@ class PublicPaymentLinkService {
       }
       return null;
     }
+  }
+
+  /// Start (or resume) checkout for a link. The server hands back the link's
+  /// open Stripe session rather than making another, and says so when the link
+  /// has already been paid, so pressing Pay Now twice cannot charge twice.
+  static Future<PublicCheckoutStart> startCheckout(String token) async {
+    final callable = _functions.httpsCallable('createPublicPaymentCheckout');
+    final result = await callable
+        .call(<String, dynamic>{'token': token.trim()}).timeout(
+      const Duration(seconds: 60),
+      onTimeout: () => throw Exception('Request timed out. Please try again.'),
+    );
+    final data = Map<String, dynamic>.from(result.data as Map);
+    if (data['alreadyPaid'] == true) return const PublicCheckoutStart.alreadyPaid();
+    final url = data['checkoutUrl'];
+    if (url is! String || url.isEmpty) {
+      throw Exception('Failed to create checkout session');
+    }
+    return PublicCheckoutStart.checkout(url);
+  }
+
+  /// After Stripe sends the tenant back, apply the paid session to the link
+  /// without waiting for the webhook. Returns 'paid', 'received' (paid, but
+  /// the link could not take it; the facility has been told), 'processing' or
+  /// 'unpaid'.
+  static Future<String> confirmCheckout({
+    required String token,
+    required String sessionId,
+  }) async {
+    final callable = _functions.httpsCallable('confirmPublicPaymentCheckout');
+    final result = await callable.call(<String, dynamic>{
+      'token': token.trim(),
+      'sessionId': sessionId.trim(),
+    }).timeout(const Duration(seconds: 30));
+    final data = Map<String, dynamic>.from(result.data as Map);
+    return (data['status'] ?? 'processing').toString();
   }
 
   /// Get all payment links for a facility
@@ -129,6 +188,42 @@ class PublicPaymentLinkService {
     // Hash route: the app routes by hash, and a path-style /pay?token=… lands
     // the tenant on the facility-manager login instead of the payment page.
     return '$base/#/pay?token=$token';
+  }
+}
+
+/// What starting checkout produced: a Stripe URL, or word that the link is
+/// already paid.
+class PublicCheckoutStart {
+  const PublicCheckoutStart.checkout(String this.checkoutUrl) : alreadyPaid = false;
+  const PublicCheckoutStart.alreadyPaid()
+      : checkoutUrl = null,
+        alreadyPaid = true;
+
+  final String? checkoutUrl;
+  final bool alreadyPaid;
+}
+
+/// Stripe's return to the payment page: `?status=success&session_id=cs_…`
+/// before the hash (`#/pay?token=…`). On web that is [Uri.base]; in the mobile
+/// WebView it is the URL the checkout navigates to.
+class PublicCheckoutReturn {
+  const PublicCheckoutReturn({required this.status, this.sessionId});
+
+  final String status;
+  final String? sessionId;
+
+  bool get isSuccess => status == 'success' && sessionId != null;
+
+  static PublicCheckoutReturn? fromUri(Uri uri) {
+    final params = uri.queryParameters;
+    final status = params['status'];
+    if (status == null || status.isEmpty) return null;
+    final sessionId = params['session_id'];
+    return PublicCheckoutReturn(
+      status: status,
+      // Only a real Checkout Session id; the literal template never is one.
+      sessionId: sessionId != null && sessionId.startsWith('cs_') ? sessionId : null,
+    );
   }
 }
 

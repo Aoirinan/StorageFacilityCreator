@@ -37,6 +37,7 @@ import {
   PUBLIC_MOVE_IN_PAYMENTS_COLLECTION,
   getStripeClient,
   isLiveHold,
+  moveInPaymentReturnedBeforeMoveIn,
   paidHoldCap,
   readActiveTenantUnitClaims,
   recordPaidPublicMoveInCheckout,
@@ -197,8 +198,20 @@ export async function findPaidSessionsNobodyReported(now: Date): Promise<{ recor
  * (it moved the renter in, or it is being refunded), and marks the owner's
  * "has not finished" alert, if one was sent, as dealt with. 'open' while the
  * payment has no use record.
+ *
+ * 'returned': the use record says only that the payment was refunded in
+ * Stripe, or disputed, before any move-in (moveInPaymentReturnedBeforeMoveIn,
+ * written by the Connect webhook). Read as 'moved-in', its alert was
+ * rewritten to say the renter had finished and its record deleted. It moved
+ * nobody in, and nothing here refunds the rest of it, so the alert says that
+ * (once, and left unread, as it had promised an automatic refund), and the
+ * record is kept until PAID_HOLD_MAX_HOURS after payment, when the hold it
+ * was recorded for is over.
  */
-async function closePaidCheckout(paymentIntentId: string): Promise<'open' | 'moved-in' | 'refunded'> {
+async function closePaidCheckout(
+  paymentIntentId: string,
+  now: Date,
+): Promise<'open' | 'moved-in' | 'refunded' | 'returned'> {
   const db = admin.firestore();
   const paidRef = db.collection(PUBLIC_MOVE_IN_PAID_CHECKOUTS_COLLECTION).doc(paymentIntentId);
   const useRef = db.collection(PUBLIC_MOVE_IN_PAYMENTS_COLLECTION).doc(paymentIntentId);
@@ -206,24 +219,40 @@ async function closePaidCheckout(paymentIntentId: string): Promise<'open' | 'mov
     const useSnap = await tx.get(useRef);
     const paidSnap = await tx.get(paidRef);
     if (!useSnap.exists) return 'open' as const;
-    const outcome = (useSnap.data() || {}).refund ? 'refunded' as const : 'moved-in' as const;
+    const use = (useSnap.data() || {}) as Record<string, unknown>;
+    const outcome = moveInPaymentReturnedBeforeMoveIn(use)
+      ? 'returned' as const
+      : use.refund ? 'refunded' as const : 'moved-in' as const;
     if (!paidSnap.exists) return outcome;
     const paid = (paidSnap.data() || {}) as Record<string, unknown>;
     const facilityId = textOf(paid.facilityId);
     const alertRef = paid.ownerAlertedAt && facilityId ? unfinishedAlertRef(facilityId, paymentIntentId) : null;
     const alertSnap = alertRef ? await tx.get(alertRef) : null;
-    tx.delete(paidRef);
+    const paidAt = timestampToDate(paid.paidAt);
+    if (outcome !== 'returned' || !paidAt || now >= paidHoldCap(paidAt)) tx.delete(paidRef);
     if (alertRef && alertSnap?.exists) {
       const meta = ((alertSnap.data() || {}).metadata || {}) as Record<string, unknown>;
       const who = `${textOf(meta.renterName) || 'The renter'} paid online for unit ${textOf(meta.unitNumber) || '?'}`;
-      tx.set(alertRef, {
-        message: outcome === 'refunded'
-          ? `${who} and did not finish moving in, so the payment went to a refund instead. ` +
-            'The refund alert for this payment says how that went.'
-          : `${who} and has now finished moving in.`,
-        readAt: admin.firestore.FieldValue.serverTimestamp(),
-        metadata: { resolution: outcome },
-      }, { merge: true });
+      if (outcome === 'returned') {
+        if (meta.resolution !== 'returned') {
+          tx.set(alertRef, {
+            message:
+              `${who}, and then part or all of the payment was refunded in Stripe, or the charge was disputed, ` +
+              'before they finished moving in. That payment can no longer be used to move in, and the rest of it ' +
+              'will not be refunded automatically. The alert about the refund or dispute says what to check.',
+            metadata: { resolution: outcome },
+          }, { merge: true });
+        }
+      } else {
+        tx.set(alertRef, {
+          message: outcome === 'refunded'
+            ? `${who} and did not finish moving in, so the payment went to a refund instead. ` +
+              'The refund alert for this payment says how that went.'
+            : `${who} and has now finished moving in.`,
+          readAt: admin.firestore.FieldValue.serverTimestamp(),
+          metadata: { resolution: outcome },
+        }, { merge: true });
+      }
     }
     return outcome;
   });
@@ -322,7 +351,8 @@ async function alertOwnerOfUnfinishedPayment(params: {
  * Settles each paid checkout that has no use record UNFINISHED_ALERT_MINUTES
  * after payment, oldest first: refunded when the renter can no longer move in
  * with it, or PAID_HOLD_MAX_HOURS have passed; otherwise the owner is told
- * once. A payment already used has its record removed. Stripe is asked about
+ * once. A payment already used has its record removed (closePaidCheckout;
+ * `closed` counts these, and those refunded or disputed in Stripe first). Stripe is asked about
  * the payment only before refunding it, on the account that took it, and a
  * payment it does not show to be this reservation's is not refunded.
  */
@@ -343,7 +373,7 @@ export async function settleUnfinishedPaidMoveIns(now: Date): Promise<{
     const paymentIntentId = doc.id;
     const paid = (doc.data() || {}) as Record<string, unknown>;
     try {
-      if (await closePaidCheckout(paymentIntentId) !== 'open') {
+      if (await closePaidCheckout(paymentIntentId, now) !== 'open') {
         counts.closed += 1;
         continue;
       }
@@ -425,9 +455,9 @@ export async function settleUnfinishedPaidMoveIns(now: Date): Promise<{
         paymentIntentId,
         refusal,
       });
-      const closed = await closePaidCheckout(paymentIntentId);
+      const closed = await closePaidCheckout(paymentIntentId, now);
       if (closed === 'refunded') counts.refunded += 1;
-      else if (closed === 'moved-in') counts.closed += 1;
+      else if (closed === 'moved-in' || closed === 'returned') counts.closed += 1;
       else counts.skipped += 1;
     } catch (err: unknown) {
       functions.logger.error('Public move-in: could not settle an unfinished paid move-in', {

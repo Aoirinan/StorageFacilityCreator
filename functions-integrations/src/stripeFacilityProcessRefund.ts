@@ -6,6 +6,7 @@ import {
   getStripeClient,
   writeAuditLog,
 } from '@sfc/functions-shared';
+import { isMoveInPaymentIntent, withdrawUntenantedMoveInRefund } from './moveInPaymentTenant';
 import { STRIPE_SECRETS } from './secrets';
 
 /** A caller's per-click id for one refund, or null when it sent none (or one that cannot go in a key). */
@@ -169,8 +170,38 @@ export const processRefund = functions.runWith({ secrets: STRIPE_SECRETS }).http
               stripeRefundId: refund.id,
               stripeChargeId: chargeId,
               refundMethod,
+              // Refunding a card-dispute payment reopens the dispute; kept
+              // out of what autopay collects, as the charge.refunded webhook
+              // writing this same row does.
+              ...(paymentIntent.metadata?.disputeId ? { disputeId: paymentIntent.metadata.disputeId } : {}),
             },
           }, { merge: true });
+
+        // An online move-in payment whose records name no tenant: if its
+        // charge.refunded event beat the write above, the webhook recorded
+        // this refund as made before any move-in and told the owner nothing
+        // went on a ledger. Withdrawn now that it is on the tenant's. The
+        // refund is made and posted, so a failure here is only logged: thrown,
+        // the catch below would say no refund was issued.
+        if (isMoveInPaymentIntent(paymentIntent)) {
+          try {
+            await withdrawUntenantedMoveInRefund({
+              facilityId,
+              paymentIntentId: referenceId,
+              refundId: refund.id,
+              chargeId,
+              connectedAccountId: stripeConnectAccountId,
+              updatedBy: context.auth.uid,
+            });
+          } catch (withdrawError) {
+            functions.logger.error('Could not withdraw a move-in refund recorded with no tenant', {
+              facilityId,
+              paymentIntentId: referenceId,
+              refundId: refund.id,
+              error: withdrawError instanceof Error ? withdrawError.message : String(withdrawError),
+            });
+          }
+        }
 
         // Log audit event
         await writeAuditLog(facilityId, {

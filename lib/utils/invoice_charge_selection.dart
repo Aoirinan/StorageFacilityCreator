@@ -44,6 +44,13 @@ class SelectableCharge {
   /// `metadata['allocatedAmount']`.
   final double? allocatedAmount;
 
+  /// A card dispute's row (LedgerEntry.isCardDispute). Never invoiced: a
+  /// dispute is collected with "Record payment for this dispute", which
+  /// books the payment against it. Paid through an invoice, the payment
+  /// counted as rent while the dispute stayed open, so autopay under-charged
+  /// the rent and the Ledger still asked staff to collect the dispute.
+  final bool isCardDispute;
+
   /// When the charge was posted. Newer charges are billed before older ones,
   /// see [openChargesForInvoice].
   final DateTime entryDate;
@@ -57,6 +64,7 @@ class SelectableCharge {
     required this.isActive,
     required this.amount,
     this.allocatedAmount,
+    this.isCardDispute = false,
     required this.entryDate,
     required this.description,
   });
@@ -81,6 +89,7 @@ class SelectableCharge {
           (entry.metadata?['allocatedAmount'] as num?)?.toDouble(),
       entryDate: entry.entryDate,
       description: entry.description ?? entry.typeDisplayName,
+      isCardDispute: entry.isCardDispute,
     );
   }
 }
@@ -120,7 +129,7 @@ bool _isSelectable(
   required Set<String>? restrictTo,
 }) {
   if (restrictTo != null && !restrictTo.contains(c.id)) return false;
-  if (!c.isCharge || !c.isActive) return false;
+  if (!c.isCharge || !c.isActive || c.isCardDispute) return false;
   if (idsOnLiveInvoices.contains(c.id)) return false;
   final allocated = c.allocatedAmount;
   if (allocated != null && allocated >= c.amount) return false;
@@ -165,14 +174,22 @@ List<String> selectableChargeIds({
 ///
 /// Ties on the same day are broken by id, so the preview and the saved
 /// invoice pick the same charge whatever order the entries arrived in.
+///
+/// [cardDisputeBalance] is the part of [ledgerBalance] made of card disputes
+/// (see [cardDisputeShareOfBalance]). It comes off what may be billed: a
+/// dispute row is never an invoice line, so without this the dispute's
+/// amount was "covered" by walking back through rent the tenant had already
+/// paid, and that payment then counted as rent while the dispute stayed open.
 List<OpenCharge> openChargesForInvoice({
   required Iterable<SelectableCharge> charges,
   required Set<String> idsOnLiveInvoices,
   required double ledgerBalance,
   required double liveInvoiceBalance,
+  double cardDisputeBalance = 0,
   Iterable<String>? onlyThese,
 }) {
-  var remaining = _cents(ledgerBalance - liveInvoiceBalance);
+  var remaining =
+      _cents(ledgerBalance - cardDisputeBalance - liveInvoiceBalance);
   if (remaining <= 0) return const [];
 
   final restrictTo = onlyThese?.toSet();
@@ -216,12 +233,23 @@ List<OpenCharge> openChargesForInvoice({
 /// "No balance due" directly under a header reading $433.00, with no hint
 /// that the draft had to be voided first. The same words met an owner who
 /// had recorded a check on the ledger but not marked the invoice paid.
+///
+/// [cardDisputeBalance] is the part of the balance made of card disputes,
+/// which no invoice bills.
 String nothingToInvoiceMessage({
   required double ledgerBalance,
   required double liveInvoiceBalance,
+  double cardDisputeBalance = 0,
 }) {
   if (_cents(ledgerBalance) <= 0) {
     return 'No balance due — nothing to invoice';
+  }
+  final disputed = _cents(cardDisputeBalance);
+  if (disputed > 0 && _cents(ledgerBalance - disputed) <= 0) {
+    return "This tenant's balance is a card dispute "
+        '(${_money(disputed)}), which is never put on an invoice. If the '
+        'dispute is lost, collect it with "Record payment for this dispute" '
+        "on the dispute's row in the ledger.";
   }
   if (_cents(liveInvoiceBalance) > 0) {
     return "This tenant's balance is already on an invoice: open invoices "
@@ -243,6 +271,25 @@ String _money(double value) => '\$${_cents(value).toStringAsFixed(2)}';
 /// doubles drifts, and a drift of a fraction of a cent must not leave a
 /// charge "partly" billed.
 double _cents(double value) => double.parse(value.toStringAsFixed(2));
+
+/// The part of the posted balance of [entries] made of card disputes, which
+/// no invoice bills: what open disputes still have out, less any credit a
+/// dispute paid twice leaves the tenant. Negative when a dispute's reversal
+/// stands without the dispute (staff voided it), since that reversal is not
+/// money the tenant paid. The same split autopay and the reminders collect
+/// by ([splitLedgerBalance]'s `total - collectible`).
+double cardDisputeShareOfBalance(Iterable<LedgerEntry> entries) {
+  final split = splitLedgerBalance([
+    for (final entry in entries)
+      if (entry.status == LedgerEntryStatus.posted)
+        {
+          'type': entry.storedType,
+          'amount': entry.amount,
+          'metadata': entry.metadata,
+        },
+  ]);
+  return _cents(split.total - split.collectible);
+}
 
 /// Whether a charge counts as settled.
 bool chargeIsSettled({required double amount, double? allocatedAmount}) {

@@ -776,4 +776,66 @@ void main() {
     expect(find.text('\$40.00'), findsWidgets);
     expect(find.text('2/28/2026'), findsOneWidget);
   });
+
+  // Same cases as functions-automation tenantPastHistory.test.ts ("Card
+  // disputes settle the dispute, not rent"): the preview must show what the
+  // server will save.
+  group('card disputes settle the dispute, not rent', () {
+    LedgerEntry disputeRow(String id, double amount, String storedType, {DateTime? date}) => LedgerEntry(
+          id: id,
+          tenantId: 't1',
+          facilityId: 'f1',
+          type: amount < 0 ? LedgerEntryType.payment : LedgerEntryType.otherCharge,
+          amount: amount,
+          entryDate: date ?? DateTime.utc(2026, 8, 20, 12),
+          status: LedgerEntryStatus.posted,
+          metadata: {
+            'disputeId': 'du_1',
+            if (storedType == 'payment') 'paymentMethod': 'cash',
+          },
+          createdAt: date ?? DateTime.utc(2026, 8, 20, 12),
+          createdBy: 'system',
+          storedType: storedType,
+        );
+
+    for (final settle in ['payment', 'dispute_reversal']) {
+      final how = settle == 'payment' ? 'paid by hand after it was lost' : 'won';
+      test('a dispute $how buys no rent month: August paid, September owed', () {
+        final preview = computeHistoryPreview(
+          existing: [
+            disputeRow('dispute_du_1', 80, 'dispute'),
+            disputeRow('settle_du_1', -80, settle),
+          ],
+          charges: [
+            ProposedHistoryCharge(year: 2026, month: 8, day: 1, amount: 80),
+            ProposedHistoryCharge(year: 2026, month: 9, day: 1, amount: 80),
+          ],
+          payments: [HistoryPaymentInput(date: DateTime(2026, 8, 1), amount: 80, method: PaymentMethod.venmo)],
+          existingPaidThrough: null,
+          monthlyRate: 80,
+        );
+        // Before: the $80 that settled the dispute bought September.
+        expect(preview.computedPaidThrough, DateTime(2026, 8, 31));
+        expect(preview.balance, 80);
+        expect(preview.credit, 0);
+      });
+    }
+
+    test('a dispute paid by hand and then won is a refund owed, not rent paid ahead', () {
+      final preview = computeHistoryPreview(
+        existing: [
+          disputeRow('dispute_du_1', 80, 'dispute'),
+          disputeRow('hand_du_1', -80, 'payment'),
+          disputeRow('dispute_du_1_reinstated', -80, 'dispute_reversal', date: DateTime.utc(2026, 9, 10, 12)),
+        ],
+        charges: [ProposedHistoryCharge(year: 2026, month: 9, day: 1, amount: 80)],
+        payments: [HistoryPaymentInput(date: DateTime(2026, 9, 1), amount: 80, method: PaymentMethod.venmo)],
+        existingPaidThrough: null,
+        monthlyRate: 80,
+      );
+      expect(preview.balance, -80);
+      // Before: October was shown as paid ahead with the refund.
+      expect(preview.computedPaidThrough, DateTime(2026, 9, 30));
+    });
+  });
 }

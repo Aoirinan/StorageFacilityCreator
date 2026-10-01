@@ -61,6 +61,28 @@ void main() {
       expect(ids, ['rent-sep']);
     });
 
+    test('a card dispute is never offered for an invoice', () {
+      // Paid through an invoice, the payment counted as rent while the
+      // dispute stayed open: autopay under-charged the rent and the Ledger
+      // still asked staff to collect the dispute.
+      final ids = selectableChargeIds(
+        charges: [
+          charge('rent-sep'),
+          SelectableCharge(
+            id: 'dispute_du_1',
+            isCharge: true,
+            isActive: true,
+            amount: 100,
+            isCardDispute: true,
+            entryDate: DateTime(2026, 9, 20),
+            description: 'Card dispute',
+          ),
+        ],
+        idsOnLiveInvoices: const {},
+      );
+      expect(ids, ['rent-sep']);
+    });
+
     test('a charge already on a live invoice is not offered again', () {
       // The double-billing case: September rent was invoiced, so generating
       // another invoice must not pick it up a second time.
@@ -458,6 +480,148 @@ void main() {
         entry(amount: 130, metadata: {'allocatedAmount': 50}),
       );
       expect(c.allocatedAmount, 50.0);
+    });
+  });
+
+  group('card disputes', () {
+    // Invented rows: a tenant at a fictional facility, $130 rent a month.
+    LedgerEntry row(
+      String id,
+      double amount,
+      LedgerEntryType type,
+      DateTime on, {
+      String? storedType,
+      Map<String, dynamic>? metadata,
+      LedgerEntryStatus status = LedgerEntryStatus.posted,
+    }) =>
+        LedgerEntry(
+          id: id,
+          tenantId: 't1',
+          facilityId: 'f1',
+          type: type,
+          amount: amount,
+          description: id,
+          entryDate: on,
+          status: status,
+          metadata: metadata,
+          createdAt: on,
+          createdBy: 'owner',
+          storedType: storedType,
+        );
+    LedgerEntry dispute({LedgerEntryStatus status = LedgerEntryStatus.posted}) => row(
+          'dispute_du_test1',
+          130,
+          LedgerEntryType.otherCharge,
+          DateTime(2026, 9, 20),
+          storedType: disputeLedgerType,
+          metadata: {'disputeId': 'du_test1'},
+          status: status,
+        );
+    LedgerEntry reversal() => row(
+          'dispute_reversal_du_test1',
+          -130,
+          LedgerEntryType.otherCharge,
+          DateTime(2026, 9, 28),
+          storedType: disputeReversalLedgerType,
+          metadata: {'disputeId': 'du_test1'},
+        );
+    LedgerEntry disputePayment() => row(
+          'hand_payment',
+          -130,
+          LedgerEntryType.payment,
+          DateTime(2026, 9, 25),
+          metadata: {'disputeId': 'du_test1'},
+        );
+    final paidRent = [
+      row('rent-aug', 130, LedgerEntryType.rentCharge, DateTime(2026, 8, 1)),
+      row('pay-aug', -130, LedgerEntryType.payment, DateTime(2026, 8, 2)),
+      row('rent-sep', 130, LedgerEntryType.rentCharge, DateTime(2026, 9, 1)),
+      row('pay-sep', -130, LedgerEntryType.payment, DateTime(2026, 9, 2)),
+    ];
+    double sum(List<LedgerEntry> rows) => rows
+        .where((e) => e.status == LedgerEntryStatus.posted)
+        .fold<double>(0, (t, e) => t + e.amount);
+
+    test('a dispute row read from the ledger is a card dispute', () {
+      final c = SelectableCharge.fromLedgerEntry(dispute());
+      expect(c.isCardDispute, isTrue);
+      expect(c.isCharge, isTrue);
+      expect(
+        selectableChargeIds(charges: [c], idsOnLiveInvoices: const {}),
+        isEmpty,
+      );
+    });
+
+    test('rent paid and a dispute open: nothing to invoice, not paid rent', () {
+      // Before: the dispute was left off the invoice but its $130 still
+      // counted as owed, so September's paid rent was billed again.
+      final rows = [...paidRent, dispute()];
+      final lines = openChargesForInvoice(
+        charges: rows.map(SelectableCharge.fromLedgerEntry),
+        idsOnLiveInvoices: const {},
+        ledgerBalance: sum(rows),
+        liveInvoiceBalance: 0,
+        cardDisputeBalance: cardDisputeShareOfBalance(rows),
+      );
+      expect(lines, isEmpty);
+      expect(
+        nothingToInvoiceMessage(
+          ledgerBalance: sum(rows),
+          liveInvoiceBalance: 0,
+          cardDisputeBalance: cardDisputeShareOfBalance(rows),
+        ),
+        contains('card dispute'),
+      );
+    });
+
+    test('unpaid rent beside an open dispute bills only the rent', () {
+      final rows = [
+        ...paidRent,
+        dispute(),
+        row('rent-oct', 130, LedgerEntryType.rentCharge, DateTime(2026, 10, 1)),
+      ];
+      final lines = openChargesForInvoice(
+        charges: rows.map(SelectableCharge.fromLedgerEntry),
+        idsOnLiveInvoices: const {},
+        ledgerBalance: sum(rows),
+        liveInvoiceBalance: 0,
+        cardDisputeBalance: cardDisputeShareOfBalance(rows),
+      );
+      expect(_idsAndAmounts(lines), [('rent-oct', 130.0)]);
+    });
+
+    test('the dispute share of the balance', () {
+      expect(cardDisputeShareOfBalance(paidRent), 0);
+      expect(cardDisputeShareOfBalance([...paidRent, dispute()]), 130);
+      // Collected by hand: nothing out.
+      expect(cardDisputeShareOfBalance([dispute(), disputePayment()]), 0);
+      // Collected by hand, then won: the tenant's credit counts like any
+      // other credit, so it is no part of the dispute share.
+      expect(
+        cardDisputeShareOfBalance([dispute(), disputePayment(), reversal()]),
+        0,
+      );
+      // Staff voided the dispute row and the reversal stands: that reversal
+      // is not money anyone paid, so it must not shrink what rent is billed.
+      expect(
+        cardDisputeShareOfBalance(
+            [dispute(status: LedgerEntryStatus.voided), reversal()]),
+        -130,
+      );
+      final rows = [
+        ...paidRent,
+        dispute(status: LedgerEntryStatus.voided),
+        reversal(),
+        row('rent-oct', 130, LedgerEntryType.rentCharge, DateTime(2026, 10, 1)),
+      ];
+      final lines = openChargesForInvoice(
+        charges: rows.map(SelectableCharge.fromLedgerEntry),
+        idsOnLiveInvoices: const {},
+        ledgerBalance: sum(rows),
+        liveInvoiceBalance: 0,
+        cardDisputeBalance: cardDisputeShareOfBalance(rows),
+      );
+      expect(_idsAndAmounts(lines), [('rent-oct', 130.0)]);
     });
   });
 

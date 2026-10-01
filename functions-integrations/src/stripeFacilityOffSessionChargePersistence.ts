@@ -12,6 +12,8 @@ export type PersistOffSessionChargeParams = {
   connectAccountId: string;
   description: string | undefined;
   actorUid: string;
+  /** The card dispute this charge collects (checkDisputeForPayment), or null. */
+  disputeId?: string | null;
 };
 
 /**
@@ -32,6 +34,7 @@ export async function persistOffSessionChargeRecords(
     connectAccountId,
     description,
     actorUid,
+    disputeId,
   } = params;
 
   const now = admin.firestore.FieldValue.serverTimestamp();
@@ -82,13 +85,17 @@ export async function persistOffSessionChargeRecords(
       facilityId,
       type: 'payment',
       amount: -amountNum,
-      description: `Payment via Stripe - ${paymentIntentId}`,
+      description: disputeId
+        ? `Card dispute payment via Stripe - ${paymentIntentId}`
+        : `Payment via Stripe - ${paymentIntentId}`,
       referenceId: facilityPaymentRef.id,
       entryDate: now,
       status: 'posted',
       createdAt: now,
       createdBy: actorUid,
-      metadata: { paymentIntentId },
+      // metadata.disputeId nets this payment against the dispute
+      // (functions-shared ledger/disputeEntries.ts) so it is not counted as rent.
+      metadata: { paymentIntentId, ...(disputeId ? { disputeId } : {}) },
     });
 
     const chargeRef = admin.firestore().collection('tenantCharges').doc();

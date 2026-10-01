@@ -1,4 +1,7 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:sfcapp/utils/invoice_charge_selection.dart';
 import 'package:sfcapp/services/invoice_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -26,6 +29,23 @@ import 'package:sfcapp/utils/statement_lines.dart';
 import 'package:sfcapp/services/past_history_service.dart';
 import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/screens/tenant_past_history_dialog.dart';
+import 'package:sfcapp/providers/payment_provider.dart';
+import 'package:sfcapp/services/public_payment_link_service.dart';
+import 'package:sfcapp/services/stripe_service.dart';
+import 'package:sfcapp/widgets/dispute_payment_dialog.dart';
+
+/// What the ledger says when part of the balance is card disputes.
+String disputedBalanceNote(double disputed) =>
+    'Includes \$${disputed.toStringAsFixed(2)} from card disputes. Autopay '
+    'does not charge it. If a dispute is lost, collect it with "Record '
+    'payment for this dispute" on its row.';
+
+/// How much of [split]'s balance the ledger says is card disputes: never
+/// more than the balance itself. The note showed whenever any dispute
+/// money was out, so on a $0.00 or credit balance it still asked staff to
+/// collect a dispute the tenant's other money already covered.
+double disputedPartOfBalance(LedgerBalanceSplit split) =>
+    math.max(0, math.min(split.disputed, split.total));
 
 /// The ledger's back arrow. The ledger is opened on top of the tenant's page,
 /// so back pops to that page. It used to push a second tenant page on top of
@@ -71,6 +91,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
   bool _generatingInvoice = false;
   bool _sendingStatement = false;
   bool _undoingHistory = false;
+  bool _recordingDisputePayment = false;
 
   @override
   Widget build(BuildContext context) {
@@ -166,6 +187,10 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
           // A failed or pending balance must not read as "$0.00": that told
           // owners every tenant was paid up while the sum was failing.
           final balanceKnown = balanceAsync.hasValue && !balanceAsync.hasError;
+          // Card disputes stay in the balance but autopay and the reminders
+          // leave them out, so staff must be told the difference is theirs to
+          // collect by hand.
+          final disputed = disputedPartOfBalance(splitPostedLedgerEntries(entries));
 
           // Apply filters
           var filteredEntries = entries;
@@ -394,6 +419,16 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
+                              if (balanceKnown && disputed > 0) ...[
+                                const SizedBox(height: 8),
+                                Text(
+                                  disputedBalanceNote(disputed),
+                                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: AppTheme.textSecondary,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
                             ],
                           ),
                         ),
@@ -484,11 +519,17 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                     ),
                   )
                 else
-                  ...filteredEntries.map((entry) => LedgerEntryCard(
-                    entry: entry,
-                    onInvoice: invoicedIds.contains(entry.id),
-                    onVoid: () => _voidEntry(context, entry),
-                  )),
+                  ...filteredEntries.map((entry) {
+                    final outstanding = openDisputeOutstanding(entry, entries);
+                    return LedgerEntryCard(
+                      entry: entry,
+                      onInvoice: invoicedIds.contains(entry.id),
+                      onVoid: () => _voidEntry(context, entry),
+                      onRecordDisputePayment: outstanding == null || _recordingDisputePayment
+                          ? null
+                          : () => _recordDisputePayment(context, entry, outstanding),
+                    );
+                  }),
                     ],
                   ),
                 ),
@@ -740,6 +781,93 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
     );
   }
 
+  /// "Record payment for this dispute": the money for a lost card dispute,
+  /// by hand, on the card on file or through a payment link, each carrying
+  /// the dispute's id so the payment nets against the dispute and autopay
+  /// and the delinquency job still see the rent owed.
+  Future<void> _recordDisputePayment(
+    BuildContext context,
+    LedgerEntry dispute,
+    double outstanding,
+  ) async {
+    final disputeId = dispute.disputeId;
+    if (_recordingDisputePayment || disputeId == null) return;
+    final paymentMethodId = widget.tenant.stripe.defaultPaymentMethodId;
+    final hasCardOnFile = paymentMethodId != null && paymentMethodId.isNotEmpty;
+    final messenger = ScaffoldMessenger.of(context);
+    final tenant = widget.tenant;
+    final payments = ref.read(paymentOperationsProvider.notifier);
+    final entry = await showDialog<DisputePaymentEntry>(
+      context: context,
+      builder: (_) => DisputePaymentDialog(
+        outstanding: outstanding,
+        hasCardOnFile: hasCardOnFile,
+        disputeReason: dispute.metadata?['reason'] as String?,
+        // Recorded with the dialog still open, so a failed attempt can be
+        // pressed again under the same request id and is recorded once.
+        onRecordByHand: (entry) => payments.recordManualPayment(
+          facilityId: tenant.facilityId,
+          tenantId: tenant.id,
+          amount: entry.amount,
+          method: entry.method,
+          notes: entry.notes,
+          reference: entry.reference,
+          disputeId: disputeId,
+          disputeRequestId: entry.requestId,
+        ),
+      ),
+    );
+    if (entry == null || !mounted || _recordingDisputePayment) return;
+    final amountText = '\$${entry.amount.toStringAsFixed(2)}';
+    setState(() => _recordingDisputePayment = true);
+    try {
+      switch (entry.way) {
+        case DisputePaymentWay.byHand:
+          // Already recorded by the dialog (onRecordByHand).
+          if (mounted) {
+            ref.invalidate(paymentListProvider(tenant.facilityId));
+            ref.invalidate(paymentStatsProvider(tenant.facilityId));
+          }
+          messenger.showSnackBar(SnackBar(content: Text('$amountText recorded against the card dispute')));
+        case DisputePaymentWay.cardOnFile:
+          final result = await StripeService.chargeTenantOffSession(
+            facilityId: tenant.facilityId,
+            tenantId: tenant.id,
+            paymentMethodId: paymentMethodId!,
+            amount: entry.amount,
+            description: entry.notes ?? 'Card dispute payment',
+            disputeId: disputeId,
+            tenantConsent: entry.tenantConsent,
+          );
+          final warning = result['recordingWarning'] as String?;
+          messenger.showSnackBar(SnackBar(
+            content: Text(warning ?? '$amountText charged to the card on file against the card dispute'),
+            backgroundColor: warning == null ? null : AppTheme.warning,
+            duration: Duration(seconds: warning == null ? 4 : 10),
+          ));
+        case DisputePaymentWay.paymentLink:
+          final token = await PublicPaymentLinkService.createPaymentLink(
+            facilityId: tenant.facilityId,
+            tenantId: tenant.id,
+            amount: entry.amount,
+            description: entry.notes ?? 'Card dispute payment',
+            disputeId: disputeId,
+          );
+          await Clipboard.setData(ClipboardData(text: PublicPaymentLinkService.buildPaymentUrl(token)));
+          messenger.showSnackBar(SnackBar(
+            content: Text('Payment link for $amountText copied. When the tenant pays, it is booked against the card dispute.'),
+          ));
+      }
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(
+        content: Text('Could not take the dispute payment: ${ErrorMessageHelper.getUserFriendlyMessage(e)}'),
+        backgroundColor: AppTheme.error,
+      ));
+    } finally {
+      if (mounted) setState(() => _recordingDisputePayment = false);
+    }
+  }
+
   Future<void> _voidEntry(BuildContext context, LedgerEntry entry) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -827,12 +955,16 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
       // The balance the header shows, less what live invoices already ask
       // for, is all an invoice may bill. Charges are taken newest first
       // until it is covered; the oldest taken may be for part of itself.
+      // Card disputes are neither billed nor counted towards that amount:
+      // they are collected with "Record payment for this dispute".
       final ledgerBalance = sumPostedLedgerEntries(entries);
+      final cardDisputeBalance = cardDisputeShareOfBalance(entries);
       final lines = openChargesForInvoice(
         charges: entries.map(SelectableCharge.fromLedgerEntry),
         idsOnLiveInvoices: coverage.ledgerEntryIds,
         ledgerBalance: ledgerBalance,
         liveInvoiceBalance: coverage.balance,
+        cardDisputeBalance: cardDisputeBalance,
       );
 
       if (lines.isEmpty) {
@@ -843,6 +975,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
             content: Text(nothingToInvoiceMessage(
               ledgerBalance: ledgerBalance,
               liveInvoiceBalance: coverage.balance,
+              cardDisputeBalance: cardDisputeBalance,
             )),
             backgroundColor: AppTheme.warning,
             duration: const Duration(seconds: 8),

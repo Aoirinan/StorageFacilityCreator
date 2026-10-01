@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sfcapp/models/ledger_entry_model.dart';
@@ -24,18 +26,28 @@ class PaymentNotProcessableException implements UserFacingException {
 /// Why a payment stored with [status] must not be marked paid, or null when
 /// it may be.
 ///
-/// An allowlist: only a payment still owed (no status yet, pending, or
-/// failed) can be processed. It listed the statuses to refuse instead, and
-/// the Stripe webhooks also write disputed and partially_refunded: Process
-/// on one of those overwrote it with paid and moved the tenant's paidThrough
-/// on a month nobody paid for. A status added later is refused until
-/// someone decides otherwise.
+/// An allowlist: only a payment still owed (no status yet, or pending) can
+/// be processed. It listed the statuses to refuse instead, and the Stripe
+/// webhooks also write disputed and partially_refunded: Process on one of
+/// those overwrote it with paid and moved the tenant's paidThrough on a
+/// month nobody paid for. A status added later is refused until someone
+/// decides otherwise.
+///
+/// Not `failed`: only the Stripe webhook writes one, a record of a card
+/// attempt that took no money, and the rent it was for is still on the
+/// ledger. Processing it marked the attempt paid and moved paidThrough with
+/// no money received, including when autopay's retry had already paid that
+/// rent on a new PaymentIntent. Money the tenant pays after a failed card is
+/// recorded with Record payment instead.
 String? paymentNotProcessableReason(Object? status) {
   switch (status) {
     case null:
     case 'pending':
-    case 'failed':
       return null;
+  }
+  if (status == 'failed') {
+    return 'This card payment failed and took no money, so it cannot be processed. '
+        'If the tenant has paid since, use Record payment.';
   }
   final label = switch (status) {
     'paid' || 'completed' || 'succeeded' => 'already paid',
@@ -48,8 +60,33 @@ String? paymentNotProcessableReason(Object? status) {
   return 'This payment is $label, so it cannot be processed.';
 }
 
+/// Calls the recordDisputePaymentByHand callable with [payload] and returns
+/// its data. Replaced in tests (PaymentService.disputeHandPaymentCallerForTesting).
+typedef DisputeHandPaymentCaller = Future<Map<String, dynamic>> Function(Map<String, dynamic> payload);
+
 class PaymentService {
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  // A getter, not a final field, so a test can run recordManualPayment's
+  // real writes (see firestoreForTesting), as LedgerService allows.
+  static FirebaseFirestore get _firestore =>
+      _firestoreForTesting ?? FirebaseFirestore.instance;
+  static FirebaseFirestore? _firestoreForTesting;
+
+  @visibleForTesting
+  static set firestoreForTesting(FirebaseFirestore? firestore) =>
+      _firestoreForTesting = firestore;
+
+  static DisputeHandPaymentCaller? _disputeHandPaymentCallerForTesting;
+
+  @visibleForTesting
+  static set disputeHandPaymentCallerForTesting(DisputeHandPaymentCaller? caller) =>
+      _disputeHandPaymentCallerForTesting = caller;
+
+  static Future<Map<String, dynamic>> _callDisputeHandPayment(Map<String, dynamic> payload) async {
+    final testing = _disputeHandPaymentCallerForTesting;
+    if (testing != null) return testing(payload);
+    final result = await FirebaseFunctions.instance.httpsCallable('recordDisputePaymentByHand').call(payload);
+    return Map<String, dynamic>.from(result.data as Map);
+  }
   // A getter, not a final field, so tests can sign a fake user in and run
   // markPaymentAsPaid's real transaction (see authForTesting).
   static FirebaseAuth get _auth => _authForTesting ?? FirebaseAuth.instance;
@@ -619,6 +656,13 @@ class PaymentService {
   /// The payment is dated now: past payments go through Enter past history
   /// (the recordTenantPastHistory callable), which does not move paidThrough
   /// from today.
+  ///
+  /// [disputeId] is set by the Ledger's "Record payment for this dispute":
+  /// the money pays back a lost card dispute (see [manualPaymentLedgerMetadata]),
+  /// so it is not rent and never moves paidThrough. It is recorded by the
+  /// server ([recordDisputePaymentByHand]), which checks the amount against
+  /// what the dispute has out as the payment is written, once per
+  /// [disputeRequestId] (the dialog's, so a retry from it records once).
   static Future<String> recordManualPayment({
     required String facilityId,
     required String tenantId,
@@ -627,7 +671,22 @@ class PaymentService {
     String? notes,
     String? reference,
     bool appliesToRent = true,
+    String? disputeId,
+    String? disputeRequestId,
   }) async {
+    final cleanDisputeId = disputeId?.trim() ?? '';
+    if (cleanDisputeId.isNotEmpty) {
+      return recordDisputePaymentByHand(
+        facilityId: facilityId,
+        tenantId: tenantId,
+        disputeId: cleanDisputeId,
+        amount: amount,
+        method: method,
+        reference: reference,
+        notes: notes,
+        requestId: disputeRequestId,
+      );
+    }
     try {
       final user = _auth.currentUser;
       if (user == null) throw Exception('User not authenticated');
@@ -722,11 +781,12 @@ class PaymentService {
           referenceId: facilityPaymentRef.id,
           entryDate: DateTime.now(),
           status: LedgerEntryStatus.posted,
-          metadata: {
-            'paymentMethod': method.name,
-            'paymentId': facilityPaymentRef.id,
-            if (cleanReference.isNotEmpty) 'reference': cleanReference,
-          },
+          metadata: manualPaymentLedgerMetadata(
+            method: method,
+            paymentId: facilityPaymentRef.id,
+            reference: cleanReference,
+            disputeId: cleanDisputeId,
+          ),
         );
       } catch (e) {
         if (kDebugMode) print('⚠️ Ledger entry failed: $e');
@@ -740,7 +800,9 @@ class PaymentService {
       // kept accruing on rent they had already paid, and the lien sequence sits
       // downstream of that. The third of three paths to write this date, and
       // the only one that never wrote it at all.
-      if (appliesToRent) {
+      //
+      // Not for a card-dispute payment: see [manualPaymentBuysRent].
+      if (manualPaymentBuysRent(appliesToRent: appliesToRent, disputeId: cleanDisputeId)) {
         final newPaidThrough = advancePaidThrough(
           amountPaid: amount,
           monthlyRate: (tenantData['monthlyRate'] as num?)?.toDouble() ?? 0.0,
@@ -764,6 +826,111 @@ class PaymentService {
       if (kDebugMode) print('❌ Error recording manual payment: $e');
       rethrow;
     }
+  }
+
+  /// Whether money recorded by hand moves paidThrough.
+  ///
+  /// Not a dispute payment: the disputed month already counted as paid when
+  /// the original card payment was made, and the dispute never moved
+  /// paidThrough back, so this money buying a month would mark next month's
+  /// rent paid when it is not.
+  static bool manualPaymentBuysRent({
+    required bool appliesToRent,
+    String disputeId = '',
+  }) =>
+      appliesToRent && disputeId.trim().isEmpty;
+
+  /// The ledger metadata for money recorded by hand.
+  ///
+  /// A non-empty [disputeId] books the payment against that card dispute:
+  /// the row then counts in the disputed part of the balance
+  /// (isDisputeLedgerRow), netting the dispute out. As an ordinary payment
+  /// it counted as rent while the dispute stayed disputed, so autopay and
+  /// the delinquency job treated next month's rent as already paid, and the
+  /// Ledger kept asking staff to collect the dispute again.
+  static Map<String, dynamic> manualPaymentLedgerMetadata({
+    required PaymentMethod method,
+    required String paymentId,
+    String reference = '',
+    String disputeId = '',
+  }) =>
+      {
+        'paymentMethod': method.name,
+        'paymentId': paymentId,
+        if (reference.isNotEmpty) 'reference': reference,
+        if (disputeId.isNotEmpty) 'disputeId': disputeId,
+      };
+
+  /// An id for one press of "Record payment" on a card dispute: the server
+  /// writes the payment under it, so a retry of the same request records it
+  /// once.
+  static String newDisputePaymentRequestId([Random? random]) {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    final source = random ?? Random.secure();
+    return List.generate(24, (_) => alphabet[source.nextInt(alphabet.length)]).join();
+  }
+
+  /// What [recordDisputePaymentByHand] sends to the recordDisputePaymentByHand callable.
+  static Map<String, dynamic> disputeHandPaymentPayload({
+    required String facilityId,
+    required String tenantId,
+    required String disputeId,
+    required double amount,
+    required PaymentMethod method,
+    required String requestId,
+    String? reference,
+    String? notes,
+  }) {
+    final cleanReference = reference?.trim() ?? '';
+    final cleanNotes = notes?.trim() ?? '';
+    return <String, dynamic>{
+      'facilityId': facilityId,
+      'tenantId': tenantId,
+      'disputeId': disputeId,
+      'amount': amount,
+      'method': method.name,
+      'requestId': requestId,
+      if (cleanReference.isNotEmpty) 'reference': cleanReference,
+      if (cleanNotes.isNotEmpty) 'notes': cleanNotes,
+    };
+  }
+
+  /// Money taken by hand (cash, check, Venmo, Zelle, bank transfer, other)
+  /// for card dispute [disputeId], recorded by the server.
+  ///
+  /// The app used to write these payments itself, capped only by the dialog,
+  /// which reads the ledger it opened with: two staff recording one dispute
+  /// at once both took its full amount. The recordDisputePaymentByHand
+  /// callable writes the payment, its Payment History copy and its ledger row
+  /// (tagged with the dispute, so it nets against it and is not rent) in one
+  /// transaction with the check that the dispute is this tenant's, still
+  /// open, and has at least [amount] left. It never moves paidThrough.
+  /// Returns the facility payment's id.
+  ///
+  /// [requestId] should be made once per payment and sent again on every
+  /// retry of it (DisputePaymentDialog does): with none, this call gets a new
+  /// one, and a retry after a lost answer records the payment twice.
+  static Future<String> recordDisputePaymentByHand({
+    required String facilityId,
+    required String tenantId,
+    required String disputeId,
+    required double amount,
+    required PaymentMethod method,
+    String? reference,
+    String? notes,
+    String? requestId,
+  }) async {
+    final data = await _callDisputeHandPayment(disputeHandPaymentPayload(
+      facilityId: facilityId,
+      tenantId: tenantId,
+      disputeId: disputeId,
+      amount: amount,
+      method: method,
+      requestId: requestId ?? newDisputePaymentRequestId(),
+      reference: reference,
+      notes: notes,
+    ));
+    return data['paymentId'] as String? ?? '';
   }
 
   /// Mark Paid: record the tenant's payment as received today.

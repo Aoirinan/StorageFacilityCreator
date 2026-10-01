@@ -102,6 +102,10 @@ export const setTenantAutopay = functions.runWith({ secrets: STRIPE_SECRETS }).h
       'autopay.enabledAt': now,
       'autopay.disabledAt': null,
       'autopay.disabledReason': null,
+      // Staff turning autopay back on after a fraudulent card dispute paused
+      // it (disputeFraudAutopayPause.ts) is the decision the pause waits
+      // for; the portal lets the tenant manage it again from here.
+      'autopay.pausedForDisputeId': null,
       'autopay.updatedBy': src,
       'autopay.updatedAt': now,
       updatedAt: now,

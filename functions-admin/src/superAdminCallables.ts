@@ -8,15 +8,13 @@ import { releasePlatformOutgoing, reservePlatformOutgoing } from '@sfc/functions
 import { resolveReferralPendingItemForSuperAdmin } from '@sfc/functions-shared/referral/referralRewards';
 import { getStripeClient } from '@sfc/functions-shared/stripe/client';
 import { getOrCreateAddOnPriceId, getOrCreateBasePriceId } from '@sfc/functions-shared/stripe/subscriptionPricing';
-import {
-  FacilityBillingNotStoppedError,
-  purgeFacility,
-  stopAccountBilling,
-  stripeFacilityPurgeDeps,
-} from './facilityPurge';
-import { anyCancelFailed, summarizeCancelOutcomes } from '@sfc/functions-shared/stripe/subscriptionCleanup';
-import { adminDeleteDocumentTree } from './admin_delete_document_tree';
+import { FacilityBillingNotStoppedError, purgeFacility, stripeFacilityPurgeDeps } from './facilityPurge';
+import { summarizeCancelOutcomes } from '@sfc/functions-shared/stripe/subscriptionCleanup';
 import { disableUserHandler } from './disableUser';
+import {
+  superAdminDeleteFacilityCreatorAccountHandler,
+  type SuperAdminDeleteFacilityCreatorAccountData,
+} from './deleteFacilityCreatorAccount';
 import { SENDGRID_SECRETS, STRIPE_SECRETS, SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME } from './secrets';
 
 const USER_ROLES_COLLECTION = 'user_roles';
@@ -155,11 +153,6 @@ export const superAdminRepairFacilityPermissionOrphans = functions.https.onCall(
   },
 );
 
-interface SuperAdminDeleteFacilityCreatorAccountData {
-  accountId: string;
-  ownerEmailConfirmation: string;
-}
-
 /**
  * Super admin only: permanently remove a facility-creator account, all facilities
  * owned by that user (full document trees), the facilityCreatorAccounts doc (and
@@ -169,114 +162,20 @@ interface SuperAdminDeleteFacilityCreatorAccountData {
  */
 export const superAdminDeleteFacilityCreatorAccount = functions
   .runWith({ secrets: STRIPE_SECRETS })
-  .https.onCall(async (data: SuperAdminDeleteFacilityCreatorAccountData, context) => {
-    if (!context.auth) {
-      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
-    }
-    const callerEmail = context.auth.token?.email as string | undefined;
-    if (!isSuperAdmin(callerEmail)) {
-      throw new functions.https.HttpsError(
-        'permission-denied',
-        'Only super admins can delete facility creator accounts',
-      );
-    }
-
-    const accountId = (data?.accountId || '').toString().trim();
-    const confirmation = (data?.ownerEmailConfirmation || '').toString().trim().toLowerCase();
-    if (!accountId) {
-      throw new functions.https.HttpsError('invalid-argument', 'accountId is required');
-    }
-    if (!confirmation) {
-      throw new functions.https.HttpsError(
-        'invalid-argument',
-        'ownerEmailConfirmation is required',
-      );
-    }
-
-    const db = admin.firestore();
-    const accountRef = db.collection('facilityCreatorAccounts').doc(accountId);
-    const accountSnap = await accountRef.get();
-    if (!accountSnap.exists) {
-      throw new functions.https.HttpsError('not-found', 'Account not found');
-    }
-
-    const accountData = accountSnap.data() as Record<string, unknown>;
-    const ownerUid = (accountData.ownerUid || '').toString().trim();
-    const ownerEmail = (accountData.ownerEmail || '').toString().trim();
-    if (!ownerUid) {
-      throw new functions.https.HttpsError('failed-precondition', 'Account has no ownerUid');
-    }
-
-    if (ownerEmail.toLowerCase() !== confirmation) {
-      throw new functions.https.HttpsError(
-        'invalid-argument',
-        'Email confirmation does not match this account owner',
-      );
-    }
-
-    if (context.auth.uid === ownerUid) {
-      throw new functions.https.HttpsError(
-        'failed-precondition',
-        'You cannot delete your own facility creator account while signed in as that owner',
-      );
-    }
-
-    const facilitiesSnap = await db
-      .collection('facilities')
-      .where('ownerUid', '==', ownerUid)
-      .get();
-
-    // Every subscription this owner has, across every facility plus the legacy
-    // account plan, cancelled before any of it is deleted, a subscription
-    // shared by two facilities once. Their tenants' legacy AutoPay
-    // subscriptions too: on the platform account, they went on charging
-    // tenants of deleted facilities (stopAccountBilling).
-    const accountCancelOutcomes = await stopAccountBilling(
-      db,
-      facilitiesSnap.docs,
-      accountData,
-      stripeFacilityPurgeDeps(),
-    );
-    if (anyCancelFailed(accountCancelOutcomes)) {
-      throw new functions.https.HttpsError(
-        'failed-precondition',
-        `Could not cancel this account's Stripe subscriptions, so nothing was deleted: ` +
-          `${summarizeCancelOutcomes(accountCancelOutcomes)}. Resolve it in Stripe and try again.`,
-      );
-    }
-    if (accountCancelOutcomes.length > 0) {
-      functions.logger.info('Cancelled account subscriptions before delete', {
-        accountId,
-        ownerUid,
-        outcomes: summarizeCancelOutcomes(accountCancelOutcomes),
-      });
-    }
-
-    for (const f of facilitiesSnap.docs) {
-      await adminDeleteDocumentTree(f.ref);
-    }
-
-    await adminDeleteDocumentTree(accountRef);
-
-    try {
-      await admin.auth().deleteUser(ownerUid);
-    } catch (e: unknown) {
-      const code = (e as { code?: string })?.code;
-      if (code !== 'auth/user-not-found') {
-        throw e;
-      }
-    }
-
-    await db.collection('users').doc(ownerUid).delete();
-
-    functions.logger.info('superAdminDeleteFacilityCreatorAccount', {
-      accountId,
-      ownerUid,
-      deletedBy: callerEmail,
-      facilitiesDeleted: facilitiesSnap.size,
+  .https.onCall((data: SuperAdminDeleteFacilityCreatorAccountData, context) => {
+    // Stripe as purgeFacility has it: the facilities' and the account's
+    // subscriptions, and their tenants' legacy AutoPay subscriptions, which
+    // are on the platform account and went on charging tenants of deleted
+    // facilities (stopAccountBilling, in the handler).
+    const purge = stripeFacilityPurgeDeps();
+    return superAdminDeleteFacilityCreatorAccountHandler(data, context, {
+      db: admin.firestore(),
+      cancelSubscriptions: purge.cancelSubscriptions,
+      legacyAutopayStripe: purge.legacyAutopayStripe,
+      deleteAuthUser: async (uid) => {
+        await admin.auth().deleteUser(uid);
+      },
     });
-
-    return { success: true, facilitiesDeleted: facilitiesSnap.size };
   });
 
 interface SuperAdminDeleteFacilityData {

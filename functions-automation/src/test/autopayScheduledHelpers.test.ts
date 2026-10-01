@@ -7,7 +7,7 @@ import {
   resolveChargeAmount,
   roundMoney,
   shouldAttemptCharge,
-  sumLedgerBalance,
+  collectibleLedgerBalance,
 } from '../autopayScheduledHelpers';
 
 // --- charge readiness -------------------------------------------------------
@@ -56,17 +56,17 @@ test('isAutopayDue is true only once the next-run has arrived', () => {
 
 // --- ledger balance ---------------------------------------------------------
 
-test('sumLedgerBalance nets charges against payments', () => {
-  assert.equal(sumLedgerBalance([{ amount: 120 }, { amount: -50 }]), 70);
+test('collectibleLedgerBalance nets charges against payments', () => {
+  assert.equal(collectibleLedgerBalance([{ amount: 120 }, { amount: -50 }]), 70);
 });
 
-test('sumLedgerBalance ignores missing and non-numeric amounts', () => {
+test('collectibleLedgerBalance ignores missing and non-numeric amounts', () => {
   assert.equal(
-    sumLedgerBalance([{ amount: 100 }, {}, { amount: 'oops' }, { amount: NaN }]),
+    collectibleLedgerBalance([{ amount: 100 }, {}, { amount: 'oops' }, { amount: NaN }]),
     100,
     'a malformed ledger row must not turn the total into NaN and charge garbage',
   );
-  assert.equal(sumLedgerBalance([]), 0);
+  assert.equal(collectibleLedgerBalance([]), 0);
 });
 
 // --- amount resolution ------------------------------------------------------

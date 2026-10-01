@@ -163,8 +163,12 @@ void main() {
   // The Stripe webhooks write disputed and partially_refunded to these docs.
   // The refusal was a denylist that did not name them: Process overwrote the
   // dispute with paid and moved paidThrough on a free month.
-  test('refuses every status but pending and failed', () async {
+  test('refuses every status but pending', () async {
     const refused = {
+      // A failed card attempt took no money (and autopay's retry may have
+      // paid that rent on a new PaymentIntent since).
+      'failed': 'This card payment failed and took no money, so it cannot be processed. '
+          'If the tenant has paid since, use Record payment.',
       'disputed': 'This payment is disputed, so it cannot be processed.',
       'partially_refunded':
           'This payment is partially refunded, so it cannot be processed.',
@@ -194,8 +198,8 @@ void main() {
     expect(doc.commits, isEmpty);
   });
 
-  test('marks a pending, failed or status-less payment paid', () async {
-    for (final status in ['pending', 'failed', null]) {
+  test('marks a pending or status-less payment paid', () async {
+    for (final status in ['pending', null]) {
       storeAs({'status': status, 'amount': 100});
       // The tenant and receipt steps after it need Firebase and swallow
       // their own failures; the payment write is what is checked here.

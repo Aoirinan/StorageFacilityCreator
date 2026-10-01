@@ -190,11 +190,17 @@ class InvoiceService {
         facilityId: facilityId,
       );
 
+      // Card disputes are never billed on an invoice, so their share of the
+      // balance comes off what may be billed. Read from the newest entries
+      // fetched above: dispute rows are recent, and the webhook posts them.
+      final cardDisputeBalance = cardDisputeShareOfBalance(allEntries);
+
       final lines = openChargesForInvoice(
         charges: allEntries.map(SelectableCharge.fromLedgerEntry),
         idsOnLiveInvoices: coverage.ledgerEntryIds,
         ledgerBalance: ledgerBalance,
         liveInvoiceBalance: coverage.balance,
+        cardDisputeBalance: cardDisputeBalance,
         onlyThese: (ledgerEntryIds != null && ledgerEntryIds.isNotEmpty)
             ? ledgerEntryIds
             : null,
@@ -205,6 +211,7 @@ class InvoiceService {
         throw Exception(nothingToInvoiceMessage(
           ledgerBalance: ledgerBalance,
           liveInvoiceBalance: coverage.balance,
+          cardDisputeBalance: cardDisputeBalance,
         ));
       }
 
