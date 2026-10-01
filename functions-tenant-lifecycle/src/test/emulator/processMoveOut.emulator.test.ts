@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as functions from 'firebase-functions/v1';
+import * as admin from 'firebase-admin';
 
 import { processMoveOut } from '../../moveOutPortalHold';
 import { clearEmulator, emulatorDb, skipWithoutEmulator } from './firestoreEmulator';
@@ -455,8 +456,13 @@ test('a refund is posted positive, only once made, and the credit it pays out is
   const signed = await contract('c101');
   assert.equal(signed.moveOutRefund, 0);
   assert.equal(signed.moveOutRefundMethod, 'creditCard');
-  assert.deepEqual(signed.moveOutCardRefund, { status: 'pending', requested: 36.67, refunded: 0 });
-  // A retry (a dropped connection) is never refunded again.
+  const { at, ...pending } = signed.moveOutCardRefund;
+  assert.deepEqual(pending, { status: 'pending', requested: 36.67, refunded: 0 });
+  assert.ok(at instanceof admin.firestore.Timestamp);
+  // A retry (a dropped connection) refunds nothing on its own. The refund
+  // the first run left pending comes back for the screen to ask the owner
+  // about: with the first answer lost, the screen never made it, and the
+  // retry said only that nothing had changed.
   const again = await moveOut('u101', 'c101', {
     moveOutCharges: -36.67,
     moveOutRefund: 36.67,
@@ -465,6 +471,20 @@ test('a refund is posted positive, only once made, and the credit it pays out is
   });
   assert.equal(again.alreadyCompleted, true);
   assert.equal(again.cardRefundDue, 0);
+  assert.deepEqual(again.pendingCardRefund, { requested: 36.67, since: at.toDate().toISOString() });
+  assert.equal(await balance(), -36.67);
+  // Once the screen has reported back, a retry has nothing pending.
+  await fac().collection('contracts').doc('c101').update({
+    moveOutCardRefund: { status: 'refunded', requested: 36.67, refunded: 36.67 },
+  });
+  const reported = await moveOut('u101', 'c101', {
+    moveOutCharges: -36.67,
+    moveOutRefund: 36.67,
+    processRefund: true,
+    refundMethod: 'creditCard',
+  });
+  assert.equal(reported.alreadyCompleted, true);
+  assert.equal(reported.pendingCardRefund, null);
 
   // Cash: no card refund, and none pending on the contract.
   await clearEmulator();
@@ -478,6 +498,9 @@ test('a refund is posted positive, only once made, and the credit it pays out is
   assert.equal(byCash.cardRefundDue, 0);
   assert.equal((await contract('c101')).moveOutRefundMethod, 'cash');
   assert.equal((await contract('c101')).moveOutCardRefund, undefined);
+  const cashAgain = await moveOut('u101', 'c101', { moveOutCharges: -36.67, moveOutRefund: 36.67, processRefund: true, refundMethod: 'cash' });
+  assert.equal(cashAgain.alreadyCompleted, true);
+  assert.equal(cashAgain.pendingCardRefund, null);
 });
 
 /**

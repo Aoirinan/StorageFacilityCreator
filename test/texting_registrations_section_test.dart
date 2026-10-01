@@ -6,8 +6,8 @@ void main() {
     final event = A2PAdminEvent.fromMap({
       'id': 'evt1',
       'facilityId': 'fac1',
-      'facilityName': 'Keepsake Self Storage',
-      'legalBusinessName': 'Keepsake LLC',
+      'facilityName': 'Pinewood Self Storage',
+      'legalBusinessName': 'Pinewood LLC',
       'alerts': [
         {
           'kind': 'campaign_rejected',
@@ -19,7 +19,7 @@ void main() {
       'emailError': null,
       'createdAtMs': 1790000000000,
     });
-    expect(event.facilityName, 'Keepsake Self Storage');
+    expect(event.facilityName, 'Pinewood Self Storage');
     expect(event.alerts.single.detail.single, contains('EIN does not match'));
     expect(event.isBad, isTrue);
     expect(event.isGood, isFalse);

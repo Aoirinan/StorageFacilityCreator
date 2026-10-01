@@ -19,9 +19,11 @@
  * looked at again, a failed one is retried a bounded number of times,
  * confirming a paid session holds the unit no longer than a day after
  * payment, and a refund is resumed on the account that took the payment.
+ * And a refund for changed charges keeps the unit for the renter to pay again
+ * for minutes, not for the rest of the day the webhook held it.
  * All data is invented.
  */
-import test from 'node:test';
+import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { Timestamp } from 'firebase-admin/firestore';
 import * as admin from 'firebase-admin';
@@ -814,6 +816,90 @@ for (const [label, recorded] of RETURNED_IN_STRIPE) {
     assert.equal((inMemory.read(USE_PATH) as Record<string, any>).refund, undefined);
   });
 }
+
+// Review of 2026-09-30, finding 2: a refund for changed charges after the webhook held the unit
+
+/**
+ * A renter who chose the unit 155 minutes ago and paid at minute 34 of their
+ * checkout. The webhook recorded the payment and held the reservation and the
+ * unit until a day after it; completion then refunded them because the
+ * charges changed meanwhile (checkout priced $5 more than is due now). A
+ * checkout now, counted from when the unit was chosen, would hold it past
+ * MAX_HOLD_MINUTES. Returns when the refund was decided, at the earliest.
+ */
+async function refundedForChangedChargesAfterWebhook(inMemory: InMemoryFirestore) {
+  seedCheckout(inMemory, 150);
+  inMemory.seed(RESERVATION_PATH, {
+    ...inMemory.read(RESERVATION_PATH),
+    expectedCheckoutAmountCents: quoteCents(inMemory) + 500,
+  });
+  const moveIn = load(inMemory, { sessions: { [SESSION]: paidSession(inMemory, 116) } });
+  const paidAt = new Date(Date.now() - 116 * MINUTE);
+  assert.equal(await moveIn.webhook(paidAt), 'held');
+  for (const path of [RESERVATION_PATH, HOLD_PATH]) {
+    assert.equal(millisOf(inMemory.read(path)?.expiresAt), paidAt.getTime() + 24 * HOUR, path);
+  }
+  const refundedAt = Date.now();
+  await assert.rejects(() => moveIn.complete(), (err: any) => {
+    assert.match(err.message, /^The move-in charges changed while you were paying\. .* has been refunded/);
+    return true;
+  });
+  assert.equal((inMemory.read(USE_PATH) as Record<string, any>).refund.refusal, 'charges-changed');
+  assert.equal(inMemory.read(RESERVATION_PATH)?.status, 'pending');
+  return { ...moveIn, refundedAt };
+}
+
+test('a renter refunded for changed charges long after choosing the unit, which the webhook held a day, can pay the new amount', async () => {
+  const inMemory = new InMemoryFirestore();
+  const { checkout, calls, refundedAt } = await refundedForChangedChargesAfterWebhook(inMemory);
+
+  // Cut back from a day after the payment to ten minutes after the refund.
+  for (const path of [RESERVATION_PATH, HOLD_PATH]) {
+    const heldUntil = millisOf(inMemory.read(path)?.expiresAt);
+    assert.ok(heldUntil >= refundedAt + 10 * MINUTE && heldUntil <= Date.now() + 10 * MINUTE, path);
+  }
+  // The payment checkout refuses a paid reservation by is gone with the refund.
+  assert.equal(inMemory.read(RESERVATION_PATH)?.checkoutPaidPaymentIntentId, undefined);
+
+  // Before: refused as out of time ("choose your unit again"), and choosing
+  // it again was refused as in checkout until a day after the payment.
+  const startedAt = Date.now();
+  await checkout();
+
+  assert.equal(calls.sessionCreates, 1);
+  assert.equal(inMemory.read(RESERVATION_PATH)?.checkoutSessionId, 'cs_created_1');
+  assert.equal(inMemory.read(HOLD_PATH)?.reservationId, RESERVATION);
+  for (const path of [RESERVATION_PATH, HOLD_PATH]) {
+    const heldUntil = millisOf(inMemory.read(path)?.expiresAt);
+    assert.ok(heldUntil >= startedAt + 45 * MINUTE && heldUntil <= Date.now() + 45 * MINUTE, path);
+  }
+  assert.equal(calls.refunds.length, 1);
+});
+
+test('a renter refunded for changed charges who does not pay again leaves the unit free ten minutes on, not a day', async (t) => {
+  mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  t.after(() => mock.timers.reset());
+  const inMemory = new InMemoryFirestore();
+  const { checkout, holdAsSomeoneElse } = await refundedForChangedChargesAfterWebhook(inMemory);
+
+  // Kept for them meanwhile: they may be about to pay again.
+  await assert.rejects(() => holdAsSomeoneElse(), (err: any) => {
+    assert.equal(err.code, 'already-exists');
+    return true;
+  });
+
+  mock.timers.setTime(Date.now() + 11 * MINUTE);
+
+  // Their reservation has run out, so they choose the unit again, as anyone can.
+  await assert.rejects(() => checkout(), (err: any) => {
+    assert.equal(err.message, 'Reservation has expired');
+    return true;
+  });
+  // Before: 'Unit is currently in checkout', for everyone, until a day after the payment.
+  const held = (await holdAsSomeoneElse()) as { reservationId?: string };
+  assert.equal(inMemory.read(HOLD_PATH)?.reservationId, held.reservationId);
+  assert.notEqual(held.reservationId, RESERVATION);
+});
 
 test.after(() => {
   testEnv.cleanup();

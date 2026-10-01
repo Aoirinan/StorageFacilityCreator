@@ -11,8 +11,10 @@ import { resolveMoveInPaymentStripeAccountId } from './moveInPayment';
 import {
   CHECKOUT_PAID_AT_FIELD,
   CHECKOUT_PAID_FIELD,
+  CHECKOUT_REOPENED_AT_FIELD,
   CHECKOUT_SESSION_EXPIRES_FIELD,
   PAID_HOLD_MAX_HOURS,
+  REPAY_AFTER_REFUND_MINUTES,
 } from './checkoutHold';
 
 /**
@@ -89,7 +91,8 @@ const OWNER_TEXT: Record<PaidMoveInRefusal, string> = {
 
 /**
  * Refusals that end the reservation. After a change in the charges the renter
- * can pay the new amount on the same reservation.
+ * can pay the new amount on the same reservation, if they start within
+ * REPAY_AFTER_REFUND_MINUTES.
  */
 function closesReservation(refusal: PaidMoveInRefusal): boolean {
   return refusal !== 'charges-changed' && refusal !== 'reservation-closed';
@@ -637,9 +640,37 @@ export async function refusePaidMoveIn(params: PaidMoveInContext & {
       // again they are paying for nothing: their session was paid, and this
       // payment is being refunded. Counted as paying (holderMayBePaying), a
       // renter whose own hold had lapsed was refunded for them.
+      //
+      // The reservation and its hold on the unit are cut back to
+      // REPAY_AFTER_REFUND_MINUTES from now (one ending sooner is left as it
+      // is): the webhook had held both until a day after the payment (each
+      // confirmation of it, for an hour), which kept the unit from everyone
+      // for that time if this renter did not pay again. Checkout's
+      // MAX_HOLD_MINUTES count from now (CHECKOUT_REOPENED_AT_FIELD), so the
+      // renter can pay again however long ago the unit was first held. Not
+      // done while the reservation records another payment, not yet used:
+      // the hold is that payment's.
+      const now = admin.firestore.Timestamp.now();
+      const paidWith = reservation[CHECKOUT_PAID_FIELD];
+      const reopens = !paidWith || paidWith === payment.paymentIntentId;
+      const repayUntil = admin.firestore.Timestamp.fromMillis(
+        now.toMillis() + REPAY_AFTER_REFUND_MINUTES * 60 * 1000,
+      );
+      const endsLater = (expiry: unknown): boolean =>
+        (timestampToDate(expiry)?.getTime() ?? 0) > repayUntil.toMillis();
+      const hold = (holdSnap?.data() || null) as Record<string, unknown> | null;
+      if (reopens && holdRef && hold?.reservationId === params.reservationId && endsLater(hold.expiresAt)) {
+        tx.update(holdRef, { expiresAt: repayUntil, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      }
       tx.update(reservationRef, {
-        [CHECKOUT_SESSION_EXPIRES_FIELD]: admin.firestore.Timestamp.now(),
-        ...(reservation[CHECKOUT_PAID_FIELD] === payment.paymentIntentId
+        [CHECKOUT_SESSION_EXPIRES_FIELD]: now,
+        ...(reopens
+          ? {
+            [CHECKOUT_REOPENED_AT_FIELD]: now,
+            ...(endsLater(reservation.expiresAt) ? { expiresAt: repayUntil } : {}),
+          }
+          : {}),
+        ...(paidWith === payment.paymentIntentId
           ? {
             [CHECKOUT_PAID_FIELD]: admin.firestore.FieldValue.delete(),
             [CHECKOUT_PAID_AT_FIELD]: admin.firestore.FieldValue.delete(),

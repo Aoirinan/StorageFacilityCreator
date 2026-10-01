@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { refundChargeId } from '../stripeFacilityProcessRefund';
+import { refundChargeId, refundIdempotencyKey, refundRequestId } from '../stripeFacilityProcessRefund';
 import { refundRowOwner } from '../stripeWebhookChargeRefunded';
 
 /**
@@ -67,4 +67,41 @@ test('a refund made in the Stripe dashboard (no row yet) is written as before', 
     refundRowOwner({ tenantId: null, referenceId: null, createdBy: 'system@stripe-webhook' }, { tenantId: '', referenceId: null }),
     { tenantId: null, referenceId: null, createdBy: 'system@stripe-webhook' },
   );
+});
+
+test("the move-out screen's request id is accepted, and keys each move-out's refund apart", () => {
+  // MoveOutCardRefund.requestId: mo_<contract>_<PaymentIntent>.
+  const unitA = refundRequestId('mo_contractTestA_pi_test_payment');
+  const unitB = refundRequestId('mo_contractTestB_pi_test_payment');
+  assert.equal(unitA, 'mo_contractTestA_pi_test_payment');
+  assert.ok(unitB);
+  // A tenant moved out of two units at the same rate on the same day, both
+  // refunded by card against one payment: same charge, same amount. Keyed
+  // on charge and amount alone, Stripe handed the second call the first
+  // refund back and nothing more was refunded.
+  assert.notEqual(refundIdempotencyKey('ch_test_1', 3667, unitA), refundIdempotencyKey('ch_test_1', 3667, unitB));
+  // A retry of one move-out's refund (same id) is the same refund.
+  assert.equal(refundIdempotencyKey('ch_test_1', 3667, unitA), refundIdempotencyKey('ch_test_1', 3667, unitA));
+  assert.equal(
+    refundIdempotencyKey('ch_test_1', 3667, unitA),
+    'refund_ch_test_1_3667_mo_contractTestA_pi_test_payment',
+  );
+  // Within Stripe's 255-character limit at the longest id the screen sends.
+  assert.ok(refundIdempotencyKey(`ch_${'x'.repeat(40)}`, 99999999, 'm'.repeat(64)).length <= 255);
+});
+
+test('a caller with no usable request id keeps the charge-and-amount key', () => {
+  assert.equal(refundIdempotencyKey('ch_test_1', 1000, refundRequestId(undefined)), 'refund_ch_test_1_1000');
+  for (const bad of ['', 'short', '../bad key', 'x'.repeat(65), 12345678, null]) {
+    assert.equal(refundRequestId(bad), null, String(bad));
+  }
+});
+
+test('the charge.refunded webhook creates the row, else fills in only what it lacks', () => {
+  const source = readFileSync(path.join(__dirname, '..', '..', 'src', 'stripeWebhookChargeRefunded.ts'), 'utf8');
+  assert.match(source, /await ledgerRef\.create\(/);
+  // No merge over the whole row: that wrote tenantId null over the tenant
+  // processRefund refunded, whichever wrote first.
+  assert.doesNotMatch(source, /ledgerRef\.set\(/);
+  assert.match(source, /if \(!hasText\(existingData\[key\]\) && owner\[key\] !== null\) update\[key\] = owner\[key\];/);
 });

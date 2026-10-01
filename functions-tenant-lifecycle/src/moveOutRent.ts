@@ -23,8 +23,10 @@
  *   the rate alone gave back rent never paid: $200 for a free-month coupon
  *   left on the 10th, or a rent rise's difference. Whether that credit is
  *   paid out is the owner's separate refund choice: processMoveOut records
- *   a cash, check or ACH refund positive against it, and a card refund
- *   when Stripe confirms it.
+ *   a cash, check or ACH refund positive against it. A card refund it
+ *   neither makes nor records: it answers the amount (cardRefundDue), and
+ *   the move-out screen refunds it through processRefund, which posts each
+ *   refund it makes.
  * - Posted rent: the monthly rent charge (metadata.chargeType 'monthlyRent',
  *   with its month) covers its month; this contract's move-in rent covers
  *   the move-in date to the end of that month (prorated), the whole move-in

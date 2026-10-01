@@ -40,8 +40,8 @@ test('supplied details are carried through and trimmed', () => {
     {
       ownerUid: `  ${OWNER} `,
       name: '  Test Storage  ',
-      address: ' 820 N Sargent Ave ',
-      phone: ' 406-939-1228 ',
+      address: ' 100 N Elm Ave ',
+      phone: ' 701-555-0128 ',
       email: ' test-owner@example.com ',
       timeZone: 'America/Denver',
       totalUnits: 86,
@@ -52,8 +52,8 @@ test('supplied details are carried through and trimmed', () => {
   );
   assert.equal(doc.ownerUid, OWNER);
   assert.equal(doc.name, 'Test Storage');
-  assert.equal(doc.address, '820 N Sargent Ave');
-  assert.equal(doc.phone, '406-939-1228');
+  assert.equal(doc.address, '100 N Elm Ave');
+  assert.equal(doc.phone, '701-555-0128');
   assert.equal(doc.email, 'test-owner@example.com');
   assert.equal(doc.timeZone, 'America/Denver');
   assert.equal(doc.totalUnits, 86);

@@ -30,7 +30,7 @@ class _DeniedDoc extends Fake implements DocumentReference<Map<String, dynamic>>
           FirebaseException(plugin: 'cloud_firestore', code: 'unavailable'));
 }
 
-const _facility = 'eXnWPuwuqzBVFcZWv1ZL';
+const _facility = 'kT4mZ8vLr2QpWx7NbY3d';
 
 Map<String, dynamic> _map({String facilityId = _facility}) =>
     {'facilityId': facilityId, 'units': const []};
@@ -58,7 +58,7 @@ void main() {
   group('ensurePublicSlugAvailable', () {
     test('a slug no doc holds is free, normalized as setPublicSlug stores it',
         () async {
-      expect(await check(' Keepsake Online Rentals '), 'keepsake-online-rentals');
+      expect(await check(' Pinewood Online Rentals '), 'pinewood-online-rentals');
       expect(store.writes, isEmpty);
     });
 

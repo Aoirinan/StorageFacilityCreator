@@ -8,6 +8,8 @@ import 'package:sfcapp/models/address_model.dart';
 import 'package:sfcapp/models/document_logo_layout.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/ledger_entry_model.dart';
+import 'package:sfcapp/models/payment_model.dart';
+import 'package:sfcapp/models/security_deposit_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/pdf_letterhead.dart';
@@ -23,14 +25,14 @@ FacilityModel _facility({
 }) =>
     FacilityModel(
       id: 'f1',
-      name: 'Keepsake Self Storage and Boat & RV Parking',
+      name: 'Pinewood Self Storage and Boat & RV Parking',
       ownerUid: 'owner',
       createdAt: DateTime(2026, 1, 1),
       address: '1200 County Road 45\nSpringfield, MO 65801',
       mailingAddress: mailing,
       statementMessage: message,
       phone: '(555) 123-4567',
-      email: 'office@keepsake.example',
+      email: 'office@pinewood.example',
       logoUrl: logoUrl,
       documentLogo: documentLogo,
       unitNumbersRepeatAcrossAreas: repeat,
@@ -274,6 +276,31 @@ _Line _lineWith(List<_Line> lines, String text) =>
 
 int _linesWith(List<_Line> lines, String text) =>
     lines.where((l) => l.text.contains(text)).length;
+
+/// A $25 deposit paid by check on 9/1/2026 and still held.
+final _heldDeposit = SecurityDeposit(
+  amount: 25,
+  receivedDate: SecurityDeposit.noonUtc(DateTime(2026, 9, 1)),
+  method: PaymentMethod.check,
+  reference: '1001',
+);
+
+const _depositNote = r'Security deposit on file: $25.00 (held since 9/1/2026). '
+    'Not part of the balance above.';
+
+/// The deposit note directly under the bottom balance [balance] and above
+/// the closing lines, on [page].
+void _expectNoteUnderBalance(List<_Line> page, String balance, {String? reason}) {
+  final note = _lineWith(page, 'Security deposit on file');
+  expect(note.text, _depositNote, reason: reason);
+  expect(_linesWith(page, 'Security deposit'), 1, reason: reason);
+  final bottom = _lineWith(page, balance);
+  expect(note.y, lessThan(bottom.y), reason: reason);
+  // One 9pt line under the 12pt balance: no room for anything between.
+  expect(bottom.y - note.y, lessThan(18), reason: reason);
+  expect(note.y, greaterThan(_lineWith(page, 'Thank you for your business!').y),
+      reason: reason);
+}
 
 void main() {
   test('remit address prefers the mailing address', () {
@@ -669,6 +696,123 @@ void main() {
     });
   });
 
+  group('security deposit note', () {
+    final entries = [
+      _entry('e1', LedgerEntryType.rentCharge, 144, DateTime(2026, 9, 1),
+          'September rent'),
+    ];
+
+    test('a held deposit prints one line under the closing balance; the '
+        'page is otherwise the same and no balance includes it', () async {
+      final withNote = _textLines(await _statementPdf(
+        entries: entries,
+        tenant: _mailedTenant.copyWith(securityDeposit: _heldDeposit),
+        facility: _facility(),
+      ));
+      final without = _textLines(await _statementPdf(
+        entries: entries,
+        tenant: _mailedTenant,
+        facility: _facility(),
+      ));
+
+      _expectNoteUnderBalance(withNote, r'Current Balance: $144.00');
+      // Every other line as it was, balances included: $144 owed, with the
+      // $25 neither added ($169) nor taken off ($119).
+      expect(withNote.map((l) => l.text).where((t) => t != _depositNote),
+          without.map((l) => l.text));
+      expect(_linesWith(withNote, 'Current Balance'), 2);
+      for (final wrong in [r'$169.00', r'$119.00']) {
+        expect(_linesWith(withNote, wrong), 0, reason: wrong);
+      }
+    });
+
+    test('a period statement notes it under "Balance as of"', () async {
+      final lines = _textLines(await _statementPdf(
+        entries: entries,
+        tenant: _mailedTenant.copyWith(securityDeposit: _heldDeposit),
+        facility: _facility(),
+        startDate: DateTime(2026, 9, 1),
+        endDate: DateTime(2026, 9, 30),
+      ));
+      _expectNoteUnderBalance(lines, r'Balance as of Sep 30, 2026: $144.00');
+    });
+
+    test('no deposit on file, or a settled one: no line', () async {
+      final settled = _heldDeposit.copyWith(
+        status: SecurityDepositStatus.settled,
+        settledAt: DateTime.utc(2026, 10, 3, 12),
+        appliedAmount: 10,
+        refundedAmount: 15,
+      );
+      for (final tenant in [
+        _mailedTenant,
+        _mailedTenant.copyWith(securityDeposit: settled),
+      ]) {
+        final lines = _textLines(await _statementPdf(
+          entries: entries,
+          tenant: tenant,
+          facility: _facility(),
+        ));
+        expect(_linesWith(lines, 'Security deposit'), 0);
+        expect(_linesWith(lines, 'held since'), 0);
+        expect(_lineWith(lines, r'Current Balance: $144.00'), isNotNull);
+      }
+    });
+
+    test('a year of monthly history with the note still fits one page: 25 '
+        'rows, or 24 and a balance forward', () async {
+      final tenant = _threeLineTenant.copyWith(securityDeposit: _heldDeposit);
+      final allHistory = await _statementPdf(
+        entries: _monthlyHistory(25),
+        tenant: tenant,
+        facility: _facility(),
+      );
+      final period = await _statementPdf(
+        entries: [
+          _entry('r-dec', LedgerEntryType.rentCharge, 144,
+              DateTime(2024, 12, 1), 'Monthly rent'),
+          ..._monthlyHistory(24),
+        ],
+        tenant: tenant,
+        facility: _facility(),
+        startDate: DateTime(2025, 1, 1),
+        endDate: DateTime(2025, 12, 31),
+      );
+      for (final (pdf, balance) in [
+        (allHistory, r'Current Balance: $144.00'),
+        (period, r'Balance as of Dec 31, 2025: $144.00'),
+      ]) {
+        expect(_pageCount(pdf), 1, reason: balance);
+        final page = _pages(pdf).single;
+        expect(_tableRows(page), 25, reason: balance);
+        _expectNoteUnderBalance(page, balance, reason: balance);
+        // The last closing line still above the bottom margin.
+        expect(_lineWith(page, 'Questions? Email us at').y, greaterThan(36),
+            reason: balance);
+      }
+    });
+
+    test('whatever the length, the note travels with the closing block and '
+        'the closing block never has a page to itself', () async {
+      final tenant = _threeLineTenant.copyWith(securityDeposit: _heldDeposit);
+      for (var n = 1; n <= 60; n++) {
+        final pages = _pages(await _statementPdf(
+          entries: _monthlyHistory(n),
+          tenant: tenant,
+          facility: _facility(),
+        ));
+        final last = pages.last;
+        expect(_tableRows(last), greaterThanOrEqualTo(1), reason: '$n rows');
+        _expectNoteUnderBalance(last, r'Current Balance: $', reason: '$n rows');
+        for (final page in pages.take(pages.length - 1)) {
+          expect(_linesWith(page, 'Security deposit'), 0, reason: '$n rows');
+        }
+        expect(pages.fold<int>(0, (sum, p) => sum + _tableRows(p)), n,
+            reason: '$n rows');
+      }
+    });
+  });
+
   group('letterhead logo layout', () {
     test('every position and size lays out, with and without a logo', () async {
       for (final position in DocumentLogoPosition.values) {
@@ -701,12 +845,12 @@ void main() {
           documentLogo: const DocumentLogoLayout(showName: false));
       final shown = _facility();
 
-      expect(await _letterheadPdf(shown), contains('Keepsake'));
+      expect(await _letterheadPdf(shown), contains('Pinewood'));
       final noName = await _letterheadPdf(hidden);
-      expect(noName, isNot(contains('Keepsake')));
+      expect(noName, isNot(contains('Pinewood')));
       expect(noName, contains('County'));
       // No logo to carry the name, so the name prints after all.
-      expect(await _letterheadPdf(hidden, withLogo: false), contains('Keepsake'));
+      expect(await _letterheadPdf(hidden, withLogo: false), contains('Pinewood'));
     });
 
     test('statements and invoices build with a saved layout', () async {

@@ -718,7 +718,7 @@ class InvoiceService {
 
       final invoices = snapshot.docs
           .map((doc) => InvoiceModel.fromFirestore(doc))
-          .where((invoice) => invoice.dueDate.isBefore(now) && invoice.balance > 0)
+          .where((invoice) => invoice.isOverdueAt(now))
           .toList();
 
       return invoices;

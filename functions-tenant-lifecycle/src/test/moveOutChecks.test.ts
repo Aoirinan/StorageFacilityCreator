@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { contractTenantRefusal, contractUnitId, contractUnitRefusal, moveOutLedgerRows } from '../moveOutChecks';
+import { contractTenantRefusal, contractUnitId, contractUnitRefusal, moveOutLedgerRows, pendingCardRefund } from '../moveOutChecks';
 
 const held = (id: string, unitNumber: string, tenantId = 't1', status = 'occupied', area?: string) => ({
   id,
@@ -87,14 +87,18 @@ test('no refund row unless the owner made one outside Stripe', () => {
   // A card refund is not made or posted here: its amount goes back to the
   // screen, which refunds it through processRefund. The webhook alone does
   // not post it for every payment (an online move-in's PaymentIntent has no
-  // tenantId), so the warning no longer says the ledger will record it.
+  // tenantId), so the warning no longer says the ledger will record it. For
+  // a payment that names its tenant it does, so "refund in Stripe, then Add
+  // entry" counted it twice: the owner looks for that row first.
   const card = moveOutLedgerRows({ moveOutCharges: -50, moveOutRefund: 50, processRefund: true, refundMethod: 'creditCard' });
   assert.equal(card.refund, null);
   assert.equal(card.cardRefund, 50);
   assert.equal(
     card.refundWarning,
     'The $50.00 card refund was not made by the move-out, and it stays on their ledger as a credit. ' +
-      'Refund it to their card in your Stripe dashboard, then record it on their ledger (Add entry, type Refund).',
+      'Refund it to their card in your Stripe dashboard. Wait a minute, then look at their ledger: Stripe ' +
+      'records some card refunds there itself, as a "Refund for charge …" row. Only if none has appeared ' +
+      'for it, record it on their ledger (Add entry, type Refund).',
   );
   assert.doesNotMatch(card.refundWarning ?? '', /when Stripe confirms/);
   // Not ticked, or nothing to refund: no card refund either.
@@ -104,4 +108,25 @@ test('no refund row unless the owner made one outside Stripe', () => {
     moveOutLedgerRows({ moveOutCharges: 0, moveOutRefund: 12.5, processRefund: true }).refund,
     { amount: 12.5, method: 'manual' },
   );
+});
+
+test('a card refund a finished move-out left pending is sent back on a retry; none otherwise', () => {
+  const at = { toDate: () => new Date('2026-09-23T15:04:05.000Z') };
+  assert.deepEqual(pendingCardRefund({ moveOutCardRefund: { status: 'pending', requested: 36.67, refunded: 0, at } }), {
+    requested: 36.67,
+    since: '2026-09-23T15:04:05.000Z',
+  });
+  // A record from before [at] still says the refund is owed, with no time.
+  assert.deepEqual(pendingCardRefund({ moveOutCardRefund: { status: 'pending', requested: 20 } }), {
+    requested: 20,
+    since: null,
+  });
+  // The screen reported back (made, partly made or not made), or the owner
+  // chose to refund it in Stripe themselves: nothing pending.
+  for (const status of ['refunded', 'partial', 'notMade', 'manual']) {
+    assert.equal(pendingCardRefund({ moveOutCardRefund: { status, requested: 36.67, at } }), null, status);
+  }
+  assert.equal(pendingCardRefund({}), null);
+  assert.equal(pendingCardRefund({ moveOutCardRefund: { status: 'pending', requested: 0, at } }), null);
+  assert.equal(pendingCardRefund({ moveOutCardRefund: { status: 'pending', requested: 'x', at } }), null);
 });

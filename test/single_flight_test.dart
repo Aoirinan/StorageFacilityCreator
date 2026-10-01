@@ -18,9 +18,9 @@ void main() {
     final a = flight.run('uid-1|false', loader);
     final b = flight.run('uid-1|false', loader);
     expect(flight.isInFlight('uid-1|false'), isTrue);
-    gate.complete(['Keepsake']);
+    gate.complete(['Pinewood']);
 
-    expect(await a, ['Keepsake']);
+    expect(await a, ['Pinewood']);
     expect(identical(await a, await b), isTrue);
     expect(calls, 1);
   });

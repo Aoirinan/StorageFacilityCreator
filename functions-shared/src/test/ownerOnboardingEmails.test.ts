@@ -8,7 +8,7 @@ import {
 } from '../email/ownerOnboardingEmails';
 
 const base = {
-  ownerName: 'Alexa Rau',
+  ownerName: 'Jamie Roe',
   appUrl: 'https://app.storagefacilitycreator.com',
   supportEmail: 'support@storagefacilitycreator.com',
   supportPhone: '855-526-4544',
@@ -24,7 +24,7 @@ const approved = {
 test('under-review email tells the owner what happens next', () => {
   const m = buildAccountUnderReviewEmail(base);
   assert.equal(m.subject, 'We got your Storage Facility Creator signup');
-  assert.match(m.text, /Hi Alexa,/);
+  assert.match(m.text, /Hi Jamie,/);
   assert.match(m.text, /under review/);
   assert.match(m.text, /one business day/);
   // The pending-approval screen promises this next step; the copy must honour it.
@@ -34,7 +34,7 @@ test('under-review email tells the owner what happens next', () => {
 });
 
 test('greeting uses the first name only, and degrades without one', () => {
-  assert.match(buildAccountUnderReviewEmail(base).text, /^Hi Alexa,/);
+  assert.match(buildAccountUnderReviewEmail(base).text, /^Hi Jamie,/);
   assert.match(buildAccountUnderReviewEmail({ ...base, ownerName: null }).text, /^Hi,/);
   assert.match(buildAccountUnderReviewEmail({ ...base, ownerName: '   ' }).text, /^Hi,/);
 });
@@ -70,14 +70,14 @@ test('approved email never promises that balances import', () => {
 
 test('admin alert names the account and links to Platform Control', () => {
   const m = buildNewAccountAdminAlertEmail({
-    ownerName: 'Alexa Rau',
+    ownerName: 'Jamie Roe',
     ownerEmail: 'test-owner@example.com',
     accountId: 'lWTHn3AYXiIVwv7nizPK',
     signedUpAt: new Date('2026-09-20T22:21:47Z'),
     superAdminUrl: 'https://app.storagefacilitycreator.com/#/super-admin',
   });
   assert.equal(m.subject, 'New account pending approval: test-owner@example.com');
-  assert.match(m.text, /Alexa Rau signed up at/);
+  assert.match(m.text, /Jamie Roe signed up at/);
   assert.match(m.text, /lWTHn3AYXiIVwv7nizPK/);
   assert.match(m.text, /super-admin/);
 });

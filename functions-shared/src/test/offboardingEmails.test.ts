@@ -8,7 +8,7 @@ import {
 } from '../stripe/offboardingEmails';
 
 const base = {
-  facilityName: 'Keepsake <Self> Storage',
+  facilityName: 'Pinewood <Self> Storage',
   ownerName: 'Dana',
   offboardingDate: new Date('2026-10-14T06:00:00Z'),
   appUrl: 'https://app.storagefacilitycreator.com',
@@ -17,7 +17,7 @@ const base = {
 
 test('offboarding notice says when, what is removed, and what stays yours', () => {
   const m = buildOffboardingNoticeEmail(base);
-  assert.match(m.subject, /Keepsake <Self> Storage/);
+  assert.match(m.subject, /Pinewood <Self> Storage/);
   assert.match(m.text, /October 14, 2026/);
   assert.match(m.text, /Nothing has been removed yet/);
   assert.match(m.text, /Your Stripe account, your balance and your payouts are yours/);

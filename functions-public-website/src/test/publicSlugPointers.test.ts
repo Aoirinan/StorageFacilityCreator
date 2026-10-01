@@ -11,13 +11,13 @@ import { InMemoryFirestore, installInMemoryFirestore } from './support/inMemoryF
  * the site serves the current map for it, under the current slug.
  */
 
-const FACILITY = 'eXnWPuwuqzBVFcZWv1ZL';
-const LIVE = 'keepsakeonlinerentals';
+const FACILITY = 'kT4mZ8vLr2QpWx7NbY3d';
+const LIVE = 'pinewoodonlinerentals';
 
 function seed(): InMemoryFirestore {
   const inMemory = new InMemoryFirestore();
   // billingExempt: served without the add-on (hasActiveWebsiteSubscription).
-  inMemory.seed(`facilities/${FACILITY}`, { name: 'Keepsake', billingExempt: true });
+  inMemory.seed(`facilities/${FACILITY}`, { name: 'Pinewood', billingExempt: true });
   inMemory.seed(`facilities/${FACILITY}/mapEngine/meta`, { publicSlug: LIVE });
   // Online rentals on, so the page renders its rent links (the rent links and
   // rentUrl are only offered while the hold would take a rental, 0216e7e).
@@ -25,7 +25,7 @@ function seed(): InMemoryFirestore {
   inMemory.seed(`publicFacilityMaps/${LIVE}`, {
     facilityId: FACILITY,
     facilitySlug: LIVE,
-    facilityName: 'Keepsake Storage',
+    facilityName: 'Pinewood Storage',
     publicSettings: { enabled: true },
     units: [
       { unitId: 'u1', unitNumber: 'A1', categorySlug: 'standard', monthlyRate: 60, isRentable: true },
@@ -116,7 +116,7 @@ test('rendered site: /w/<old slug> renders the current map, every link on the cu
   const { status, body } = await call(renderPublicWebsite, { path: '/w/storage' });
   assert.equal(status, 200);
   const html = String(body);
-  assert.match(html, /Keepsake Storage/);
+  assert.match(html, /Pinewood Storage/);
   assert.ok(html.includes(`/w/${LIVE}`), 'links to the current slug');
   assert.ok(html.includes(`/#/f/${LIVE}/standard`), 'rent links on the current slug');
   assert.ok(!html.includes('/w/storage'), 'no link keeps the old slug');
@@ -138,7 +138,7 @@ test('the current slug renders as before', async () => {
   seed();
   const { status, body } = await call(renderPublicWebsite, { path: `/w/${LIVE}` });
   assert.equal(status, 200);
-  assert.match(String(body), /Keepsake Storage/);
+  assert.match(String(body), /Pinewood Storage/);
 });
 
 test('inventory sync leaves a pointer at the current slug without units', async () => {

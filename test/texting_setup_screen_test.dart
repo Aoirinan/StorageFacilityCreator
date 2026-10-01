@@ -435,7 +435,7 @@ void main() {
     testWidgets('business details stay editable while the bundle is a draft',
         (tester) async {
       // Regression: the form locked as soon as a trust profile SID existed.
-      // Keepsake had a profile holding an empty shell and placeholder details,
+      // Pinewood had a profile holding an empty shell and placeholder details,
       // so the owner was locked out of correcting the very data that was
       // blocking registration. A draft bundle can be rebuilt, so it must edit.
       await _pumpScreen(

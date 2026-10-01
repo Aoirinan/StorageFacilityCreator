@@ -33,17 +33,17 @@ test('isValidDomain rejects things that cannot be registered', () => {
 // --- apex / www planning -----------------------------------------------------
 
 test('planDomainPair registers both apex and www for an apex domain', () => {
-  assert.deepEqual(planDomainPair('keepsakeselfstorage.com'), {
-    apex: 'keepsakeselfstorage.com',
-    www: 'www.keepsakeselfstorage.com',
+  assert.deepEqual(planDomainPair('pinewoodselfstorage.example'), {
+    apex: 'pinewoodselfstorage.example',
+    www: 'www.pinewoodselfstorage.example',
   });
 });
 
 test('planDomainPair treats a www input as naming the apex', () => {
   // Operators type their site the way they say it out loud.
-  assert.deepEqual(planDomainPair('https://www.keepsakeselfstorage.com'), {
-    apex: 'keepsakeselfstorage.com',
-    www: 'www.keepsakeselfstorage.com',
+  assert.deepEqual(planDomainPair('https://www.pinewoodselfstorage.example'), {
+    apex: 'pinewoodselfstorage.example',
+    www: 'www.pinewoodselfstorage.example',
   });
 });
 

@@ -266,9 +266,9 @@ void main() {
       unawaited(load('uid-A', fetch: gated).then((l) => retry = l));
       await tester.pump();
       expect(fetches['uid-A'], 2);
-      pending['uid-A']![1].complete([_facility('f1', 'Keepsake')]);
+      pending['uid-A']![1].complete([_facility('f1', 'Pinewood')]);
       await tester.pump();
-      expect(names(retry!), ['Keepsake']);
+      expect(names(retry!), ['Pinewood']);
     });
 
     test('a failed read is [] by default and an error when asked', () async {
@@ -347,9 +347,9 @@ void main() {
       owned.add(const []);
       roles.add({'f1'});
       await pumpEventQueue();
-      docs['f1']!.add(roleFacility('f1', 'Keepsake'));
+      docs['f1']!.add(roleFacility('f1', 'Pinewood'));
       await pumpEventQueue();
-      docs['f1']!.add(roleFacility('f1', 'Keepsake', active: false));
+      docs['f1']!.add(roleFacility('f1', 'Pinewood', active: false));
       await pumpEventQueue();
       expect(emitted.last, isEmpty);
     });
@@ -358,7 +358,7 @@ void main() {
       owned.add(const []);
       roles.add({'f1'});
       await pumpEventQueue();
-      docs['f1']!.add(roleFacility('f1', 'Keepsake'));
+      docs['f1']!.add(roleFacility('f1', 'Pinewood'));
       await pumpEventQueue();
       roles.add(const {});
       await pumpEventQueue();
@@ -374,10 +374,10 @@ void main() {
       roles.add({'f1'});
       await pumpEventQueue();
       expect(emitted, isEmpty);
-      docs['f1']!.add(roleFacility('f1', 'Keepsake'));
+      docs['f1']!.add(roleFacility('f1', 'Pinewood'));
       await pumpEventQueue();
       expect(emitted, hasLength(1));
-      expect(latest(), ['Keepsake']);
+      expect(latest(), ['Pinewood']);
     });
 
     test('an owned facility comes from the owned query, not a second listener', () async {
@@ -402,9 +402,9 @@ void main() {
       await pumpEventQueue();
       docs['gone']!.add(null);
       docs['denied']!.addError(StateError('permission-denied'));
-      docs['f1']!.add(roleFacility('f1', 'Keepsake'));
+      docs['f1']!.add(roleFacility('f1', 'Pinewood'));
       await pumpEventQueue();
-      expect(latest(), ['Keepsake']);
+      expect(latest(), ['Pinewood']);
       expect(errors, isEmpty);
     });
 

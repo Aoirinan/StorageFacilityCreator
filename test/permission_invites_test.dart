@@ -855,7 +855,7 @@ void main() {
       signedIn = MockUser(uid: 'owner', email: 'owner@example.com');
       store.put('facilities/f1', {
         'ownerUid': 'owner',
-        'name': 'Keepsake Storage',
+        'name': 'Pinewood Storage',
         'roles': {'owner': 'owner', 'u1': 'employee'},
       });
       invite('f1', 'inv_old', 'staff@example.com', status: 'accepted', acceptedBy: 'u1');

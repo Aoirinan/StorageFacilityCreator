@@ -14,6 +14,7 @@ import { Timestamp } from 'firebase-admin/firestore';
 import firebaseFunctionsTest from 'firebase-functions-test';
 import { computePublicMoveInCharges, MOVE_IN_NOT_PRICED_MESSAGE } from '../moveInCharges';
 import { CHECKOUT_RUN_OUT_MESSAGE } from '../checkoutHold';
+import { CHECKOUT_ALREADY_PAID_MESSAGE } from '../checkoutSessionReuse';
 import { PAYMENT_REFUNDED_MESSAGE } from '../paidMoveInRefund';
 import { InMemoryFirestore, installInMemoryFirestore } from './support/inMemoryFirestore';
 
@@ -1352,14 +1353,20 @@ test('of two paid renters finishing on one unit at once, one moves in and the ot
  * The renter paid the recorded session, and completion refunded them because
  * the charges changed meanwhile (checkout priced $5 more than is due now),
  * which leaves the reservation open to pay the new amount. Their hold is live.
+ * [confirmedFirst]: the renter confirmed the payment before completing, so
+ * the reservation recorded it, as the webhook would.
  */
-async function refundedForChangedCharges(inMemory: InMemoryFirestore) {
+async function refundedForChangedCharges(inMemory: InMemoryFirestore, opts: { confirmedFirst?: boolean } = {}) {
   seed(inMemory, { expiresInMinutes: 20, checkoutStarted: true, reservation: RECORDED });
   inMemory.seed(RESERVATION_PATH, {
     ...inMemory.read(RESERVATION_PATH),
     expectedCheckoutAmountCents: quoteCents(inMemory) + 500,
   });
   const moveIn = loadPublicMoveIn(inMemory, { sessions: { cs_paid: paidSession() }, paymentMetadata: TAGGED });
+  if (opts.confirmedFirst) {
+    await moveIn.confirm('cs_paid');
+    assert.equal(inMemory.read(RESERVATION_PATH)?.checkoutPaidPaymentIntentId, 'pi_hold');
+  }
   await assert.rejects(() => moveIn.complete(), (err: any) => {
     assert.match(err.message, /^The move-in charges changed while you were paying\. .* has been refunded/);
     return true;
@@ -1385,6 +1392,64 @@ test('a renter refunded because the charges changed while they paid can pay the 
     'checkout.sessions.retrieve',
     'checkout.sessions.create',
   ]);
+});
+
+test('a renter whose recorded payment was refunded for changed charges can still pay the new amount', async () => {
+  const inMemory = new InMemoryFirestore();
+  const { checkout, stripeCalls } = await refundedForChangedCharges(inMemory, { confirmedFirst: true });
+
+  // The refund removed the recorded payment, by which checkout refuses a
+  // reservation already paid before writing anything.
+  assert.equal(inMemory.read(RESERVATION_PATH)?.checkoutPaidPaymentIntentId, undefined);
+  const result = await checkout();
+
+  assert.equal(result.sessionId, 'cs_new_1');
+  assert.equal(inMemory.read(RESERVATION_PATH)?.checkoutSessionId, 'cs_new_1');
+  assert.equal(methods(stripeCalls).filter((m) => m === 'checkout.sessions.create').length, 1);
+});
+
+test('a renter refunded for changed charges keeps their hold ten minutes to pay again, not the hour confirming gave', async () => {
+  const inMemory = new InMemoryFirestore();
+  const before = Date.now();
+  await refundedForChangedCharges(inMemory, { confirmedFirst: true });
+
+  for (const path of [RESERVATION_PATH, HOLD_PATH]) {
+    assert.ok(expiryOf(inMemory, path) >= before + 10 * MINUTE, `${path} ends before the renter can pay again`);
+    assert.ok(expiryOf(inMemory, path) <= Date.now() + 10 * MINUTE, `${path} still held for the refunded payment`);
+  }
+  assert.equal(inMemory.read(HOLD_PATH)?.reservationId, RESERVATION);
+});
+
+test('checkout on a reservation already paid, from a tab opened before paying, writes nothing and asks Stripe nothing', async () => {
+  const inMemory = new InMemoryFirestore();
+  // Paid and confirmed: priced by its checkout, the payment recorded, and the
+  // unit held for the renter to finish.
+  seed(inMemory, {
+    expiresInMinutes: 50,
+    checkoutStarted: true,
+    reservation: {
+      ...RECORDED,
+      expectedCheckoutAmountCents: 1999,
+      checkoutMoveInDate: Timestamp.fromDate(new Date(2026, 8, 23)),
+      checkoutSessionExpiresAt: minutesFromNow(-5),
+      checkoutAttemptId: 'attempt-paid',
+      checkoutPaidPaymentIntentId: 'pi_hold',
+      checkoutPaidAt: minutesFromNow(-10),
+    },
+  });
+  // Every write replaces a doc's object, so the same object means never written.
+  const reservationBefore = inMemory.getStore().get(RESERVATION_PATH);
+  const holdBefore = inMemory.getStore().get(HOLD_PATH);
+  const { checkout, stripeCalls } = loadPublicMoveIn(inMemory, { sessions: { cs_paid: paidSession() } });
+
+  // Before: the amount and priced day were overwritten, and put back only
+  // once Stripe showed the session paid; a completion in between, or a
+  // failed put-back, could refund the renter as 'charges changed'.
+  await assert.rejects(checkout, refusedWith(CHECKOUT_ALREADY_PAID_MESSAGE));
+
+  assert.equal(inMemory.getStore().get(RESERVATION_PATH), reservationBefore);
+  assert.equal(inMemory.getStore().get(HOLD_PATH), holdBefore);
+  assert.deepEqual(stripeCalls, []);
 });
 
 test('a payment refunded at completion is not offered back to finish with, and holds nothing', async () => {

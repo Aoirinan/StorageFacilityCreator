@@ -80,7 +80,7 @@ void main() {
 
   final facility = FacilityModel(
     id: 'f1',
-    name: 'Keepsake Storage',
+    name: 'Pinewood Storage',
     ownerUid: 'owner-1',
     createdAt: DateTime(2025),
   );
@@ -115,7 +115,7 @@ void main() {
   group('Edit Tenant', () {
     testWidgets('shows the one consent label', (tester) async {
       await pump(tester, (_) => TenantEditScreen(tenant: tenant()));
-      expect(find.text(smsConsentCheckboxLabel('Keepsake Storage')), findsOneWidget);
+      expect(find.text(smsConsentCheckboxLabel('Pinewood Storage')), findsOneWidget);
       expect(find.text(smsConsentHelperText), findsOneWidget);
     });
 
@@ -183,7 +183,7 @@ void main() {
 
     testWidgets('shows the same label, and a re-save keeps the date', (tester) async {
       final ops = await open(tester, tenant(optIn: agreed));
-      expect(find.text(smsConsentCheckboxLabel('Keepsake Storage')), findsOneWidget);
+      expect(find.text(smsConsentCheckboxLabel('Pinewood Storage')), findsOneWidget);
       await save(tester);
       expect(ops.saved, isTrue);
       expect(ops.consent, isNull);
