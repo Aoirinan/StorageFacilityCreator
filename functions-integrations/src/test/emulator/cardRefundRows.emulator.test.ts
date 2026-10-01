@@ -240,3 +240,87 @@ test('a row\'s tenant, reference and author are never replaced or nulled; only m
   assert.equal(filled.createdBy, 'system@stripe-webhook');
   assert.equal((filled.metadata as Record<string, unknown>).refundId, 're_test_2');
 });
+
+// An online move-in's own PaymentIntent, as checkout makes it: `type` and
+// `reservationId`, no facilityId and no tenantId. The tests above leave
+// `type` out, so they never reach the webhook's move-in branch. A move-in
+// completed before reservations recorded their PaymentIntent (about
+// 2026-09-24) names its tenant in no record, so the webhook used to record
+// the app's refund as made before any move-in and tell the owner nothing
+// went on a ledger.
+
+const MOVE_IN_RESERVATION = 'res-test-movein';
+const MOVE_IN_PAYMENT = `publicMoveInPayments/${PI}`;
+const REFUND_ALERT = 'moveInPaymentRefund_re_test_1';
+
+async function seedOlderMoveIn() {
+  await seed();
+  await emulatorDb().doc(`publicReservations/${MOVE_IN_RESERVATION}`).set({
+    facilityId: FACILITY,
+    status: 'completed',
+    tenantId: 't1',
+  });
+  return fakeStripe({ type: 'public_move_in', reservationId: MOVE_IN_RESERVATION });
+}
+
+const alerts = async () =>
+  (await emulatorDb().collection('facilities').doc(FACILITY).collection('Notifications').get()).docs.map((d) => d.id);
+const untenantedRefunds = async () =>
+  (await emulatorDb().doc(MOVE_IN_PAYMENT).get()).get('untenantedRefunds') as Record<string, unknown> | undefined;
+
+async function assertOnTenantLedger() {
+  const after = (await row('refund_re_test_1'))!;
+  assert.equal(after.tenantId, 't1');
+  assert.equal(after.createdBy, OWNER);
+  assert.equal(after.referenceId, PI);
+  assert.equal(after.amount, 36.67);
+  assert.equal(after.status, 'posted');
+  assert.deepEqual(after.metadata, {
+    stripeRefundId: 're_test_1',
+    stripeChargeId: CHARGE,
+    refundMethod: 'creditCard',
+    chargeId: CHARGE,
+    paymentIntentId: PI,
+    refundId: 're_test_1',
+    connectedAccountId: ACCOUNT,
+  });
+}
+
+test('a real move-in PaymentIntent, processRefund first: the webhook uses the row\'s tenant, records nothing, alerts nobody', { skip: skipWithoutEmulator }, async () => {
+  const stripe = await seedOlderMoveIn();
+  await refundCall(36.67, `mo_contractTestA_${PI}`);
+
+  await handleChargeRefunded(refundedCharge(stripe.refunds()), ACCOUNT);
+
+  await assertOnTenantLedger();
+  assert.equal((await emulatorDb().doc(MOVE_IN_PAYMENT).get()).exists, false);
+  assert.deepEqual(await alerts(), []);
+
+  // Redelivered: still nothing.
+  await handleChargeRefunded(refundedCharge(stripe.refunds()), ACCOUNT);
+  await assertOnTenantLedger();
+  assert.equal((await emulatorDb().doc(MOVE_IN_PAYMENT).get()).exists, false);
+  assert.deepEqual(await alerts(), []);
+});
+
+test('a real move-in PaymentIntent, webhook first: processRefund withdraws what it recorded and adds its metadata', { skip: skipWithoutEmulator }, async () => {
+  const stripe = await seedOlderMoveIn();
+  // Stripe's event beats processRefund's own write: nothing names the tenant yet.
+  await handleChargeRefunded(refundedCharge([{ id: 're_test_1', amount: 3667, status: 'succeeded' }]), ACCOUNT);
+  assert.ok((await untenantedRefunds())?.re_test_1);
+  assert.deepEqual(await alerts(), [REFUND_ALERT]);
+  assert.equal(await row('refund_re_test_1'), undefined);
+
+  await refundCall(36.67, `mo_contractTestA_${PI}`);
+  assert.equal(stripe.refunds()[0].id, 're_test_1');
+
+  await assertOnTenantLedger();
+  assert.deepEqual(await untenantedRefunds(), {});
+  assert.deepEqual(await alerts(), []);
+
+  // A later delivery finds the row's tenant.
+  await handleChargeRefunded(refundedCharge(stripe.refunds()), ACCOUNT);
+  await assertOnTenantLedger();
+  assert.deepEqual(await untenantedRefunds(), {});
+  assert.deepEqual(await alerts(), []);
+});
