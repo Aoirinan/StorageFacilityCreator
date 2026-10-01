@@ -219,20 +219,88 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
   /// A card refund that was not (all) made: what happened and what to do,
   /// kept on screen until the owner closes it. A snackbar was gone in 15
   /// seconds, with the credit still on the tenant's ledger.
-  Future<void> _showRefundAlert(MoveOutResult result) {
+  Future<void> _showRefundAlert(String? title, String alert) {
     return showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         key: const Key('move-out-card-refund-alert'),
-        title: Text(result.refundAlertTitle ?? 'Card refund not made'),
-        content: SingleChildScrollView(child: SelectableText(result.refundAlert!)),
+        title: Text(title ?? 'Card refund not made'),
+        content: SingleChildScrollView(child: SelectableText(alert)),
         actions: [
           FilledButton(
             onPressed: () => Navigator.of(context).pop(),
             child: const Text('OK'),
           ),
         ],
+      ),
+    );
+  }
+
+  /// A card refund an earlier press of Complete left pending (this press
+  /// was answered "already completed"): that press committed, but its
+  /// answer never arrived, so the card was never refunded, and the owner
+  /// was told only that nothing had changed. They are told now, and asked
+  /// before anything is refunded. The refund is made as the first press
+  /// would have made it (refundAfterMoveOut with this contract, so the same
+  /// processRefund request ids). When a refund has reached the ledger since
+  /// the move-out, or the app has no card payment to refund, nothing is
+  /// offered (MoveOutCardRefund.pendingChoiceFrom): the alert says how to
+  /// finish it in Stripe.
+  Future<void> _settlePendingCardRefund(PendingCardRefund pending) async {
+    final tenant = _tenant;
+    if (tenant == null) return;
+    final choice = await MoveOutCardRefund.pendingChoice(
+      facilityId: widget.facilityId,
+      tenantId: tenant.id,
+      pending: pending,
+    );
+    if (!mounted) return;
+    final plan = choice.plan;
+    if (plan == null) {
+      await _showRefundAlert(null, choice.alert!);
+      return;
+    }
+    final make = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        key: const Key('move-out-pending-card-refund'),
+        title: const Text('Card refund not made yet'),
+        content: SingleChildScrollView(child: SelectableText(MoveOutCardRefund.pendingOffer(plan))),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Refund it in Stripe myself'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Make the refund'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (make != true) {
+      await _showRefundAlert(null, MoveOutCardRefund.pendingAlert(pending.requested));
+      return;
+    }
+    final outcome = await MoveOutCardRefund.refundAfterMoveOut(
+      facilityId: widget.facilityId,
+      tenantId: tenant.id,
+      contractId: widget.contractId,
+      amount: pending.requested,
+    );
+    if (!mounted) return;
+    final alert = outcome.ownerAlert;
+    if (alert != null) {
+      await _showRefundAlert(outcome.alertTitle, alert);
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Refunded ${MoveOutCardRefund.money(outcome.refunded)} to their card through Stripe.'),
+        backgroundColor: AppTheme.success,
       ),
     );
   }
@@ -342,9 +410,13 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
 
     // A card refund not (all) made stays on screen until the owner closes
     // it, before the page goes.
-    if (completed && mounted && completedResult?.refundAlert != null) {
-      await _showRefundAlert(completedResult!);
+    final refundAlert = completedResult?.refundAlert;
+    if (completed && mounted && refundAlert != null) {
+      await _showRefundAlert(completedResult?.refundAlertTitle, refundAlert);
     }
+    // One an earlier press left pending: said, and made only if they ask.
+    final pending = completedResult?.pendingCardRefund;
+    if (completed && mounted && pending != null) await _settlePendingCardRefund(pending);
 
     // Leave outside the try, and leave the button off: a bare context.pop
     // threw when the page was opened by a link, the catch reported the

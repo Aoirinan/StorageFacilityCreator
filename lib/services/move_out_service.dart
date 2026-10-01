@@ -448,7 +448,9 @@ class MoveOutService {
       final moveOut = moveOutResultFromServer(data, calculation);
       // A card refund is not made by processMoveOut: it answers with the
       // amount, refunded here through processRefund. Never on a retry of a
-      // finished move-out (the server answers 0 then).
+      // finished move-out (the server answers 0 then): one the first press
+      // left pending is the screen's to ask the owner about
+      // (MoveOutResult.pendingCardRefund).
       final due = cardRefundDue(data);
       if (!moveOut.success || due <= 0) return moveOut;
       final outcome = await MoveOutCardRefund.refundAfterMoveOut(
@@ -499,6 +501,26 @@ class MoveOutService {
     return due is num && due.isFinite && due > 0 ? MoveOutCardRefund.cents(due.toDouble()) : 0;
   }
 
+  /// The card refund a finished move-out left pending, from processMoveOut's
+  /// answer to a second press (`pendingCardRefund`): the first press
+  /// committed, but its answer never arrived, so the card was never
+  /// refunded, and this press was told only that nothing had changed. Null
+  /// when none is pending, on a first press, or from a server that does not
+  /// say.
+  @visibleForTesting
+  static PendingCardRefund? pendingCardRefund(Map<String, dynamic> data) {
+    if (data['alreadyCompleted'] != true) return null;
+    final pending = data['pendingCardRefund'];
+    if (pending is! Map) return null;
+    final requested = pending['requested'];
+    if (requested is! num || !requested.isFinite || requested <= 0) return null;
+    final since = pending['since'];
+    return (
+      requested: MoveOutCardRefund.cents(requested.toDouble()),
+      since: since is String ? DateTime.tryParse(since) : null,
+    );
+  }
+
   /// What processMoveOut answered, for the screen. A move-out that had
   /// already been completed (a retry after a dropped connection) charged
   /// and freed nothing this time: its charges are not shown as posted
@@ -509,7 +531,8 @@ class MoveOutService {
   /// ledger. A card refund the server leaves to the screen ([cardRefundDue])
   /// is made next ([withCardRefund]), so the server's refundWarning, which
   /// says it was not made, is not shown for it. "Refund: $36.67" was shown
-  /// for a card refund nothing had made.
+  /// for a card refund nothing had made. A card refund an earlier press
+  /// left pending comes back with a repeat ([pendingCardRefund]).
   @visibleForTesting
   static MoveOutResult moveOutResultFromServer(
     Map<String, dynamic> data,
@@ -537,6 +560,7 @@ class MoveOutService {
           : warnings.isEmpty
               ? null
               : warnings.join(' '),
+      pendingCardRefund: pendingCardRefund(data),
     );
   }
 
@@ -555,14 +579,11 @@ class MoveOutService {
         refund: outcome.refunded > 0 ? outcome.refunded : null,
         refundByCard: outcome.refunded > 0,
         refundAlert: outcome.ownerAlert,
-        refundAlertTitle: switch (outcome.status) {
-          CardRefundStatus.refunded => null,
-          CardRefundStatus.partial => 'Card refund only partly made',
-          CardRefundStatus.notMade => 'Card refund not made',
-        },
+        refundAlertTitle: outcome.alertTitle,
         error: moveOut.error,
         warning: moveOut.warning,
         notice: moveOut.notice,
+        pendingCardRefund: moveOut.pendingCardRefund,
       );
 }
 
@@ -613,6 +634,11 @@ class MoveOutResult {
   /// The heading for [refundAlert].
   final String? refundAlertTitle;
 
+  /// On a repeat of a finished move-out: the card refund the first press
+  /// left pending, which the screen tells the owner about and makes only if
+  /// they say so.
+  final PendingCardRefund? pendingCardRefund;
+
   MoveOutResult({
     required this.success,
     this.ledgerEntryIds = const [],
@@ -624,6 +650,7 @@ class MoveOutResult {
     this.refundByCard = false,
     this.refundAlert,
     this.refundAlertTitle,
+    this.pendingCardRefund,
   });
 }
 
