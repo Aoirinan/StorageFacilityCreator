@@ -14,7 +14,7 @@ import { enforceAppCheckOrThrow, enforceRateLimit, writeAuditLog } from './guard
 import { moveOutFutureDateRefusal, moveOutInstant } from './moveOutDate';
 import { moveOutProrationRate, tenantFieldsAfterMoveOut } from './moveOutTenantFields';
 import { instantDay, moveOutLines, moveOutPreviewRefusal, moveOutRentLine, postedBalance, wallDay } from './moveOutRent';
-import { contractTenantRefusal, contractUnitRefusal, moveOutLedgerRows } from './moveOutChecks';
+import { contractTenantRefusal, contractUnitRefusal, moveOutLedgerRows, pendingCardRefund } from './moveOutChecks';
 
 /** A dollar amount from the request, in whole cents; 0 when it is not a number. */
 function cents(value: unknown): number {
@@ -141,9 +141,18 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
       // Already moved out (a retry after a dropped connection, which
       // re-enables the screen's button): nothing is written again. A second
       // run took the unit's rent off the tenant again (250 to 150 to 50) and
-      // posted the move-out charges twice.
+      // posted the move-out charges twice. A card refund the first run left
+      // pending is sent back (pendingCardRefund): with its answer lost, the
+      // screen never made it, and the owner was told nothing had changed.
       if (contract.moveOutStatus === 'completed') {
-        return { success: true, alreadyCompleted: true, contractId, unitId, tenantId };
+        return {
+          success: true,
+          alreadyCompleted: true,
+          contractId,
+          unitId,
+          tenantId,
+          pendingCardRefund: pendingCardRefund(contract),
+        };
       }
       if (contract.isActive === false) {
         throw new functions.https.HttpsError(
@@ -295,9 +304,11 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
         moveOutRefundMethod: money.refund ? money.refund.method : money.cardRefund ? 'creditCard' : null,
         // A card refund the screen is to make next (processRefund). It
         // records what happened here; 'pending' left behind means it never
-        // reported back, and the credit may still be on the ledger.
+        // reported back, and the credit may still be on the ledger. [at]
+        // dates the move-out, so a retry can tell whether any refund has
+        // reached the ledger since (pendingCardRefund).
         ...(money.cardRefund
-          ? { moveOutCardRefund: { status: 'pending', requested: money.cardRefund, refunded: 0 } }
+          ? { moveOutCardRefund: { status: 'pending', requested: money.cardRefund, refunded: 0, at: now } }
           : {}),
         moveOutNotes: moveOutNotes || null,
         status: 'cancelled', // Mark contract as cancelled/ended
@@ -439,7 +450,9 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
         refundPosted: false,
         refundRecorded: false,
         refundProcessed: false,
-        // Never refunded again on a retry.
+        // Never refunded on a retry without the owner: a card refund the
+        // first run left pending comes back as pendingCardRefund, for the
+        // screen to tell them about and ask before making.
         cardRefundDue: 0,
         message: 'This move-out was already completed, so nothing was charged or changed again.',
       };

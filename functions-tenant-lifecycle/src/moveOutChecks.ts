@@ -99,9 +99,12 @@ function amountOf(value: unknown): number {
  * ledger as `refund_<Stripe refund id>`, the row charge.refunded converges
  * on, so it is counted once. Whatever it cannot refund stays on the ledger
  * as the tenant's credit, and [refundWarning] says what the owner does
- * then. Stripe's webhook alone does not post it: an online move-in payment
- * carries no tenantId on its PaymentIntent, and a checkout-link payment
- * carries no metadata on it at all.
+ * then. Stripe's webhook alone does not post it for every payment: an
+ * online move-in payment carries no tenantId on its PaymentIntent, and a
+ * checkout-link payment carries no metadata on it at all. For one that
+ * names its tenant (autopay, a saved card, the portal) it does, so the
+ * owner is told to look for that row before adding one: "refund in Stripe,
+ * then Add entry" counted those refunds twice.
  */
 export function moveOutLedgerRows(input: {
   moveOutCharges: unknown;
@@ -133,9 +136,31 @@ export function moveOutLedgerRows(input: {
       cardRefund: refund,
       refundWarning:
         `The $${refund.toFixed(2)} card refund was not made by the move-out, and it stays on their ledger ` +
-        'as a credit. Refund it to their card in your Stripe dashboard, then record it on their ledger ' +
-        '(Add entry, type Refund).',
+        'as a credit. Refund it to their card in your Stripe dashboard. Wait a minute, then look at their ' +
+        'ledger: Stripe records some card refunds there itself, as a "Refund for charge …" row. Only if none ' +
+        'has appeared for it, record it on their ledger (Add entry, type Refund).',
     };
   }
   return { charges, refund: { amount: refund, method }, cardRefund: null, refundWarning: null };
+}
+
+/**
+ * The card refund a finished move-out left 'pending' on [contract]
+ * (`moveOutCardRefund`, which the screen replaces with what it refunded):
+ * the move-out committed, but the screen never reported back, most likely
+ * because processMoveOut's answer never reached it, so it never refunded
+ * the card. A second press is answered alreadyCompleted with no
+ * cardRefundDue, so nothing is refunded again on its own; this tells the
+ * screen the refund is still owed, so it can say so and ask the owner
+ * before making it. [since] is when the move-out was committed (ISO), or
+ * null on a record without it. Null when no card refund is pending.
+ */
+export function pendingCardRefund(contract: DocData): { requested: number; since: string | null } | null {
+  const record = contract.moveOutCardRefund as DocData | undefined;
+  if (!record || record.status !== 'pending') return null;
+  const requested = amountOf(record.requested);
+  if (requested <= 0) return null;
+  const at = record.at as { toDate?: () => Date } | undefined;
+  const since = typeof at?.toDate === 'function' ? at.toDate().toISOString() : null;
+  return { requested, since };
 }
