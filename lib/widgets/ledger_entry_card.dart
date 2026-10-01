@@ -16,12 +16,18 @@ class LedgerEntryCard extends StatelessWidget {
   /// for this dispute" books a payment against the dispute, not as rent.
   final VoidCallback? onRecordDisputePayment;
 
+  /// Set on a posted card payment the signed-in user may refund and that has
+  /// something left to refund: Refund sends it back to the tenant's card
+  /// through Stripe (the ledger screen's card refund dialog).
+  final VoidCallback? onRefund;
+
   const LedgerEntryCard({
     super.key,
     required this.entry,
     this.onVoid,
     this.onInvoice = false,
     this.onRecordDisputePayment,
+    this.onRefund,
   });
 
   @override
@@ -156,6 +162,19 @@ class LedgerEntryCard extends StatelessWidget {
                       onPressed: onRecordDisputePayment,
                       icon: const Icon(Icons.payments_outlined, size: 18),
                       label: const Text('Record payment for this dispute'),
+                      style: TextButton.styleFrom(
+                        padding: EdgeInsets.zero,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ],
+                  if (onRefund != null) ...[
+                    const SizedBox(height: 4),
+                    TextButton.icon(
+                      key: ValueKey('ledger-refund-${entry.id}'),
+                      onPressed: onRefund,
+                      icon: const Icon(Icons.undo, size: 18),
+                      label: const Text('Refund'),
                       style: TextButton.styleFrom(
                         padding: EdgeInsets.zero,
                         visualDensity: VisualDensity.compact,

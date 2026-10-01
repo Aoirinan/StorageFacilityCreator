@@ -309,7 +309,6 @@ class MoveOutCardRefund {
   /// (the webhook, autopay, off-session charges, online move-in),
   /// `metadata.stripePaymentIntentId`, or a `referenceId` that is one
   /// (online move-in, autopay, processRefund's own refund rows).
-  @visibleForTesting
   static String? paymentIntentOf(Map<String, dynamic> row) {
     final meta = _metadata(row);
     for (final candidate in [
@@ -625,7 +624,6 @@ class MoveOutCardRefund {
   /// ([known]). processRefund writes that row once Stripe has refunded, so a
   /// timeout or a dropped answer after it still left the refund made. Null
   /// when there is none.
-  @visibleForTesting
   static CardRefundMade? landedRefund(
     Iterable<Map<String, dynamic>> rows, {
     required CardRefundSlice slice,
@@ -643,7 +641,9 @@ class MoveOutCardRefund {
     return null;
   }
 
-  static String _failure(Object error) {
+  /// What a processRefund call that failed with [error] said, for the owner.
+  /// Shared with the ledger's card refund (ledger_card_refund.dart).
+  static String failureText(Object error) {
     if (error is FirebaseFunctionsException) {
       final message = error.message?.trim();
       return message != null && message.isNotEmpty ? message : error.code;
@@ -656,8 +656,10 @@ class MoveOutCardRefund {
   /// out, App Check, its rate limit, a bad request, or no callable to run.
   /// Everything it answers after that, its "No refund was issued" included,
   /// comes back 'internal', and a refund Stripe made whose ledger row then
-  /// failed to write comes back that way too.
-  static bool _mayHaveRefunded(Object error) =>
+  /// failed to write comes back that way too. Its own facility and
+  /// permission checks run inside that catch, so they come back 'internal'
+  /// as well. Shared with the ledger's card refund.
+  static bool mayHaveRefunded(Object error) =>
       error is! FirebaseFunctionsException ||
       !const {
         'unauthenticated',
@@ -744,8 +746,8 @@ class MoveOutCardRefund {
         return CardRefundOutcome(
           requested: plan.requested,
           refunds: made,
-          failure: _failure(e),
-          uncertain: _mayHaveRefunded(e),
+          failure: failureText(e),
+          uncertain: mayHaveRefunded(e),
         );
       }
       final refundId = _text(answer['stripeRefundId']);
@@ -792,8 +794,9 @@ class MoveOutCardRefund {
     ];
   }
 
-  /// processRefund (functions-integrations), called.
-  static Future<Map<String, dynamic>> _processRefund(Map<String, dynamic> payload) async {
+  /// processRefund (functions-integrations), called. Shared with the
+  /// ledger's card refund.
+  static Future<Map<String, dynamic>> callProcessRefund(Map<String, dynamic> payload) async {
     final result = await FirebaseFunctions.instance.httpsCallable('processRefund').call<dynamic>(payload);
     final data = result.data;
     return data is Map ? Map<String, dynamic>.from(data) : <String, dynamic>{};
@@ -839,7 +842,7 @@ class MoveOutCardRefund {
           contractId: contractId,
           amount: amount,
           rows: await read(),
-          call: call ?? _processRefund,
+          call: call ?? callProcessRefund,
           reread: read,
           since: since,
           offered: offered,

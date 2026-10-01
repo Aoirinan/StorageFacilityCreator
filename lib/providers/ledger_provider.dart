@@ -1,6 +1,21 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:sfcapp/services/move_out_card_refund.dart';
 import '../models/ledger_entry_model.dart';
 import '../services/ledger_service.dart';
+
+/// What the ledger's card Refund calls: processRefund, and the tenant's
+/// posted ledger read again after a call that fails (`LedgerCardRefund.refund`
+/// in ledger_card_refund.dart). Tests override it with fakes.
+typedef LedgerCardRefundBackend = ({
+  ProcessRefundCall call,
+  Future<List<Map<String, dynamic>>> Function(String facilityId, String tenantId) reread,
+});
+
+final ledgerCardRefundBackendProvider = Provider<LedgerCardRefundBackend>((ref) => (
+      call: MoveOutCardRefund.callProcessRefund,
+      reread: (facilityId, tenantId) =>
+          MoveOutCardRefund.postedLedgerRows(facilityId: facilityId, tenantId: tenantId),
+    ));
 
 /// Provider for ledger entries stream (real-time)
 ///
