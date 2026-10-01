@@ -19,6 +19,7 @@ import '../widgets/keyboard_scrollable.dart';
 import '../router/app_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:sfcapp/services/prorate_service.dart';
 
 /// Public-facing move-in wizard for completing reservations
 class PublicMoveInScreen extends ConsumerStatefulWidget {
@@ -240,7 +241,9 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
     if (_unit == null || _facility == null || _reservation == null) return;
 
     try {
-      final moveInDate = _reservation!.moveInDate ?? DateTime.now();
+      // The day the server prices from, so checkout accepts this total.
+      final moveInDate =
+          ProrateService.onlineMoveInPricingDate(_reservation!.moveInDate);
       final billing = _facility?.billingSettings;
       final adminFee = _numberFromMap(
         billing,
