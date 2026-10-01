@@ -6,6 +6,7 @@ import 'package:sfcapp/models/stays/stay.dart';
 import 'package:sfcapp/models/stays/stay_channel.dart';
 import 'package:sfcapp/models/stays/stay_channel_blocks.dart';
 import 'package:sfcapp/models/stays/stay_controls.dart';
+import 'package:sfcapp/models/stays/stay_export_link.dart';
 import 'package:sfcapp/models/stays/stay_listing.dart';
 import 'package:sfcapp/models/stays/stay_message_template.dart';
 import 'package:sfcapp/models/stays/stay_night_lock_bucket.dart';
@@ -15,6 +16,7 @@ import 'package:sfcapp/providers/auth_provider.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/providers/feature_flag_provider.dart';
 import 'package:sfcapp/services/permission_service.dart';
+import 'package:sfcapp/services/stays/stays_calendar_grid.dart';
 import 'package:sfcapp/services/stays/stays_callables.dart';
 import 'package:sfcapp/services/stays/stays_repository.dart';
 import 'package:sfcapp/services/stays/today_board.dart';
@@ -141,7 +143,9 @@ final stayListingsProvider = StreamProvider.family<List<StayListing>, String>(
   (ref, facilityId) => ref.watch(staysRepositoryProvider).watchListings(facilityId),
 );
 
-final staysInRangeProvider = StreamProvider.family<List<Stay>, StayRangeKey>(
+/// Stays overlapping a window. Auto-disposed: the calendar asks for a new
+/// window each month it shows, and a month left behind stops listening.
+final staysInRangeProvider = StreamProvider.autoDispose.family<List<Stay>, StayRangeKey>(
   (ref, key) => ref.watch(staysRepositoryProvider).watchStaysInRange(key.facilityId, key.from, key.to),
 );
 
@@ -176,6 +180,53 @@ final stayChannelsProvider = StreamProvider.family<List<StayChannel>, String>((r
     return;
   }
   yield* repository.watchChannels(facilityId);
+});
+
+/// Export links and their fetch telemetry: owners and managers only, like
+/// [stayChannelsProvider]. The URLs themselves come from staysGetExportUrl.
+final stayExportLinksProvider = StreamProvider.family<List<StayExportLink>, String>((ref, facilityId) async* {
+  final repository = ref.watch(staysRepositoryProvider);
+  final allowed = await ref.watch(stayPermissionProvider((facilityId, PermissionType.manageStayChannels)).future);
+  if (!allowed) {
+    yield const [];
+    return;
+  }
+  yield* repository.watchExportLinks(facilityId);
+});
+
+/// Stays the engine marked double booked, anywhere on the calendar.
+final stayConflictStaysProvider = StreamProvider.family<List<Stay>, String>(
+  (ref, facilityId) => ref.watch(staysRepositoryProvider).watchConflictStays(facilityId),
+);
+
+/// Every open double booking with the stays that hold the lost nights,
+/// soonest first. Acknowledged ones, and ones whose nights are all past in
+/// the facility's zone, are left out (see openConflictStays). The winners
+/// are looked up over the span of the lost nights.
+final stayConflictSummariesProvider = Provider.autoDispose.family<AsyncValue<List<StayConflictSummary>>, String>((ref, facilityId) {
+  final controls = ref.watch(stayControlsProvider(facilityId)).value;
+  final today = controls == null ? null : staysTodayFor(controls, ref.watch(facilityClockProvider));
+  final conflictsAsync = ref.watch(stayConflictStaysProvider(facilityId));
+  final loaded = conflictsAsync.value;
+  if (loaded == null) {
+    return conflictsAsync.hasError
+        ? AsyncError(conflictsAsync.error!, conflictsAsync.stackTrace ?? StackTrace.current)
+        : const AsyncLoading();
+  }
+  final conflicts = openConflictStays(loaded, today: today);
+  if (conflicts.isEmpty) return const AsyncData([]);
+  final nights = <LocalDate>[
+    for (final s in conflicts) ...[
+      ...?s.conflict?.nights.map(LocalDate.tryParse).whereType<LocalDate>(),
+      if (s.checkInDate != null) s.checkInDate!,
+    ],
+  ]..sort();
+  // The holders are looked up best effort: a failed lookup still shows the banner.
+  final others = nights.isEmpty
+      ? const <Stay>[]
+      : ref.watch(staysInRangeProvider(StayRangeKey(facilityId, nights.first, nights.last.addDays(1)))).value ??
+          const <Stay>[];
+  return AsyncData(summarizeConflicts(conflicts, others: others));
 });
 
 final stayMessageTemplatesProvider = StreamProvider.family<List<StayMessageTemplate>, String>(
@@ -235,3 +286,15 @@ final staysTodayBoardProvider = Provider.autoDispose.family<AsyncValue<TodayBoar
 });
 
 String? _canonicalOrAsIs(FacilityClock clock, String? timeZone) => clock.canonicalZone(timeZone) ?? timeZone;
+
+/// Today at the facility in its confirmed zone; null until a zone is
+/// confirmed, or when this platform cannot use it. Never a guess.
+LocalDate? staysTodayFor(StayControls controls, FacilityClock clock) {
+  final tz = controls.confirmedTimeZone;
+  if (tz == null || !clock.isValidZone(tz)) return null;
+  try {
+    return clock.today(tz);
+  } on FacilityTimeZoneException {
+    return null;
+  }
+}

@@ -19,6 +19,8 @@ export interface StaysGate {
   enabledGlobal: boolean;
   allowlistFacilityIds: ReadonlySet<string>;
   extraIcalHosts: readonly string[];
+  /** Facilities allowed to turn on calendar sending (a missing field allows none). */
+  exportAllowlist: ReadonlySet<string>;
   paymentsAllowlistFacilityIds: ReadonlySet<string>;
   guestMessagingAllowlistFacilityIds: ReadonlySet<string>;
   /** Where the answer came from: the doc, no doc, or a failed read. */
@@ -41,6 +43,7 @@ export function parseServerConfig(data: Partial<Record<keyof StaysServerConfigDo
     enabledGlobal: data.enabledGlobal === true,
     allowlistFacilityIds: new Set(stringList(data.allowlistFacilityIds)),
     extraIcalHosts: stringList(data.extraIcalHosts).map((h) => h.toLowerCase()),
+    exportAllowlist: new Set(stringList(data.exportAllowlist)),
     paymentsAllowlistFacilityIds: new Set(stringList(data.paymentsAllowlistFacilityIds)),
     guestMessagingAllowlistFacilityIds: new Set(stringList(data.guestMessagingAllowlistFacilityIds)),
     source: 'doc',
@@ -53,6 +56,7 @@ export function closedGate(source: 'missing' | 'error'): StaysGate {
     enabledGlobal: false,
     allowlistFacilityIds: new Set(),
     extraIcalHosts: [],
+    exportAllowlist: new Set(),
     paymentsAllowlistFacilityIds: new Set(),
     guestMessagingAllowlistFacilityIds: new Set(),
     source,
@@ -97,6 +101,15 @@ export interface StaysAvailability {
 export function evaluateStaysGate(gate: StaysGate, facilityId: string): StaysAvailability {
   if (gate.killSwitch) return { allowed: false, paused: true };
   return { allowed: gate.enabledGlobal || gate.allowlistFacilityIds.has(facilityId), paused: false };
+}
+
+/**
+ * Whether this facility may turn on sending its SFC calendar: Stays is
+ * allowed for it and a super admin put it on exportAllowlist (after the
+ * shadow week, spec §11.4 Stage B).
+ */
+export function exportAllowedFor(gate: StaysGate, facilityId: string): boolean {
+  return evaluateStaysGate(gate, facilityId).allowed && gate.exportAllowlist.has(facilityId);
 }
 
 /** Throws stays_paused or module_not_available unless the facility may use Stays right now. */

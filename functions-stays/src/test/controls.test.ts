@@ -14,19 +14,52 @@ const all: FakeFirestore[] = [];
 
 test('availability answers from the gate for any role, and never throws for a paused or unlisted facility', async () => {
   const env = setupEnv(all);
-  assert.deepEqual(await as(env, handleGetAvailability, VIEWER, {}), { allowed: true, paused: false });
-  assert.deepEqual(await as(env, handleGetAvailability, EMPLOYEE, {}), { allowed: true, paused: false });
+  assert.deepEqual(await as(env, handleGetAvailability, VIEWER, {}), { allowed: true, paused: false, exportAllowed: false });
+  assert.deepEqual(await as(env, handleGetAvailability, EMPLOYEE, {}), { allowed: true, paused: false, exportAllowed: false });
 
   const paused = setupEnv(all, { gate: { killSwitch: true } });
-  assert.deepEqual(await as(paused, handleGetAvailability, OWNER, {}), { allowed: false, paused: true });
+  assert.deepEqual(await as(paused, handleGetAvailability, OWNER, {}), { allowed: false, paused: true, exportAllowed: false });
 
   const unlisted = setupEnv(all, { gate: { allowlistFacilityIds: ['someone-else'] } });
-  assert.deepEqual(await as(unlisted, handleGetAvailability, OWNER, {}), { allowed: false, paused: false });
+  assert.deepEqual(await as(unlisted, handleGetAvailability, OWNER, {}), { allowed: false, paused: false, exportAllowed: false });
 
   // A gate that cannot be read allows nothing.
   const broken = setupEnv(all);
   broken.fake.failReads = (path) => path.startsWith('staysServerConfig');
-  assert.deepEqual(await as(broken, handleGetAvailability, OWNER, {}), { allowed: false, paused: false });
+  assert.deepEqual(await as(broken, handleGetAvailability, OWNER, {}), { allowed: false, paused: false, exportAllowed: false });
+});
+
+test('calendar sending can be turned on only for a facility on the export allowlist', async () => {
+  // No exportAllowlist field: nobody may turn it on, owner or manager.
+  const env = setupEnv(all);
+  assert.equal(
+    await reasonOf(as(env, handleSetControls, OWNER, { changes: { icalExportEnabled: true } })),
+    'not_available_yet',
+  );
+  assert.equal(
+    await reasonOf(as(env, handleSetControls, MANAGER, { changes: { icalExportEnabled: true, icalSyncEnabled: true } })),
+    'not_available_yet',
+  );
+  const untouched = env.fake.read(`${P}/stayControls/current`)!;
+  assert.equal(untouched.icalExportEnabled === true, false);
+  assert.equal(untouched.icalSyncEnabled === true, false, 'a refused call changes nothing');
+  // Turning it off, or sending it unchanged, is always fine.
+  assert.equal(await reasonOf(as(env, handleSetControls, OWNER, { changes: { icalExportEnabled: false } })), null);
+
+  // Another facility on the list does not count.
+  const other = setupEnv(all, { gate: { exportAllowlist: ['someone-else'] } });
+  assert.equal(await reasonOf(as(other, handleSetControls, OWNER, { changes: { icalExportEnabled: true } })), 'not_available_yet');
+  assert.deepEqual(await as(other, handleGetAvailability, OWNER, {}), { allowed: true, paused: false, exportAllowed: false });
+
+  const listed = setupEnv(all, { gate: { exportAllowlist: [FAC] } });
+  assert.deepEqual(await as(listed, handleGetAvailability, VIEWER, {}), { allowed: true, paused: false, exportAllowed: true });
+  const on = await as(listed, handleSetControls, MANAGER, { changes: { icalExportEnabled: true } });
+  assert.equal(on.controls.icalExportEnabled, true);
+  assert.equal(listed.fake.read(`${P}/stayControls/current`)!.icalExportEnabled, true);
+
+  // The allowlist does not reopen a paused platform.
+  const paused = setupEnv(all, { gate: { exportAllowlist: [FAC], killSwitch: true } });
+  assert.deepEqual(await as(paused, handleGetAvailability, OWNER, {}), { allowed: false, paused: true, exportAllowed: false });
 });
 
 test('availability tells an outsider nothing, and needs sign-in and App Check', async () => {

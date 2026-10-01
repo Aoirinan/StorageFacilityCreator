@@ -135,6 +135,9 @@ abstract class StaysRepository {
   /// Stays overlapping [from, to): checkOut ≥ from (so today's departures
   /// are included), checkIn < to. At most 500.
   Stream<List<Stay>> watchStaysInRange(String facilityId, LocalDate from, LocalDate to);
+
+  /// Stays the engine marked double booked (status `conflict`), at most 100.
+  Stream<List<Stay>> watchConflictStays(String facilityId);
   Stream<Stay?> watchStay(String facilityId, String stayId);
   Future<Stay?> getStay(String facilityId, String stayId);
 
@@ -255,6 +258,13 @@ class FirestoreStaysRepository implements StaysRepository {
         .snapshots()
         .map((snap) => snap.docs.map(Stay.fromFirestore).where((s) => s.checkIn.compareTo(toYmd) < 0).toList());
   }
+
+  @override
+  Stream<List<Stay>> watchConflictStays(String facilityId) => _col(facilityId, StaysCollections.stays)
+      .where('status', isEqualTo: StayStatus.conflict.wire)
+      .limit(100)
+      .snapshots()
+      .map((snap) => snap.docs.map(Stay.fromFirestore).toList());
 
   @override
   Stream<Stay?> watchStay(String facilityId, String stayId) => _col(facilityId, StaysCollections.stays)

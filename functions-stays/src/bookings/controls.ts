@@ -29,7 +29,7 @@ import {
   runStaysGuards,
   staysCallable,
 } from '../common/guards';
-import { evaluateStaysGate, loadStaysGate } from '../common/serverConfig';
+import { StaysGate, evaluateStaysGate, exportAllowedFor, loadStaysGate } from '../common/serverConfig';
 import { ReconcileTurnoversResult, reconcileTurnovers } from '../tasks/onStayWrite';
 import { SEEDED_TEMPLATES, defaultChecklistFor, seededTemplateDoc } from './seedDefaults';
 import { facilityCol, invalid, toWire } from './shared';
@@ -75,7 +75,7 @@ export async function handleGetAvailability(
     throw error;
   }
   const gate = await loadStaysGate(db, deps.now());
-  return evaluateStaysGate(gate, facilityId);
+  return { ...evaluateStaysGate(gate, facilityId), exportAllowed: exportAllowedFor(gate, facilityId) };
 }
 
 export const staysGetAvailability = staysCallable(STAYS_CALLABLES.getAvailability, (data, context) =>
@@ -200,6 +200,24 @@ function assertReservedKeys(changes: StayControlsChanges, stored: StayControlsDo
   }
 }
 
+/**
+ * Turning on calendar sending needs the platform's say-so: the facility must
+ * be on staysServerConfig.exportAllowlist, which a super admin sets after the
+ * shadow week (spec §11.4 Stage B). Turning it off is always allowed, and a
+ * value sent unchanged is not a change.
+ */
+function assertExportAllowed(changes: StayControlsChanges, stored: StayControlsDoc, gate: StaysGate, facilityId: string): void {
+  if (changes.icalExportEnabled !== true || stored.icalExportEnabled === true) return;
+  if (!exportAllowedFor(gate, facilityId)) {
+    throw staysError(
+      'failed-precondition',
+      'not_available_yet',
+      'Calendar sending is turned on by support after the first week of checking. Contact support to turn it on.',
+      { field: 'icalExportEnabled' },
+    );
+  }
+}
+
 /** Turnover tasks are being made: Stays on, turnovers on, and a confirmed zone to time them in. */
 function turnoversRunning(c: Pick<StayControlsDoc, 'moduleEnabled' | 'turnoverTasksEnabled' | 'timeZone' | 'timeZoneConfirmedAt'>): boolean {
   return c.moduleEnabled === true && c.turnoverTasksEnabled === true && !!canonicalIanaZone(c.timeZone) && !!c.timeZoneConfirmedAt;
@@ -263,6 +281,7 @@ export async function handleSetControls(
       });
     }
     assertReservedKeys(changes, stored, ctx.role);
+    assertExportAllowed(changes, stored, ctx.gate, ctx.facilityId);
 
     const next: StayControlsDoc = { ...stored, ...changes };
     // A zone counts only once someone confirms it; changing it undoes the

@@ -34,6 +34,7 @@ class FakeStaysCallables implements StaysCallables {
   StaysStayResult Function(StaysModifyStayRequest request)? onModifyStay;
   StaysRecordPaymentResult Function(StaysRecordPaymentRequest request)? onRecordPayment;
   StaysSetControlsResult Function(StaysSetControlsRequest request)? onSetControls;
+  StaysSaveListingResult Function(StaysSaveListingRequest request)? onSaveListing;
   StaysUpsertChannelResult Function(StaysUpsertChannelRequest request)? onUpsertChannel;
   StaysImportAirbnbCsvResult Function(StaysImportAirbnbCsvRequest request)? onImportAirbnbCsv;
   List<StayGuestSearchResult> guestResults = const [];
@@ -70,7 +71,9 @@ class FakeStaysCallables implements StaysCallables {
   Future<StaysSaveListingResult> saveListing(StaysSaveListingRequest request) => _answer(
         StaysCallableNames.saveListing,
         request,
-        () => StaysSaveListingResult(listingId: request.listingId ?? 'lst_${request.requestId}', version: 1),
+        () =>
+            onSaveListing?.call(request) ??
+            StaysSaveListingResult(listingId: request.listingId ?? 'lst_${request.requestId}', version: 1),
       );
 
   @override
@@ -169,11 +172,22 @@ class FakeStaysCallables implements StaysCallables {
     required ExportTargetProvider targetProvider,
     required String label,
     ExportScope scope = ExportScope.blocksOnly,
+    String? requestId,
   }) =>
       _answer(
         StaysCallableNames.createExportLink,
-        {'facilityId': facilityId, 'listingId': listingId, 'targetProvider': targetProvider.wire, 'label': label, 'scope': scope.wire},
-        () => StaysExportLinkUrl(linkId: 'xl_test', url: 'https://app.example/api/ical/${'0' * 48}.ics'),
+        {
+          'facilityId': facilityId,
+          'listingId': listingId,
+          'targetProvider': targetProvider.wire,
+          'label': label,
+          'scope': scope.wire,
+          'requestId': requestId,
+        },
+        () => StaysExportLinkUrl(
+          linkId: requestId == null ? 'xl_test' : 'xl_$requestId',
+          url: 'https://app.example/api/ical/${'0' * 48}.ics',
+        ),
       );
 
   @override

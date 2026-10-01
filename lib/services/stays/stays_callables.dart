@@ -23,12 +23,15 @@ abstract class StaysCallables {
   Future<StaysUpsertChannelResult> upsertChannel(StaysUpsertChannelRequest request);
   Future<int> removeChannel({required String facilityId, required String channelId});
   Future<List<StaysChannelSyncResult>> syncNow({required String facilityId, String? channelId});
+  /// [requestId] (32 lowercase hex, minted once per create) makes a double
+  /// tap or a retry return the link it already made instead of a second one.
   Future<StaysExportLinkUrl> createExportLink({
     required String facilityId,
     required String listingId,
     required ExportTargetProvider targetProvider,
     required String label,
     ExportScope scope = ExportScope.blocksOnly,
+    String? requestId,
   });
   Future<StaysExportLinkUrl> getExportUrl({required String facilityId, required String linkId});
   Future<void> updateExportLink({required String facilityId, required String linkId, ExportScope? scope, String? label});
@@ -164,6 +167,7 @@ class FirebaseStaysCallables implements StaysCallables {
     required ExportTargetProvider targetProvider,
     required String label,
     ExportScope scope = ExportScope.blocksOnly,
+    String? requestId,
   }) async =>
       StaysExportLinkUrl.fromJson(await _callMap(StaysCallableNames.createExportLink, {
         'facilityId': facilityId,
@@ -171,6 +175,7 @@ class FirebaseStaysCallables implements StaysCallables {
         'targetProvider': targetProvider.wire,
         'label': label,
         'scope': scope.wire,
+        if (requestId != null) 'requestId': requestId,
       }));
 
   @override

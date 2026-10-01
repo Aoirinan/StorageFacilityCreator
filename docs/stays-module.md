@@ -20,6 +20,37 @@ Everything is off by default. Two separate gates must both be opened before anyt
 
 `staysServerConfig/current.killSwitch = true` pauses everything without a deploy.
 
+## Setup, calendars and the calendar view (app)
+
+Built so far on the app side: setup, channel management and a month calendar. There is no sidebar entry yet. An owner or manager opens `/stays?facilityId=<id>`, and while the module is off that page offers **Set up Stays** (only when `staysGetAvailability` says the facility is allowed).
+
+1. **Setup** (`/stays/setup`) has five steps.
+   1. **Time zone.** Nothing is pre-selected. The facility's own zone is offered as "Use it", but the owner must still press **Confirm**. That calls `staysSetControls` with `confirmTimeZone: true`. A zone that differs from the facility's setting shows a warning before and after.
+   2. **Listings.** Each listing is a name, a kind (home, house, cabin or RV site), a short code and an optional nightly rate, saved through `staysSaveListing` with one `requestId` per dialog.
+   3. **Turn on.** This sets `moduleEnabled` through `staysSetControls`. The server connects calendars only when the module is on, so this comes before calendars.
+   4. **Calendars.** These are the same per-listing cards as the Calendars page.
+   5. **Done.** A summary, with a link to the calendar.
+2. **Calendars** (`/stays/channels`, owner/manager) has two parts.
+   - **Two switches:**
+     - "Check calendars every 30 minutes" (`icalSyncEnabled`). It is offered only once a calendar has been connected. The very first calendar turns it on, as the rollout plan says; after that, if checks are off, adding a calendar asks instead of turning them back on.
+     - "Send your SFC calendar to other sites" (`icalExportEnabled`). `staysSetControls` turns it on only for a facility listed in `staysServerConfig/current.exportAllowlist` (a super admin adds it after the shadow week; a missing field allows nobody), and `staysGetAvailability` reports `exportAllowed`. Elsewhere the switch is locked with "Contact support to turn on calendar sending". Turning it off is always allowed.
+   - **Per listing:**
+     - Imported calendars show when they were last checked and synced, the last problem in words, and when the channel last fetched our export link. Each has **Sync now** and **Remove**.
+     - **Add a calendar** previews the feed (`dryRun`) before connecting it.
+     - SFC export links show what they send and when they were last fetched. **Copy** goes through the audited `staysGetExportUrl`. **Make an SFC link** sends a `requestId`, so a retry cannot create a second live token.
+     - The wording says plainly that channels read our link on their own schedule, often only every few hours.
+3. **Calendar** (the hub's Calendar tab) shows one listing's month.
+   - How nights are drawn:
+     - bookings are filled in their source's colour;
+     - owner and maintenance blocks are hatched grey;
+     - channel "Not available" blocks are a faint hatch (soft), and echoes are fainter still;
+     - bookings removed from a feed are outlined amber;
+     - a night two hard stays claim is striped red.
+   - A banner lists the listing's double bookings from the engine's `conflict` data.
+   - Tapping a night shows everything on it.
+   - Owners and managers can **Block dates** (`staysCreateStay`, kind `owner_block` or `maintenance_block`) and remove a block they made (`staysCancelStay`). The server asks before a block covers a channel's own block, and when a channel could sell the dates before it reads ours.
+   - The Listings tab shows the facility-wide conflict banner and flags each listing.
+
 ## Deploy order
 
 `deploy.ps1` deploys all functions before indexes and rules, so the first Stays release uses explicit steps:

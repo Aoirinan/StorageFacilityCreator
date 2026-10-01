@@ -93,6 +93,8 @@ class _Harness {
         staysRepositoryProvider.overrideWithValue(repository),
         staysCallablesProvider.overrideWithValue(callables),
         stayPermissionResolverProvider.overrideWithValue((facilityId, p) async => facilityId == _fid && permissions.contains(p)),
+        // The facility doc (for the setup wizard's zone hint) is not in these tests.
+        staysFacilityTimeZoneProvider.overrideWith((ref, facilityId) => null),
         if (controlsError) stayControlsProvider.overrideWith((ref, facilityId) => Stream.error(StateError('denied'))),
       ],
       child: MaterialApp.router(routerConfig: router),
@@ -169,7 +171,7 @@ void main() {
       final h = _Harness(flag: _Flag.off);
       await h.pump(tester, AppRoute.staysWithTab(facilityId: _fid));
       expect(_notFound, findsOneWidget);
-      expect(find.text('Stays Hub'), findsNothing);
+      expect(find.byKey(const Key('stays-hub')), findsNothing);
 
       await h.pump(tester, AppRoute.stayDetailFor(facilityId: _fid, stayId: 's1'));
       expect(_notFound, findsOneWidget);
@@ -181,21 +183,21 @@ void main() {
       final h = _Harness(flag: _Flag.error);
       await h.pump(tester, AppRoute.staysWithTab(facilityId: _fid));
       expect(_notFound, findsOneWidget);
-      expect(find.text('Stays Hub'), findsNothing);
+      expect(find.byKey(const Key('stays-hub')), findsNothing);
     });
 
     testWidgets('still loading: a spinner, and no Stays content', (tester) async {
       final h = _Harness(flag: _Flag.loading);
       await h.pump(tester, AppRoute.staysWithTab(facilityId: _fid));
       expect(_spinner, findsOneWidget);
-      expect(find.text('Stays Hub'), findsNothing);
+      expect(find.byKey(const Key('stays-hub')), findsNothing);
       expect(_notFound, findsNothing);
     });
 
     testWidgets('on, with the module on: the page', (tester) async {
       final h = _Harness();
       await h.pump(tester, AppRoute.staysWithTab(facilityId: _fid));
-      expect(find.text('Stays Hub'), findsOneWidget);
+      expect(find.byKey(const Key('stays-hub')), findsOneWidget);
     });
   });
 
@@ -211,7 +213,7 @@ void main() {
       final employee = {PermissionType.viewStays, PermissionType.workStayTasks};
       final h = _Harness(permissions: employee);
       await h.pump(tester, AppRoute.staysWithTab(facilityId: _fid));
-      expect(find.text('Stays Hub'), findsOneWidget);
+      expect(find.byKey(const Key('stays-hub')), findsOneWidget);
 
       await h.pump(tester, AppRoute.turnoverDetailFor(facilityId: _fid, taskId: 't1'));
       expect(find.text('Turnover Detail'), findsOneWidget);
@@ -237,7 +239,7 @@ void main() {
     testWidgets('module off: the disabled page, with setup for an owner when available', (tester) async {
       final h = _Harness(moduleEnabled: false);
       await h.pump(tester, AppRoute.staysWithTab(facilityId: _fid));
-      expect(find.text('Stays Hub'), findsNothing);
+      expect(find.byKey(const Key('stays-hub')), findsNothing);
       expect(find.text('Stays is not turned on'), findsOneWidget);
       expect(find.text('Set up Stays'), findsOneWidget);
       expect(h.callables.countOf(StaysCallableNames.getAvailability), 1);
@@ -268,7 +270,7 @@ void main() {
     testWidgets('setup and settings open while the module is off', (tester) async {
       final h = _Harness(moduleEnabled: false);
       await h.pump(tester, AppRoute.staysSetupFor(_fid));
-      expect(find.text('Stays Setup Wizard'), findsOneWidget);
+      expect(find.byKey(const Key('stays-setup')), findsOneWidget);
       await h.pump(tester, AppRoute.staysSettingsFor(_fid));
       expect(find.text('Stays Settings'), findsOneWidget);
     });
@@ -278,7 +280,7 @@ void main() {
       await h.pump(tester, AppRoute.staysWithTab(facilityId: _fid));
       expect(find.text("Couldn't load Stays"), findsOneWidget);
       expect(find.text('Retry'), findsOneWidget);
-      expect(find.text('Stays Hub'), findsNothing);
+      expect(find.byKey(const Key('stays-hub')), findsNothing);
     });
 
     testWidgets('hides its child while loading', (tester) async {
