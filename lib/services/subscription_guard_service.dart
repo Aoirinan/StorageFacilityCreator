@@ -354,11 +354,17 @@ class SubscriptionGuardService {
     if (ownsAny || team.isEmpty || team.any(facilityCoversTeamMember)) {
       return const SubscriptionAccessResult(canAccess: true);
     }
-    return const SubscriptionAccessResult(
+    // Renewing does not lift a suspension, so staff are not told to ask for
+    // one when every owner they work for is suspended.
+    final ownersSuspended = team.every((f) => f.ownerAccountStanding?.suspended == true);
+    return SubscriptionAccessResult(
       canAccess: false,
       redirectRoute: '/subscription',
-      message: "The facility owner's subscription is not active, so team access "
-          'is paused. Ask the owner to renew it.',
+      message: ownersSuspended
+          ? "The facility owner's account is suspended, so team access is paused. "
+              'The owner can contact support to restore it.'
+          : "The facility owner's subscription is not active, so team access "
+              'is paused. Ask the owner to renew it.',
     );
   }
 

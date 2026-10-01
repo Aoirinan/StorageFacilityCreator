@@ -5,6 +5,7 @@ import {
   enforceRateLimit,
   writeAuditLog,
 } from '@sfc/functions-shared';
+import { refuseBillingForSuspendedAccount } from './stripePlatformSuspendedAccount';
 
 /** Shown when an account billed by Stripe asks for the app trial. */
 export const START_TRIAL_STRIPE_SUBSCRIPTION_MESSAGE =
@@ -67,6 +68,9 @@ export const startTrial = functions.https.onCall(async (data: any, context) => {
     if (accountData.ownerUid !== context.auth.uid) {
       throw new functions.https.HttpsError('permission-denied', 'Access denied');
     }
+    // Suspending clears the trial end, so the one-trial check below let a
+    // suspended account start a fresh one for after it is lifted.
+    refuseBillingForSuspendedAccount(accountData);
 
     const refusal = startTrialRefusal(accountData);
     if (refusal) {

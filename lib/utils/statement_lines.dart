@@ -13,9 +13,9 @@ import 'package:sfcapp/models/ledger_entry_model.dart';
 /// (functions-tenant-lifecycle moveOutPortalHold.ts, since PR #39), the
 /// manual entry dialog and the Stripe webhook (money handed back raises what
 /// is owed), though refunds the portal hold wrote before PR #39 are still
-/// stored negative; and the transfer flow writes its prorated "Transfer
-/// refund" credit positive where the manual dialog writes credits negative.
-/// Such an entry prints on the side its stored sign says and moves the
+/// stored negative. Transfer credits written before PR #45 were stored
+/// positive; the transfer flow now writes them negative, like the manual
+/// dialog. Such an entry prints on the side its stored sign says and moves the
 /// balance the way the ledger header already moves it; the fix belongs with
 /// the writer, not with a second balance rule here.
 ///

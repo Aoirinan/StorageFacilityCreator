@@ -20,6 +20,19 @@ import 'package:sfcapp/theme/app_theme.dart';
 class SubscriptionWarningBanner extends StatefulWidget {
   const SubscriptionWarningBanner({super.key});
 
+  /// What the banner decides on for [account]. Its suspension included: the
+  /// banner's button is Subscribe Now, which a suspended owner cannot use
+  /// (checkout refuses them, and paying would not lift it).
+  static AccountSubscriptionState accountStateOf(FacilityCreatorAccountModel account) =>
+      AccountSubscriptionState(
+        status: account.subscriptionStatus.name,
+        trialEnd: account.subscriptionTrialEnd,
+        currentPeriodEnd: account.subscriptionCurrentPeriodEnd,
+        billingExempt: account.billingExempt,
+        cardBackedTrial: account.hasCardBackedTrial,
+        suspended: account.suspended,
+      );
+
   @override
   State<SubscriptionWarningBanner> createState() => _SubscriptionWarningBannerState();
 }
@@ -83,15 +96,7 @@ class _SubscriptionWarningBannerState extends State<SubscriptionWarningBanner> {
       final supportSession = await _isSupportSession();
 
       final decision = decideSubscriptionBanner(
-        account: account == null
-            ? null
-            : AccountSubscriptionState(
-                status: account.subscriptionStatus.name,
-                trialEnd: account.subscriptionTrialEnd,
-                currentPeriodEnd: account.subscriptionCurrentPeriodEnd,
-                billingExempt: account.billingExempt,
-                cardBackedTrial: account.hasCardBackedTrial,
-              ),
+        account: account == null ? null : SubscriptionWarningBanner.accountStateOf(account),
         facilities: facilities
             .map((f) => FacilitySubscriptionState(
                   name: f.name,

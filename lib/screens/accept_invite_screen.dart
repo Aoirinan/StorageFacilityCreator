@@ -7,15 +7,20 @@ import '../services/permission_service.dart';
 import '../services/facility_service.dart';
 import '../router/app_route.dart';
 import '../theme/app_theme.dart';
+import 'package:sfcapp/utils/verified_email_token.dart';
 
 class AcceptInviteScreen extends StatefulWidget {
   final String facilityId;
   final String inviteId;
 
+  /// Firebase Auth unless a test passes its own.
+  final FirebaseAuth? auth;
+
   const AcceptInviteScreen({
     Key? key,
     required this.facilityId,
     required this.inviteId,
+    this.auth,
   }) : super(key: key);
 
   @override
@@ -37,6 +42,11 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
 
   StreamSubscription<User?>? _authSubscription;
 
+  /// The invite as [_loadInvite] read it; null until then, or when not found.
+  FacilityInvite? _invite;
+
+  FirebaseAuth get _auth => widget.auth ?? FirebaseAuth.instance;
+
   @override
   void initState() {
     super.initState();
@@ -44,12 +54,22 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
     _loadInvite();
 
     // One listener per screen instance; must cancel on dispose so we do not run after leaving this route.
-    _authSubscription = FirebaseAuth.instance.authStateChanges().listen((user) {
+    _authSubscription = _auth.authStateChanges().listen((user) {
       if (!mounted) return;
-      if (user != null && !_isProcessing && !_isLoading && !_hasTriedAutoAccept) {
+      if (user == null || _isProcessing || _isLoading || _hasTriedAutoAccept) return;
+      final invite = _invite;
+      if (invite == null) return;
+      // Only a pending invite is accepted here, and one this login already
+      // accepted (read before the sign-in was restored) is a success. For
+      // any other the attempt replaced the reason the load gave (cancelled:
+      // ask for a new one) with "Failed to accept invitation".
+      if (invite.isPending) {
         print('👤 [AcceptInviteScreen] User logged in, attempting to fulfill invite');
         _hasTriedAutoAccept = true;
         _acceptInvite();
+      } else if (_acceptedByCurrentUser(invite)) {
+        _hasTriedAutoAccept = true;
+        _finishAcceptedByCurrentUser();
       }
     });
   }
@@ -77,11 +97,20 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
         return;
       }
       print('✅ [AcceptInviteScreen] Found invite: ${invite.email}, status: ${invite.status}');
+      _invite = invite;
 
       if (!invite.isPending) {
         print('⚠️ [AcceptInviteScreen] Invite is not pending');
+        // Accepted by this login already: a signup through the link has it
+        // accepted before this screen loads (on signup, or by the route
+        // guard), and was told it had "already been accepted or cancelled".
+        if (_acceptedByCurrentUser(invite)) {
+          await _finishAcceptedByCurrentUser();
+          return;
+        }
+        if (!mounted) return;
         setState(() {
-          _errorMessage = 'This invitation has already been accepted or cancelled.';
+          _errorMessage = _notPendingMessage(invite);
           _isLoading = false;
         });
         return;
@@ -94,7 +123,9 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
       final role = PermissionService.getRoleByType(invite.roleType);
 
       setState(() {
-        _facilityName = facility?.name ?? 'Unknown Facility';
+        // The invitee cannot read the facility until they join; the invite
+        // carries its name.
+        _facilityName = facility?.name ?? invite.facilityName ?? 'Unknown Facility';
         _roleType = role?.name ?? invite.roleType.name;
         _invitedByEmail = invite.invitedByEmail;
         _inviteEmail = invite.email;
@@ -108,9 +139,59 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
     }
   }
 
+  bool _acceptedByCurrentUser(FacilityInvite invite) {
+    final uid = _auth.currentUser?.uid;
+    return uid != null && invite.status == 'accepted' && invite.acceptedBy == uid;
+  }
+
+  /// Whether [user]'s address is verified, reloading them once when it is
+  /// not (the link may have been opened in another tab), with their ID token
+  /// refreshed to say so when it is: the rules read it from there, and a
+  /// token from before the link was opened still says unverified.
+  Future<bool> _verifiedForAcceptance(User user) async {
+    var current = user;
+    if (!current.emailVerified) {
+      try {
+        await current.reload();
+      } catch (_) {
+        // Answered as unverified below.
+      }
+      current = _auth.currentUser ?? current;
+      if (!current.emailVerified) return false;
+    }
+    await refreshStaleEmailVerifiedClaim(current);
+    return true;
+  }
+
+  static String _notPendingMessage(FacilityInvite invite) => invite.status == 'cancelled'
+      ? 'This invitation was cancelled. Ask the facility owner to send you a new one.'
+      : 'This invitation has already been accepted or cancelled. If you still need '
+          'access, ask the facility owner to send you a new one.';
+
+  /// The invite was accepted by the signed-in user. Straight to the
+  /// dashboard while they still hold the role; if they have been removed
+  /// since, say so rather than open a dashboard with nothing on it.
+  Future<void> _finishAcceptedByCurrentUser() async {
+    final uid = _auth.currentUser?.uid;
+    final holdsRole = uid != null &&
+        await PermissionService.holdsRoleAt(facilityId: widget.facilityId, userId: uid);
+    if (!mounted) return;
+    if (!holdsRole) {
+      setState(() {
+        _errorMessage = 'You already accepted this invitation, but you no longer have '
+            'access to this facility. Ask the facility owner to send you a new invitation.';
+        _isLoading = false;
+        _isProcessing = false;
+      });
+      return;
+    }
+    FacilityService.clearFacilitiesCache();
+    context.go(AppRoute.dashboard);
+  }
+
   Future<void> _acceptInvite() async {
     print('🔘 [AcceptInviteScreen] Accept button clicked');
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _auth.currentUser;
     print('👤 [AcceptInviteScreen] Current user: ${user?.email ?? "null"}');
     if (user == null) {
       print('🔐 [AcceptInviteScreen] User not logged in, redirecting to login');
@@ -158,6 +239,10 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
           'Invitation not found. It may have been cancelled or the link is invalid.',
         );
       }
+      if (_acceptedByCurrentUser(invite)) {
+        await _finishAcceptedByCurrentUser();
+        return;
+      }
 
       print('📧 [AcceptInviteScreen] Invite email: ${invite.email}, User email: ${user.email}');
       
@@ -166,6 +251,19 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
         setState(() {
           _inviteeEmail = invite.email;
           _errorMessage = 'This invitation was sent to ${invite.email}, but you are logged in as ${user.email}. Please log in with the correct email address.';
+          _isProcessing = false;
+        });
+        return;
+      }
+
+      // The rules take an acceptance only from a verified address (an
+      // unverified account can carry anyone's). Said here, not as the
+      // rules' refusal.
+      if (!await _verifiedForAcceptance(user)) {
+        if (!mounted) return;
+        setState(() {
+          _errorMessage = 'Verify your email address before accepting this invitation. '
+              'We sent a verification link to ${user.email}. Open it, then come back to this page.';
           _isProcessing = false;
         });
         return;
@@ -183,6 +281,16 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
       );
       
       if (!fulfilled) {
+        // Accepted in the meantime by this login (the route guard or the
+        // signup path, racing this click) is still a success.
+        final now = await PermissionService.getFacilityInviteById(
+          facilityId: widget.facilityId,
+          inviteId: widget.inviteId,
+        );
+        if (now != null && _acceptedByCurrentUser(now)) {
+          await _finishAcceptedByCurrentUser();
+          return;
+        }
         throw Exception('Failed to accept invitation. The invite may have already been accepted or cancelled.');
       }
 
@@ -313,7 +421,7 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
                                   ),
                                 ],
                                 const SizedBox(height: 32),
-                                if (FirebaseAuth.instance.currentUser == null &&
+                                if (_auth.currentUser == null &&
                                     _inviteEmail != null) ...[
                                   Text(
                                     'If you\'re not signed in yet, Accept will open the sign-in page. '
@@ -343,7 +451,7 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
                                           const SizedBox(height: 16),
                                           OutlinedButton.icon(
                                             onPressed: () async {
-                                              await FirebaseAuth.instance.signOut();
+                                              await _auth.signOut();
                                               if (!mounted) return;
                                               final redirect = '${AppRoute.acceptInvite}?facilityId=${widget.facilityId}&inviteId=${widget.inviteId}';
                                               context.go('${AppRoute.login}?email=${Uri.encodeComponent(_inviteeEmail!)}&redirect=${Uri.encodeComponent(redirect)}');

@@ -73,6 +73,7 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
     'contract.deleted',
     'communication.emailSuppressionRemoved',
     'communication.smsStaffRestored',
+    'team.memberRemoved',
   ];
 
   final List<String> _targetTypes = [
@@ -89,6 +90,7 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
     'contract',
     'emailSuppression',
     'smsOptOut',
+    'user',
   ];
 
   final List<String> _actorRoles = [

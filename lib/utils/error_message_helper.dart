@@ -27,14 +27,16 @@ class ErrorMessageHelper {
       return _getAuthErrorMessage(error);
     }
 
+    // Cloud Functions errors. Before Firestore's: a FirebaseFunctionsException
+    // is a FirebaseException too, so every callable's error was read as a
+    // database error and this branch never ran.
+    if (error is FirebaseFunctionsException) {
+      return _getFunctionsErrorMessage(error);
+    }
+
     // Firestore errors
     if (error is FirebaseException) {
       return _getFirestoreErrorMessage(error);
-    }
-
-    // Cloud Functions errors
-    if (error is FirebaseFunctionsException) {
-      return _getFunctionsErrorMessage(error);
     }
 
     // Permission errors
@@ -144,6 +146,14 @@ class ErrorMessageHelper {
   }
 
   static String _getFunctionsErrorMessage(FirebaseFunctionsException error) {
+    // A suspended account's billing refusal says what to do about it (the
+    // billing callables in functions-integrations); the generic
+    // failed-precondition text told the owner to try again.
+    final details = error.details;
+    if (details is Map && details['reason'] == 'account_suspended') {
+      final message = error.message?.trim();
+      if (message != null && message.isNotEmpty) return message;
+    }
     switch (error.code) {
       case 'unauthenticated':
         return 'Please sign in to use this feature.';
