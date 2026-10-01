@@ -1,7 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { contractTenantRefusal, contractUnitId, contractUnitRefusal, moveOutLedgerRows, pendingCardRefund } from '../moveOutChecks';
+import {
+  cardRefundSince,
+  contractTenantRefusal,
+  contractUnitId,
+  contractUnitRefusal,
+  moveOutLedgerRows,
+  pendingCardRefund,
+} from '../moveOutChecks';
 
 const held = (id: string, unitNumber: string, tenantId = 't1', status = 'occupied', area?: string) => ({
   id,
@@ -129,4 +136,17 @@ test('a card refund a finished move-out left pending is sent back on a retry; no
   assert.equal(pendingCardRefund({}), null);
   assert.equal(pendingCardRefund({ moveOutCardRefund: { status: 'pending', requested: 0, at } }), null);
   assert.equal(pendingCardRefund({ moveOutCardRefund: { status: 'pending', requested: 'x', at } }), null);
+});
+
+test("a first press's card refund is checked against the commit, read back; the start of the call stands in", () => {
+  const at = { toDate: () => new Date('2026-09-23T15:04:05.000Z') };
+  const startedAt = new Date('2026-09-23T15:04:04.250Z');
+  assert.equal(
+    cardRefundSince({ moveOutCardRefund: { status: 'pending', requested: 36.67, refunded: 0, at } }, startedAt),
+    '2026-09-23T15:04:05.000Z',
+  );
+  // Not read back, or no time on it: the earlier start rules out no more.
+  assert.equal(cardRefundSince(undefined, startedAt), '2026-09-23T15:04:04.250Z');
+  assert.equal(cardRefundSince({ moveOutCardRefund: { status: 'pending', requested: 36.67 } }, startedAt), '2026-09-23T15:04:04.250Z');
+  assert.equal(cardRefundSince({ moveOutCardRefund: { status: 'refunded', requested: 36.67, at } }, startedAt), '2026-09-23T15:04:04.250Z');
 });

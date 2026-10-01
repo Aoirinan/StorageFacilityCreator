@@ -459,6 +459,9 @@ test('a refund is posted positive, only once made, and the credit it pays out is
   const { at, ...pending } = signed.moveOutCardRefund;
   assert.deepEqual(pending, { status: 'pending', requested: 36.67, refunded: 0 });
   assert.ok(at instanceof admin.firestore.Timestamp);
+  // The commit time, for the screen to check its refund against: a refund
+  // row from then on may be a second session's refund of this one.
+  assert.equal(card.cardRefundSince, at.toDate().toISOString());
   // A retry (a dropped connection) refunds nothing on its own. The refund
   // the first run left pending comes back for the screen to ask the owner
   // about: with the first answer lost, the screen never made it, and the
@@ -496,6 +499,7 @@ test('a refund is posted positive, only once made, and the credit it pays out is
     refundMethod: 'cash',
   });
   assert.equal(byCash.cardRefundDue, 0);
+  assert.equal(byCash.cardRefundSince, null);
   assert.equal((await contract('c101')).moveOutRefundMethod, 'cash');
   assert.equal((await contract('c101')).moveOutCardRefund, undefined);
   const cashAgain = await moveOut('u101', 'c101', { moveOutCharges: -36.67, moveOutRefund: 36.67, processRefund: true, refundMethod: 'cash' });

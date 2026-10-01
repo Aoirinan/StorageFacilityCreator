@@ -17,7 +17,13 @@ import { enforceAppCheckOrThrow, enforceRateLimit, writeAuditLog } from './guard
 import { moveOutFutureDateRefusal, moveOutInstant } from './moveOutDate';
 import { moveOutProrationRate, tenantFieldsAfterMoveOut } from './moveOutTenantFields';
 import { instantDay, moveOutLines, moveOutPreviewRefusal, moveOutRentLine, postedBalance, wallDay } from './moveOutRent';
-import { contractTenantRefusal, contractUnitRefusal, moveOutLedgerRows, pendingCardRefund } from './moveOutChecks';
+import {
+  cardRefundSince,
+  contractTenantRefusal,
+  contractUnitRefusal,
+  moveOutLedgerRows,
+  pendingCardRefund,
+} from './moveOutChecks';
 
 /** A dollar amount from the request, in whole cents; 0 when it is not a number. */
 function cents(value: unknown): number {
@@ -123,15 +129,17 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
 
     const moveOutTimestamp = admin.firestore.Timestamp.fromDate(moveOutAt);
     const now = admin.firestore.FieldValue.serverTimestamp();
+    // Before the commit, so before `now` (cardRefundSince).
+    const startedAt = new Date();
+    const contractRef = admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('contracts')
+      .doc(contractId);
 
     // Use Firestore transaction to ensure consistency
     const result = await admin.firestore().runTransaction(async (transaction) => {
       // 1. Get contract
-      const contractRef = admin.firestore()
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('contracts')
-        .doc(contractId);
       const contractDoc = await transaction.get(contractRef);
 
       if (!contractDoc.exists) {
@@ -462,7 +470,10 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
     }
 
     // 9. A card refund is the screen's to make next, through processRefund
-    // (cardRefundDue); nothing here touches the card.
+    // (cardRefundDue); nothing here touches the card. It makes it only if
+    // no refund has reached the ledger since this commit (cardRefundSince):
+    // a second session answered alreadyCompleted may have made it by then.
+    let refundSince: string | null = null;
     if ((result.cardRefundDue ?? 0) > 0) {
       functions.logger.info(`Move-out card refund left to the screen: $${result.cardRefundDue}`, {
         facilityId,
@@ -470,9 +481,19 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
         contractId,
         amount: result.cardRefundDue,
       });
+      let committed: Record<string, unknown> | undefined;
+      try {
+        committed = (await contractRef.get()).data();
+      } catch (readError: any) {
+        functions.logger.warn('Move-out commit time not read back; the start of the call stands in', readError);
+      }
+      refundSince = cardRefundSince(committed, startedAt);
     }
 
-    // 10. Send move-out confirmation email (async, don't wait)
+    // 10. Send move-out confirmation email. Awaited: work a function leaves
+    // running after it answers may never finish. The wait holds the answer
+    // back, which is why the card refund is checked against the commit
+    // (cardRefundSince), not against when the answer arrives.
     try {
       const tenantData = (await admin.firestore()
         .collection('facilities')
@@ -521,6 +542,10 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
       success: true,
       // Nothing here refunds a card (cardRefundDue).
       refundProcessed: false,
+      // When the move-out was committed (ISO), with a cardRefundDue: the
+      // screen makes the card refund only if no refund row has reached the
+      // ledger since. Null with none.
+      cardRefundSince: refundSince,
     };
   } catch (error: any) {
     functions.logger.error('Error processing move-out:', error);

@@ -247,9 +247,10 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
   /// the move-out, or the app has no card payment to refund, nothing is
   /// offered (MoveOutCardRefund.pendingChoiceFrom): the alert says how to
   /// finish it in Stripe. The same check runs again on the read the refund
-  /// is made from (pendingSince), as one can land while the offer is open.
-  /// An owner who refunds it in Stripe themselves has that recorded on the
-  /// contract, so it is not offered again.
+  /// is made from (since, offered), as one can land while the offer is
+  /// open. A refund left to the owner, by their choice or because the app
+  /// would not make it, is recorded on the contract, so a later press does
+  /// not offer it, or show its alert, again.
   Future<void> _settlePendingCardRefund(PendingCardRefund pending) async {
     final tenant = _tenant;
     if (tenant == null) return;
@@ -261,7 +262,15 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
     if (!mounted) return;
     final plan = choice.plan;
     if (plan == null) {
-      await _showRefundAlert(null, choice.alert!);
+      await MoveOutCardRefund.recordLeftToOwner(
+        facilityId: widget.facilityId,
+        tenantId: tenant.id,
+        contractId: widget.contractId,
+        requested: pending.requested,
+        reason: choice.reason,
+      );
+      if (!mounted) return;
+      await _showRefundAlert(choice.title, choice.alert!);
       return;
     }
     final make = await showDialog<bool>(
@@ -302,7 +311,8 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
       tenantId: tenant.id,
       contractId: widget.contractId,
       amount: pending.requested,
-      pendingSince: pending.since,
+      since: pending.since,
+      offered: true,
     );
     if (!mounted) return;
     final alert = outcome.ownerAlert;
