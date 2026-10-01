@@ -4,13 +4,12 @@ import 'package:intl/intl.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/transfer_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
-import 'package:sfcapp/services/modern_navigation_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/transfer_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/unit_label.dart';
-import 'package:sfcapp/widgets/modern_page_wrapper.dart';
+import 'package:sfcapp/widgets/shell_page.dart';
 
 class TransferWorkflowScreen extends ConsumerStatefulWidget {
   final String tenantId;
@@ -221,12 +220,8 @@ class _TransferWorkflowScreenState extends ConsumerState<TransferWorkflowScreen>
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/transfer',
+    return ShellPage(
       title: 'Unit Transfer',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
       child: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : SingleChildScrollView(

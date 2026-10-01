@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import '../services/payment_reconciliation_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
+import '../widgets/shell_page.dart';
 import '../services/modern_navigation_service.dart';
 import '../providers/active_facility_provider.dart';
 
@@ -26,8 +26,7 @@ class _PaymentReconciliationScreenState extends ConsumerState<PaymentReconciliat
     final facilityId = ref.watch(activeFacilityIdProvider).value;
 
     if (facilityId == null) {
-      return ModernPageWrapper(
-        currentRoute: '/payment-reconciliation',
+      return ShellPage(
         title: 'Payment Reconciliation',
         child: const Center(
           child: Text('Please select a facility'),
@@ -35,8 +34,7 @@ class _PaymentReconciliationScreenState extends ConsumerState<PaymentReconciliat
       );
     }
 
-    return ModernPageWrapper(
-      currentRoute: '/payment-reconciliation',
+    return ShellPage(
       title: 'Payment Reconciliation',
       actions: [
         IconButton(

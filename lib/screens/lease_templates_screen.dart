@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../router/app_route.dart';
+import '../widgets/shell_page.dart';
 
 /// Lease templates and e-signature features - coming soon
 class LeaseTemplatesScreen extends ConsumerStatefulWidget {
@@ -20,9 +19,8 @@ class LeaseTemplatesScreen extends ConsumerStatefulWidget {
 class _LeaseTemplatesScreenState extends ConsumerState<LeaseTemplatesScreen> {
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
+    return ShellPage(
       title: 'Lease Templates',
-      currentRoute: AppRoute.leaseTemplates,
       child: Center(
         child: Padding(
           padding: const EdgeInsets.all(32),

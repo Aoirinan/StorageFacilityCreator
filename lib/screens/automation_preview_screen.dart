@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:intl/intl.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
+import '../widgets/shell_page.dart';
 import '../widgets/permission_gate.dart';
 import '../models/permission_model.dart';
 import '../services/modern_navigation_service.dart';
@@ -32,8 +32,7 @@ class _AutomationPreviewScreenState extends ConsumerState<AutomationPreviewScree
     final facilityId = ref.watch(activeFacilityIdProvider).value;
 
     if (facilityId == null) {
-      return ModernPageWrapper(
-        currentRoute: '/automation-preview',
+      return ShellPage(
         title: 'Automation Preview',
         child: const Center(
           child: Text('Please select a facility'),
@@ -41,8 +40,7 @@ class _AutomationPreviewScreenState extends ConsumerState<AutomationPreviewScree
       );
     }
 
-    return ModernPageWrapper(
-      currentRoute: '/automation-preview',
+    return ShellPage(
       title: widget.automationType == 'monthlyCharges'
           ? 'Monthly Charges Preview'
           : 'Delinquency Automation Preview',

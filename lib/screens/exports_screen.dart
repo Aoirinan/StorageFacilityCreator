@@ -6,7 +6,7 @@ import 'package:sfcapp/models/permission_model.dart';
 import 'package:sfcapp/providers/active_facility_provider.dart';
 import 'package:sfcapp/services/export_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
-import 'package:sfcapp/widgets/modern_page_wrapper.dart';
+import 'package:sfcapp/widgets/shell_page.dart';
 import 'package:sfcapp/widgets/permission_gate.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -35,8 +35,7 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
     final facilityId = ref.watch(activeFacilityIdProvider).value;
 
     if (facilityId == null) {
-      return ModernPageWrapper(
-        currentRoute: '/exports',
+      return ShellPage(
         title: 'Data Exports',
         child: const Center(
           child: Text('Please select a facility'),
@@ -44,8 +43,7 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
       );
     }
 
-    return ModernPageWrapper(
-      currentRoute: '/exports',
+    return ShellPage(
       title: 'Data Exports',
       actions: [
         PermissionGate(

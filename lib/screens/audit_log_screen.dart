@@ -6,7 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
+import '../widgets/shell_page.dart';
 import '../services/modern_navigation_service.dart';
 import '../services/export_service.dart';
 import '../providers/active_facility_provider.dart';
@@ -106,8 +106,7 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
     final facilityId = ref.watch(activeFacilityIdProvider).value;
 
     if (facilityId == null) {
-      return ModernPageWrapper(
-        currentRoute: '/audit-logs',
+      return ShellPage(
         title: 'Audit Logs',
         child: const Center(
           child: Text('Please select a facility'),
@@ -115,8 +114,7 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
       );
     }
 
-    return ModernPageWrapper(
-      currentRoute: '/audit-logs',
+    return ShellPage(
       title: 'Audit Logs',
       actions: [
         IconButton(

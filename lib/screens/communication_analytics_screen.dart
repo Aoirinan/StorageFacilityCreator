@@ -1,13 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
-import '../widgets/modern_page_wrapper.dart';
+import '../widgets/shell_page.dart';
 import '../theme/app_theme.dart';
 import '../models/communication_analytics_model.dart';
 import '../services/communication_analytics_service.dart';
 import '../providers/auth_provider.dart';
 import '../providers/facility_provider.dart';
-import '../services/modern_navigation_service.dart';
 
 /// Screen for viewing communication analytics and cost tracking
 class CommunicationAnalyticsScreen extends ConsumerStatefulWidget {
@@ -118,14 +117,8 @@ class _CommunicationAnalyticsScreenState extends ConsumerState<CommunicationAnal
 
   @override
   Widget build(BuildContext context) {
-    final currentRoute = '/analytics/communication';
-    
-    return ModernPageWrapper(
-      currentRoute: currentRoute,
+    return ShellPage(
       title: 'Communication Analytics',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
       actions: [
         IconButton(
           icon: const Icon(Icons.calendar_today),

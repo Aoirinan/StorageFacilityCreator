@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:csv/csv.dart';
-import 'package:go_router/go_router.dart';
 import 'dart:convert';
 import 'dart:typed_data';
 import '../models/tenant_model.dart';
-import '../widgets/modern_page_wrapper.dart';
+import '../widgets/shell_page.dart';
 import '../theme/app_theme.dart';
 import '../services/facility_service.dart';
 import 'insurance_report_stub.dart'
@@ -150,9 +149,7 @@ class _InsuranceReportScreenState extends State<InsuranceReportScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final currentRoute = GoRouter.of(context).routeInformationProvider.value.location ?? '/insurance/report';
-    return ModernPageWrapper(
-      currentRoute: currentRoute,
+    return ShellPage(
       title: 'Insurance Report',
       actions: [
         IconButton(

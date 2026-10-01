@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
-import '../widgets/modern_page_wrapper.dart';
+import '../widgets/shell_page.dart';
 import '../theme/app_theme.dart';
 import '../models/document_attachment_model.dart';
 import '../models/tenant_model.dart';
@@ -14,7 +14,6 @@ import '../services/email_service.dart';
 import '../providers/auth_provider.dart';
 import '../providers/facility_provider.dart';
 import '../providers/tenant_provider.dart';
-import '../services/modern_navigation_service.dart';
 import '../utils/email_send_feedback.dart';
 
 /// Centralized document center screen
@@ -75,14 +74,8 @@ class _DocumentCenterScreenState extends ConsumerState<DocumentCenterScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final currentRoute = '/documents';
-    
-    return ModernPageWrapper(
-      currentRoute: currentRoute,
+    return ShellPage(
       title: 'Document Center',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
       actions: [
         IconButton(
           icon: const Icon(Icons.upload_file),

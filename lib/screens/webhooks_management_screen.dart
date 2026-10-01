@@ -6,7 +6,7 @@ import 'package:sfcapp/models/webhook_model.dart';
 import 'package:sfcapp/providers/search_provider.dart';
 import 'package:sfcapp/services/webhook_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
-import 'package:sfcapp/widgets/modern_page_wrapper.dart';
+import 'package:sfcapp/widgets/shell_page.dart';
 
 /// Screen for managing webhook subscriptions
 class WebhooksManagementScreen extends ConsumerStatefulWidget {
@@ -71,10 +71,7 @@ class _WebhooksManagementScreenState extends ConsumerState<WebhooksManagementScr
       });
     }
 
-    final currentRoute = GoRouter.of(context).routeInformationProvider.value.location ?? '/webhooks';
-
-    return ModernPageWrapper(
-      currentRoute: currentRoute,
+    return ShellPage(
       title: 'Webhooks',
       actions: [
         IconButton(

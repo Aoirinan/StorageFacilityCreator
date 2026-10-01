@@ -314,6 +314,8 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
                           onTap: () =>
                               ref.read(paymentsTabIndexProvider.notifier).state = 2,
                         ),
+                        const Spacer(),
+                        _PaymentLinksButton(facilityId: _selectedFacilityId),
                       ],
                     ),
                   ),
@@ -1812,6 +1814,35 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Opens the payment links page for the facility the Collect tab is showing:
+/// the top bar's pick, or the first facility while it reads All Facilities.
+class _PaymentLinksButton extends StatelessWidget {
+  final String facilityId;
+
+  const _PaymentLinksButton({required this.facilityId});
+
+  void _open(BuildContext context) => context.push(Uri(
+        path: AppRoute.paymentLinks,
+        queryParameters: {'facilityId': facilityId},
+      ).toString());
+
+  @override
+  Widget build(BuildContext context) {
+    if (MediaQuery.sizeOf(context).width < Breakpoints.xs) {
+      return IconButton(
+        icon: const Icon(Icons.link),
+        tooltip: 'Payment links',
+        onPressed: () => _open(context),
+      );
+    }
+    return TextButton.icon(
+      icon: const Icon(Icons.link),
+      label: const Text('Payment links'),
+      onPressed: () => _open(context),
     );
   }
 }
