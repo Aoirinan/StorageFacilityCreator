@@ -56,6 +56,8 @@ class CardRefundOutcome {
     this.failure,
     this.uncertain = false,
     this.noRefundablePayment = false,
+    this.knownRefundId,
+    this.refundSinceOffer = false,
   });
 
   final double requested;
@@ -73,6 +75,15 @@ class CardRefundOutcome {
   /// The app found no card payment of the tenant's it could refund.
   final bool noRefundablePayment;
 
+  /// processRefund answered with this Stripe refund, which was on the
+  /// ledger already: no new refund was made.
+  final String? knownRefundId;
+
+  /// A pending refund the owner was offered was not made: a refund reached
+  /// their ledger between the offer and the press (another press of
+  /// Complete, on this device or another), so part of it may be made.
+  final bool refundSinceOffer;
+
   double get refunded => MoveOutCardRefund.cents(refunds.fold(0.0, (total, r) => total + r.amount));
   double get leftOnLedger => MoveOutCardRefund.cents(requested - refunded);
 
@@ -82,9 +93,16 @@ class CardRefundOutcome {
           ? CardRefundStatus.partial
           : CardRefundStatus.notMade;
 
-  /// The heading for [ownerAlert].
+  bool get _unconfirmed => failure != null && uncertain;
+
+  /// The heading for [ownerAlert]. Not "not made" when the call that failed
+  /// may still have refunded, or when a refund reached the ledger first: an
+  /// owner who reads only the heading would refund it again.
   String? get alertTitle => switch (status) {
         CardRefundStatus.refunded => null,
+        _ when refundSinceOffer => 'Card refund may already be made',
+        CardRefundStatus.partial when _unconfirmed => 'Card refund only partly confirmed',
+        CardRefundStatus.notMade when _unconfirmed => 'Card refund not confirmed',
         CardRefundStatus.partial => 'Card refund only partly made',
         CardRefundStatus.notMade => 'Card refund not made',
       };
@@ -101,16 +119,33 @@ class CardRefundOutcome {
   /// …" row, so that is where they look before adding one.
   String? get ownerAlert {
     if (status == CardRefundStatus.refunded) return null;
+    if (refundSinceOffer) {
+      return MoveOutCardRefund.pendingAlert(requested, reason: MoveOutCardRefund._refundSinceOffer);
+    }
     final left = MoveOutCardRefund.money(leftOnLedger);
     final other = refunded > 0 ? 'other ' : '';
     final done = refunded > 0
         ? 'The app refunded ${MoveOutCardRefund.money(refunded)} to their card through Stripe. '
         : '';
-    if (failure != null && uncertain) {
-      return '${done}The $other$left was not refunded: $failure\n\n'
+    final besides = refunded > 0 ? ' besides the refunds above' : '';
+    if (knownRefundId != null) {
+      // The refund Stripe handed back may be this move-out's, made by an
+      // earlier press, or (from a processRefund that keys by charge and
+      // amount) another unit's: the ledger says which rows are new.
+      return '${done}No new refund was made for the $other$left: Stripe answered with a refund that '
+          'is already on their ledger ($knownRefundId).\n\n'
+          'It stays on their ledger as a credit. Before refunding anything by hand, look at their '
+          'ledger for "Refund for charge …" rows from the move-out on$besides. Whatever of the $left '
+          'they do not cover is still owed (a row you have already counted for another move-out does '
+          'not cover this one): refund that to their card in your Stripe dashboard. Wait a minute, then '
+          'look at their ledger again: Stripe records some card refunds there itself, as a new "Refund '
+          'for charge …" row. Only if none has appeared, record it with Add entry, type Refund.';
+    }
+    if (_unconfirmed) {
+      return '${done}The $other$left may not have been refunded: $failure\n\n'
           'It stays on their ledger as a credit. The call that failed may still have refunded their '
           'card, so check before refunding anything: wait a minute, then look at their ledger for a '
-          '"Refund for charge …" row from today${refunded > 0 ? ' besides the refunds above' : ''}. '
+          '"Refund for charge …" row from today$besides. '
           'If there is one, that refund was made and is already recorded: take it off the $left, and '
           'do not record it again. Then refund what is still owed to their card in your Stripe '
           'dashboard, wait a minute, and look at their ledger again: Stripe records some card refunds '
@@ -337,18 +372,20 @@ class MoveOutCardRefund {
   }
 
   /// Whether the app may offer to make a [pending] refund now, from the
-  /// tenant's posted ledger [rows]: only when no refund naming a Stripe
-  /// payment has reached the ledger since the move-out ([pending]'s since).
-  /// One that has may be part of this refund, made by a press that never
-  /// reported back, and refunding the whole amount again would pay it
-  /// twice. Stripe forgets a request id after a day, so the same id alone
-  /// does not rule that out. Without a time, nothing is offered.
+  /// tenant's posted ledger [rows]: only when no refund has reached the
+  /// ledger since the move-out ([pending]'s since). One that has may be part
+  /// of this refund, made by a press that never reported back, and refunding
+  /// the whole amount again would pay it twice. Stripe forgets a request id
+  /// after a day, so the same id alone does not rule that out. Any refund
+  /// row counts, one naming no Stripe payment too: an Add entry refund has
+  /// none, and it is the row the app's alerts ask the owner to add after
+  /// refunding in Stripe. Without a time, nothing is offered.
   @visibleForTesting
   static bool mayOfferPending(PendingCardRefund pending, Iterable<Map<String, dynamic>> rows) {
     final since = pending.since;
     if (since == null) return false;
     for (final row in rows) {
-      if (row['type'] != 'refund' || !_posted(row) || paymentIntentOf(row) == null) continue;
+      if (row['type'] != 'refund' || !_posted(row)) continue;
       final at = _date(row['createdAt']) ?? _date(row['entryDate']);
       if (at == null || !at.isBefore(since)) return false;
     }
@@ -369,7 +406,7 @@ class MoveOutCardRefund {
         plan: null,
         alert: pendingAlert(
           pending.requested,
-          reason: 'A card refund has reached their ledger since the move-out, or the app cannot tell '
+          reason: 'A refund has reached their ledger since the move-out, or the app cannot tell '
               'whether one has, so part of it may already be made, and the app will not refund it on '
               'its own.',
         ),
@@ -410,7 +447,7 @@ class MoveOutCardRefund {
   static String pendingOffer(CardRefundPlan plan) =>
       'This move-out was completed earlier, but its ${money(plan.requested)} card refund was not '
       'made: the answer to the first press never reached the app, so it did not refund the card, and '
-      'no card refund has reached their ledger since.\n\n'
+      'no refund has reached their ledger since.\n\n'
       'The app can make it now: it refunds ${_refundParts(plan)} through Stripe.${_uncovered(plan)}';
 
   /// For a pending refund the app does not make: what happened, [reason]
@@ -424,6 +461,11 @@ class MoveOutCardRefund {
       'in your Stripe dashboard. Wait a minute, then look at their ledger again: Stripe records some '
       'card refunds there itself, as a new "Refund for charge …" row. Only if none has appeared, '
       'record it with Add entry, type Refund.';
+
+  /// [pendingAlert]'s reason when a refund reached the ledger between the
+  /// offer and the press ([CardRefundOutcome.refundSinceOffer]).
+  static const _refundSinceOffer = 'A refund has reached their ledger since the app offered to make '
+      'it: another press of Complete, on this device or another, may have made it.';
 
   /// processRefund's per-refund request id (letters, digits, _ and -, at
   /// most 64): the same for a retry of this move-out's refund of this
@@ -491,6 +533,13 @@ class MoveOutCardRefund {
   /// it stops there and refunds nothing more: a call that timed out may
   /// still have refunded, and refunding the next payment as well would pay
   /// the tenant twice.
+  ///
+  /// [pendingSince] is set for a pending refund the owner was offered
+  /// ([pendingChoice], on an earlier read): it is made only if
+  /// [mayOfferPending] still holds on [rows]. A refund that reached the
+  /// ledger while the offer was open (another press of Complete) leaves
+  /// the plan putting the rest on another payment, under another request
+  /// id, which Stripe refunds a second time.
   static Future<CardRefundOutcome> refund({
     required String facilityId,
     required String tenantId,
@@ -499,7 +548,15 @@ class MoveOutCardRefund {
     required List<Map<String, dynamic>> rows,
     required ProcessRefundCall call,
     Future<List<Map<String, dynamic>>> Function()? reread,
+    DateTime? pendingSince,
   }) async {
+    if (pendingSince != null && !mayOfferPending((requested: cents(amount), since: pendingSince), rows)) {
+      return CardRefundOutcome(
+        requested: cents(amount),
+        failure: 'a refund reached their ledger after the app offered to make this one, so it made none.',
+        refundSinceOffer: true,
+      );
+    }
     final plan = MoveOutCardRefund.plan(amount: amount, payments: refundablePayments(rows));
     if (plan.slices.isEmpty) {
       return CardRefundOutcome(requested: plan.requested, noRefundablePayment: true);
@@ -553,8 +610,9 @@ class MoveOutCardRefund {
         return CardRefundOutcome(
           requested: plan.requested,
           refunds: made,
-          failure: 'no new refund was made. Stripe answered with an earlier refund that is already on '
-              'their ledger ($refundId); it is not this one, so do not count it.',
+          failure: 'no new refund was made: Stripe answered with a refund already on their ledger '
+              '($refundId).',
+          knownRefundId: refundId,
         );
       }
       known.add(refundId);
@@ -588,12 +646,15 @@ class MoveOutCardRefund {
   /// throws: the move-out is done by now, so anything that goes wrong is the
   /// owner's to finish, and they are told. A pending refund a second press
   /// makes goes through here too, with the same [contractId], so its
-  /// processRefund request ids are the ones the first press would have sent.
+  /// processRefund request ids are the ones the first press would have sent,
+  /// and its [pendingSince], so it is not made when a refund has reached the
+  /// ledger since the owner was offered it ([refund]).
   static Future<CardRefundOutcome> refundAfterMoveOut({
     required String facilityId,
     required String tenantId,
     required String contractId,
     required double amount,
+    DateTime? pendingSince,
   }) async {
     CardRefundOutcome outcome;
     try {
@@ -611,6 +672,7 @@ class MoveOutCardRefund {
           return data is Map ? Map<String, dynamic>.from(data) : <String, dynamic>{};
         },
         reread: () => postedLedgerRows(facilityId: facilityId, tenantId: tenantId),
+        pendingSince: pendingSince,
       );
     } catch (e) {
       outcome = CardRefundOutcome(
@@ -622,31 +684,84 @@ class MoveOutCardRefund {
     return outcome;
   }
 
-  /// Writes [outcome] to the contract and the audit log, best effort.
+  /// Writes [outcome] to the contract and the audit log, best effort. One
+  /// not made because a refund reached the ledger since the offer
+  /// ([CardRefundOutcome.refundSinceOffer]) goes to the audit log only: the
+  /// press that made that refund records it on the contract, and "not made"
+  /// written over it would undo that.
   static Future<void> record({
     required String facilityId,
     required String tenantId,
     required String contractId,
     required CardRefundOutcome outcome,
+  }) =>
+      _record(
+        facilityId: facilityId,
+        tenantId: tenantId,
+        contractId: contractId,
+        details: outcome.contractRecord(),
+        refunded: outcome.refunded,
+        onContract: !outcome.refundSinceOffer,
+      );
+
+  /// The contract's `moveOutCardRefund` once the owner has chosen to make a
+  /// pending refund in Stripe themselves: no longer 'pending', so a later
+  /// press of Complete does not offer it again (processMoveOut sends back
+  /// only a 'pending' one).
+  @visibleForTesting
+  static Map<String, dynamic> leftToOwnerRecord(double requested) => {
+        'status': 'manual',
+        'requested': cents(requested),
+        'refunded': 0.0,
+        'leftOnLedger': cents(requested),
+        'refunds': const <Map<String, dynamic>>[],
+        'reason': 'the owner chose to refund it in Stripe themselves',
+      };
+
+  /// Records on the contract and the audit log that the owner is making a
+  /// pending refund of [requested] in Stripe themselves ([leftToOwnerRecord]),
+  /// best effort.
+  static Future<void> recordLeftToOwner({
+    required String facilityId,
+    required String tenantId,
+    required String contractId,
+    required double requested,
+  }) =>
+      _record(
+        facilityId: facilityId,
+        tenantId: tenantId,
+        contractId: contractId,
+        details: leftToOwnerRecord(requested),
+        refunded: 0,
+      );
+
+  static Future<void> _record({
+    required String facilityId,
+    required String tenantId,
+    required String contractId,
+    required Map<String, dynamic> details,
+    required double refunded,
+    bool onContract = true,
   }) async {
-    final details = outcome.contractRecord();
-    try {
-      await FirebaseFirestore.instance
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('contracts')
-          .doc(contractId)
-          .update({
-        'moveOutCardRefund': {
-          ...details,
-          'recordedAt': FieldValue.serverTimestamp(),
-          'recordedBy': FirebaseAuth.instance.currentUser?.uid,
-        },
-        'moveOutRefund': outcome.refunded,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (kDebugMode) print('⚠️ [MoveOut] Card refund not recorded on the contract: $e');
+    if (onContract) {
+      try {
+        await FirebaseFirestore.instance
+            .collection('facilities')
+            .doc(facilityId)
+            .collection('contracts')
+            .doc(contractId)
+            .update({
+          'moveOutCardRefund': {
+            ...details,
+            'recordedAt': FieldValue.serverTimestamp(),
+            'recordedBy': FirebaseAuth.instance.currentUser?.uid,
+          },
+          'moveOutRefund': refunded,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      } catch (e) {
+        if (kDebugMode) print('⚠️ [MoveOut] Card refund not recorded on the contract: $e');
+      }
     }
     await AuditService.logEvent(
       facilityId: facilityId,

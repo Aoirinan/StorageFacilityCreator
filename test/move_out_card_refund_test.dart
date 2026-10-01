@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sfcapp/services/audit_service.dart';
 import 'package:sfcapp/services/move_out_card_refund.dart';
 import 'package:sfcapp/services/move_out_service.dart';
 
@@ -250,9 +251,11 @@ void main() {
       expect(outcome.uncertain, isTrue);
       expect(outcome.refunded, 30);
       expect(outcome.leftOnLedger, 50);
+      // Not "not made": the call that failed may have refunded it.
+      expect(outcome.alertTitle, 'Card refund only partly confirmed');
       final alert = outcome.ownerAlert!;
-      expect(alert, startsWith(r'The app refunded $30.00 to their card through Stripe. The other $50.00 was not refunded: '
-          'Failed to process refund: Card refund failed: charge already refunded. No refund was issued.'));
+      expect(alert, startsWith(r'The app refunded $30.00 to their card through Stripe. The other $50.00 may not have '
+          'been refunded: Failed to process refund: Card refund failed: charge already refunded. No refund was issued.'));
       // The ledger is where a refund the failed call made shows up, and it
       // is not recorded a second time.
       expect(alert, contains('The call that failed may still have refunded their card'));
@@ -338,8 +341,10 @@ void main() {
       final outcome = await run(fake, reread: () async => throw Exception('offline'));
       expect(outcome.status, CardRefundStatus.notMade);
       expect(outcome.uncertain, isTrue);
-      expect(outcome.ownerAlert, startsWith(r'The $50.00 was not refunded: Exception: connection reset'));
+      expect(outcome.alertTitle, 'Card refund not confirmed');
+      expect(outcome.ownerAlert, startsWith(r'The $50.00 may not have been refunded: Exception: connection reset'));
       expect(outcome.ownerAlert, contains('may still have refunded their card'));
+      expect(outcome.ownerAlert, isNot(contains('was not refunded')));
     });
 
     test('a facility with no connected Stripe account: processRefund only logs it, which is not a refund', () async {
@@ -367,10 +372,17 @@ void main() {
       ]);
       expect(outcome.status, CardRefundStatus.notMade);
       expect(outcome.uncertain, isFalse);
+      expect(outcome.knownRefundId, 're_test_earlier');
       final alert = outcome.ownerAlert!;
-      expect(alert, startsWith(r'The $10.00 was not refunded: no new refund was made. Stripe answered with an '
-          'earlier refund that is already on their ledger (re_test_earlier); it is not this one, so do not count it.'));
-      expect(alert, contains(r'To refund it: refund $10.00 to their card in your Stripe dashboard.'));
+      expect(alert, startsWith(r'No new refund was made for the $10.00: Stripe answered with a refund that is '
+          'already on their ledger (re_test_earlier).'));
+      // With request ids that refund can be this move-out's, made by an
+      // earlier press: "it is not this one" sent the owner to refund it
+      // again by hand. They look at the ledger first.
+      expect(alert, isNot(contains('not this one')));
+      expect(alert, contains(r'Before refunding anything by hand, look at their ledger for "Refund for charge …" '
+          r'rows from the move-out on. Whatever of the $10.00 they do not cover is still owed'));
+      expect(alert, contains('refund that to their card in your Stripe dashboard'));
       // It used to say a refund already showing in Stripe need only be
       // recorded: the owner found the other unit's refund there, recorded
       // it, and the tenant was paid $10 less than their ledger said.
@@ -387,6 +399,8 @@ void main() {
           requested: 50,
           refunds: [(paymentIntentId: 'pi_test_1', stripeRefundId: 're_test_1', amount: 20)],
         ),
+        const CardRefundOutcome(requested: 50, failure: 'x', knownRefundId: 're_test_1'),
+        const CardRefundOutcome(requested: 50, failure: 'x', refundSinceOffer: true),
       ].map((o) => o.ownerAlert!);
       for (final alert in alerts) {
         expect(alert, isNot(contains('already shows there')));
@@ -539,14 +553,14 @@ void main() {
       );
     });
 
-    test('offered when no card refund has reached the ledger since the move-out', () {
+    test('offered when no refund has reached the ledger since the move-out', () {
       final choice = MoveOutCardRefund.pendingChoiceFrom(pending, rows);
       expect(choice.alert, isNull);
       expect(choice.plan!.slices.map((s) => (s.paymentIntentId, s.amount)), [('pi_test_sep', 36.67)]);
       expect(
         MoveOutCardRefund.pendingOffer(choice.plan!),
         r'This move-out was completed earlier, but its $36.67 card refund was not made: the answer to the '
-        'first press never reached the app, so it did not refund the card, and no card refund has reached '
+        'first press never reached the app, so it did not refund the card, and no refund has reached '
         'their ledger since.\n\n'
         r'The app can make it now: it refunds $36.67 to their card payment of Sep 3, 2026 through Stripe.',
       );
@@ -570,14 +584,126 @@ void main() {
         isFalse,
       );
       expect(MoveOutCardRefund.mayOfferPending((requested: 36.67, since: null), rows), isFalse);
-      // A cash refund row (no Stripe payment) does not count.
+    });
+
+    test('a refund row naming no Stripe payment counts too: an Add entry refund has none', () {
+      // What Add entry, type Refund writes: no referenceId, no metadata. It
+      // is the row the alerts ask for after a refund made in Stripe, so the
+      // whole refund was offered again once the owner had made it.
+      Map<String, dynamic> addEntryRefund(DateTime at) => {
+            '_id': 'manual-refund',
+            'tenantId': 'tenant-1',
+            'type': 'refund',
+            'amount': 36.67,
+            'status': 'posted',
+            'entryDate': Timestamp.fromDate(at),
+            'createdAt': Timestamp.fromDate(at),
+          };
+      final after = [...rows, addEntryRefund(movedOut.add(const Duration(days: 1)))];
+      expect(MoveOutCardRefund.mayOfferPending(pending, after), isFalse);
+      expect(MoveOutCardRefund.pendingChoiceFrom(pending, after).plan, isNull);
+      // One from before the move-out is not part of it; a voided one is not a refund.
+      expect(MoveOutCardRefund.mayOfferPending(pending, [...rows, addEntryRefund(DateTime.utc(2026, 9, 1))]), isTrue);
       expect(
         MoveOutCardRefund.mayOfferPending(pending, [
           ...rows,
-          {'_id': 'cash-refund', 'type': 'refund', 'amount': 5, 'status': 'posted', 'referenceId': 'contract-1'},
+          {...addEntryRefund(movedOut.add(const Duration(days: 1))), 'status': 'voided'},
         ]),
         isTrue,
       );
+    });
+
+    test('a refund that lands between the offer and the press is not made again', () async {
+      // Two staff, or a reload and a second press: the other press's $30
+      // refund of September lands while this press's offer is open.
+      final atOffer = [
+        _payment('payment_pi_test_sep', 30, pi: 'pi_test_sep', on: sep),
+        _payment('payment_pi_test_aug', 40, pi: 'pi_test_aug', on: aug),
+      ];
+      final offered = MoveOutCardRefund.pendingChoiceFrom(pending, atOffer).plan!;
+      expect(offered.slices.map((s) => (s.paymentIntentId, s.amount)), [('pi_test_sep', 30.0), ('pi_test_aug', 6.67)]);
+      final landed = _refund('re_test_first', 30, referencePi: 'pi_test_sep', at: movedOut.add(const Duration(minutes: 2)));
+      final atPress = [...atOffer, landed];
+      Future<CardRefundOutcome> press(
+        _FakeProcessRefund fake,
+        List<Map<String, dynamic>> rows, {
+        DateTime? pendingSince,
+      }) =>
+          MoveOutCardRefund.refund(
+            facilityId: 'fac-1',
+            tenantId: 'tenant-1',
+            contractId: 'contract-1',
+            amount: pending.requested,
+            rows: rows,
+            call: fake.call,
+            pendingSince: pendingSince,
+          );
+
+      // Unchecked, the plan put all of it on August: another request id, so
+      // Stripe refunded it a second time.
+      final unchecked = _FakeProcessRefund([
+        {'success': true, 'stripeRefundId': 're_test_second'},
+      ]);
+      await press(unchecked, atPress);
+      expect(unchecked.calls.map((c) => (c['referenceId'], c['amount'])), [('pi_test_aug', 36.67)]);
+
+      final fake = _FakeProcessRefund([]);
+      final outcome = await press(fake, atPress, pendingSince: movedOut);
+      expect(fake.calls, isEmpty);
+      expect(outcome.refundSinceOffer, isTrue);
+      expect(outcome.refunded, 0);
+      expect(outcome.alertTitle, 'Card refund may already be made');
+      final alert = outcome.ownerAlert!;
+      expect(alert, contains('A refund has reached their ledger since the app offered to make it'));
+      expect(alert, contains('Nothing was refunded just now.'));
+      expect(alert, contains(r'"Refund for charge …" rows from the move-out on. Whatever of the $36.67 they do not '
+          'cover is still owed'));
+
+      // Nor when the plan stays on one payment under the same request id:
+      // Stripe answered with the first refund, and the owner was told it
+      // was not this one and to refund it by hand.
+      final roomy = [
+        _payment('payment_pi_test_big', 100, pi: 'pi_test_big', on: sep),
+        _refund('re_test_first', 36.67, referencePi: 'pi_test_big', at: movedOut.add(const Duration(minutes: 2))),
+      ];
+      final sameKey = _FakeProcessRefund([
+        {'success': true, 'stripeRefundId': 're_test_first'},
+      ]);
+      expect((await press(sameKey, roomy, pendingSince: movedOut)).refundSinceOffer, isTrue);
+      expect(sameKey.calls, isEmpty);
+
+      // With nothing new on the ledger, the offered refund is made as offered.
+      final clean = _FakeProcessRefund([
+        {'success': true, 'stripeRefundId': 're_test_a'},
+        {'success': true, 'stripeRefundId': 're_test_b'},
+      ]);
+      final made = await press(clean, atOffer, pendingSince: movedOut);
+      expect(clean.calls.map((c) => (c['referenceId'], c['amount'])), [('pi_test_sep', 30.0), ('pi_test_aug', 6.67)]);
+      expect(made.status, CardRefundStatus.refunded);
+    });
+
+    test('refunding it in Stripe themselves takes it off pending, so it is not offered again', () async {
+      // processMoveOut sends back only a 'pending' record.
+      expect(MoveOutCardRefund.leftToOwnerRecord(36.67), {
+        'status': 'manual',
+        'requested': 36.67,
+        'refunded': 0.0,
+        'leftOnLedger': 36.67,
+        'refunds': <Map<String, dynamic>>[],
+        'reason': 'the owner chose to refund it in Stripe themselves',
+      });
+      final logged = <AuditLogEntry>[];
+      AuditService.recordForTesting = logged.add;
+      addTearDown(() => AuditService.recordForTesting = null);
+      await MoveOutCardRefund.recordLeftToOwner(
+        facilityId: 'fac-1',
+        tenantId: 'tenant-1',
+        contractId: 'contract-1',
+        requested: 36.67,
+      );
+      expect(logged.map((e) => (e.eventType, e.targetId, e.after?['status'])), [
+        ('moveout.cardRefund', 'contract-1', 'manual'),
+      ]);
     });
 
     test('not offered when the app has no card payment to refund', () {
@@ -594,6 +720,13 @@ void main() {
       expect(screen, contains('if (make != true) {'));
       expect(screen, contains('MoveOutCardRefund.refundAfterMoveOut('));
       expect(screen, contains('contractId: widget.contractId,'));
+      // The refund read checks again for one that landed while it asked.
+      expect(screen, contains('pendingSince: pending.since,'));
+      // "Refund it in Stripe myself" is recorded before the alert.
+      final declined = screen.indexOf('if (make != true) {');
+      final recorded = screen.indexOf('MoveOutCardRefund.recordLeftToOwner(', declined);
+      expect(recorded, greaterThan(declined));
+      expect(recorded, lessThan(screen.indexOf('MoveOutCardRefund.pendingAlert(pending.requested)', declined)));
     });
   });
 

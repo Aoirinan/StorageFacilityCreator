@@ -121,8 +121,9 @@ test('a card refund a finished move-out left pending is sent back on a retry; no
     requested: 20,
     since: null,
   });
-  // The screen reported back (made, partly made or not made): nothing pending.
-  for (const status of ['refunded', 'partial', 'notMade']) {
+  // The screen reported back (made, partly made or not made), or the owner
+  // chose to refund it in Stripe themselves: nothing pending.
+  for (const status of ['refunded', 'partial', 'notMade', 'manual']) {
     assert.equal(pendingCardRefund({ moveOutCardRefund: { status, requested: 36.67, at } }), null, status);
   }
   assert.equal(pendingCardRefund({}), null);

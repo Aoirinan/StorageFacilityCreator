@@ -146,7 +146,8 @@ export function moveOutLedgerRows(input: {
 
 /**
  * The card refund a finished move-out left 'pending' on [contract]
- * (`moveOutCardRefund`, which the screen replaces with what it refunded):
+ * (`moveOutCardRefund`, which the screen replaces with what it refunded, or
+ * with 'manual' when the owner chooses to refund it in Stripe themselves):
  * the move-out committed, but the screen never reported back, most likely
  * because processMoveOut's answer never reached it, so it never refunded
  * the card. A second press is answered alreadyCompleted with no
