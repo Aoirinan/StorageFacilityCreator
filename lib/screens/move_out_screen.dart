@@ -250,7 +250,9 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
   /// is made from (since, offered), as one can land while the offer is
   /// open. A refund left to the owner, by their choice or because the app
   /// would not make it, is recorded on the contract, so a later press does
-  /// not offer it, or show its alert, again.
+  /// not offer it, or show its alert, again; unless another press has taken
+  /// it meanwhile, when the owner is told that instead
+  /// (MoveOutCardRefund.takenAlert).
   Future<void> _settlePendingCardRefund(PendingCardRefund pending) async {
     final tenant = _tenant;
     if (tenant == null) return;
@@ -262,15 +264,21 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
     if (!mounted) return;
     final plan = choice.plan;
     if (plan == null) {
-      await MoveOutCardRefund.recordLeftToOwner(
-        facilityId: widget.facilityId,
-        tenantId: tenant.id,
-        contractId: widget.contractId,
-        requested: pending.requested,
-        reason: choice.reason,
-      );
+      // Not recorded when the ledger could not be read (no reason): left
+      // pending, a later press checks it again.
+      final reason = choice.reason;
+      final found = reason == null
+          ? null
+          : await MoveOutCardRefund.recordLeftToOwner(
+              facilityId: widget.facilityId,
+              tenantId: tenant.id,
+              contractId: widget.contractId,
+              requested: pending.requested,
+              reason: reason,
+            );
       if (!mounted) return;
-      await _showRefundAlert(choice.title, choice.alert!);
+      final taken = found == null ? null : MoveOutCardRefund.takenAlert(found, pending.requested);
+      await _showRefundAlert(taken?.title ?? choice.title, taken?.alert ?? choice.alert!);
       return;
     }
     final make = await showDialog<bool>(
@@ -296,14 +304,16 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
     if (make != true) {
       // No longer pending: left as it was, a later press of Complete
       // offered the whole refund again after the owner had made it.
-      await MoveOutCardRefund.recordLeftToOwner(
+      final found = await MoveOutCardRefund.recordLeftToOwner(
         facilityId: widget.facilityId,
         tenantId: tenant.id,
         contractId: widget.contractId,
         requested: pending.requested,
       );
       if (!mounted) return;
-      await _showRefundAlert(null, MoveOutCardRefund.pendingAlert(pending.requested));
+      // Another press took it while they chose, and may have made it.
+      final taken = MoveOutCardRefund.takenAlert(found, pending.requested);
+      await _showRefundAlert(taken?.title, taken?.alert ?? MoveOutCardRefund.pendingAlert(pending.requested));
       return;
     }
     final outcome = await MoveOutCardRefund.refundAfterMoveOut(

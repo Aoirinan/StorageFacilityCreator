@@ -480,8 +480,11 @@ class MoveOutService {
   /// commit ([cardRefundSince]): a second session can press Complete while
   /// this answer is on its way, be offered the pending refund and make it,
   /// and this press then planned its own from what that left, on another
-  /// payment or at another amount, which Stripe refunded again.
-  /// [readLedger] and [call] are for tests.
+  /// payment or at another amount, which Stripe refunded again. It is also
+  /// made only if the contract's pending record is still this press's to
+  /// take (MoveOutCardRefund.claim): a second session may have left it to
+  /// the owner, which leaves nothing on the ledger.
+  /// [readLedger], [call] and [firestore] are for tests.
   @visibleForTesting
   static Future<MoveOutResult> afterProcessMoveOut(
     Map<String, dynamic> data,
@@ -491,6 +494,7 @@ class MoveOutService {
     required String contractId,
     Future<List<Map<String, dynamic>>> Function()? readLedger,
     ProcessRefundCall? call,
+    FirebaseFirestore? firestore,
   }) async {
     final moveOut = moveOutResultFromServer(data, calculation);
     final due = cardRefundDue(data);
@@ -503,6 +507,7 @@ class MoveOutService {
       since: cardRefundSince(data),
       readLedger: readLedger,
       call: call,
+      firestore: firestore,
     );
     return withCardRefund(moveOut, outcome);
   }

@@ -92,6 +92,7 @@ dev_dependencies:
   riverpod_lint: ^3.1.0
   firebase_core_platform_interface: ^6.0.2
   firebase_auth_mocks: ^0.15.1
+  fake_cloud_firestore: ^4.1.0
 
 flutter:
   uses-material-design: true
