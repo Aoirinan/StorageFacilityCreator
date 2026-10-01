@@ -33,6 +33,10 @@ import 'package:sfcapp/providers/payment_provider.dart';
 import 'package:sfcapp/services/public_payment_link_service.dart';
 import 'package:sfcapp/services/stripe_service.dart';
 import 'package:sfcapp/widgets/dispute_payment_dialog.dart';
+import 'package:sfcapp/providers/permission_provider.dart';
+import 'package:sfcapp/services/ledger_card_refund.dart';
+import 'package:sfcapp/services/move_out_card_refund.dart';
+import 'package:sfcapp/widgets/card_refund_dialog.dart';
 
 /// What the ledger says when part of the balance is card disputes.
 String disputedBalanceNote(double disputed) =>
@@ -92,6 +96,12 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
   bool _sendingStatement = false;
   bool _undoingHistory = false;
   bool _recordingDisputePayment = false;
+  bool _refundingCard = false;
+
+  /// Card refunds pressed on this ledger that could not be confirmed, by
+  /// PaymentIntent: a new Refund dialog on that payment has a new request
+  /// id, so it asks the owner to check before refunding again.
+  final Map<String, double> _unconfirmedCardRefunds = {};
 
   @override
   Widget build(BuildContext context) {
@@ -231,6 +241,16 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                   .value
                   ?.ledgerEntryIds ??
               const <String>{};
+
+          // Card payments with something left to refund, and whether this
+          // user may refund them (asked only when there is one).
+          final refundable = LedgerCardRefund.refundableRows(entries);
+          final canRefund = refundable.isNotEmpty &&
+              (ref
+                      .watch(canRefundCardPaymentsAtFacilityProvider(
+                          widget.tenant.facilityId))
+                      .value ??
+                  false);
 
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -521,6 +541,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                 else
                   ...filteredEntries.map((entry) {
                     final outstanding = openDisputeOutstanding(entry, entries);
+                    final cardPayment = canRefund ? refundable[entry.id] : null;
                     return LedgerEntryCard(
                       entry: entry,
                       onInvoice: invoicedIds.contains(entry.id),
@@ -528,6 +549,9 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                       onRecordDisputePayment: outstanding == null || _recordingDisputePayment
                           ? null
                           : () => _recordDisputePayment(context, entry, outstanding),
+                      onRefund: cardPayment == null || _refundingCard
+                          ? null
+                          : () => _refundCardPayment(context, cardPayment, entries),
                     );
                   }),
                     ],
@@ -865,6 +889,76 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
       ));
     } finally {
       if (mounted) setState(() => _recordingDisputePayment = false);
+    }
+  }
+
+  /// Refund on a card payment row: refunds it, or part of it, to the
+  /// tenant's card through processRefund ([LedgerCardRefund]). The dialog
+  /// makes the refund while it is open, so a retry reuses its request id.
+  /// The refund row and the new balance come in on the live ledger.
+  Future<void> _refundCardPayment(
+    BuildContext context,
+    LedgerCardPayment payment,
+    List<LedgerEntry> entries,
+  ) async {
+    if (_refundingCard) return;
+    setState(() => _refundingCard = true);
+    final messenger = ScaffoldMessenger.of(context);
+    final tenant = widget.tenant;
+    final backend = ref.read(ledgerCardRefundBackendProvider);
+    // The Stripe refunds on the ledger as the dialog opens: an answer naming
+    // one of them made nothing new.
+    final known = MoveOutCardRefund.recordedRefundIds([
+      for (final entry in entries) LedgerCardRefund.rowOf(entry),
+    ]);
+    try {
+      final outcome = await showDialog<LedgerCardRefundOutcome>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => CardRefundDialog(
+          payment: payment,
+          unconfirmedEarlier: _unconfirmedCardRefunds[payment.paymentIntentId],
+          onRefund: (amount, requestId, note) => LedgerCardRefund.refund(
+            facilityId: tenant.facilityId,
+            tenantId: tenant.id,
+            paymentIntentId: payment.paymentIntentId,
+            amount: amount,
+            requestId: requestId,
+            known: known,
+            note: note,
+            call: backend.call,
+            reread: () => backend.reread(tenant.facilityId, tenant.id),
+          ),
+        ),
+      );
+      if (outcome == null || !mounted) return;
+      switch (outcome.status) {
+        case LedgerCardRefundStatus.refunded:
+          _unconfirmedCardRefunds.remove(payment.paymentIntentId);
+          messenger.showSnackBar(SnackBar(
+            content: Text('Refunded ${MoveOutCardRefund.money(outcome.amount)} to their card'),
+            backgroundColor: AppTheme.success,
+          ));
+        case LedgerCardRefundStatus.unconfirmed:
+          // Closed without knowing: what to check stays on screen until
+          // they close it.
+          _unconfirmedCardRefunds[payment.paymentIntentId] = outcome.amount;
+          await showDialog<void>(
+            context: this.context,
+            builder: (dialogContext) => AlertDialog(
+              title: const Text('Card refund not confirmed'),
+              content: SingleChildScrollView(child: Text(outcome.ownerMessage ?? '')),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('OK')),
+              ],
+            ),
+          );
+        case LedgerCardRefundStatus.notRefunded:
+          // The dialog said why and what to do before it was closed.
+          break;
+      }
+    } finally {
+      if (mounted) setState(() => _refundingCard = false);
     }
   }
 

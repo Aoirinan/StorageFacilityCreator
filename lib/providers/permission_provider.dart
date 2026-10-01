@@ -24,6 +24,21 @@ final canProcessMoveOutAtFacilityProvider = FutureProvider.family<bool, String>(
   return check.hasPermission;
 });
 
+/// Whether the signed-in user may refund a tenant's card payment from the
+/// ledger at this facility. The processRefund callable admits the
+/// facility's owner and its managers, the roles that hold
+/// [PermissionType.processRefund]. [PermissionType.issueRefund] is the
+/// owner's alone (no other role lists it), so it would hide Refund from
+/// managers the server lets refund.
+final canRefundCardPaymentsAtFacilityProvider = FutureProvider.family<bool, String>((ref, facilityId) async {
+  if (facilityId.isEmpty || facilityId == 'all') return false;
+  final check = await PermissionService.hasPermission(
+    permission: PermissionType.processRefund,
+    facilityId: facilityId,
+  );
+  return check.hasPermission;
+});
+
 /// Whether [role] may write tenant docs in bulk. The tenants update rule
 /// (firestore-rules-src/facilities/01-tenants.rules) admits owners and
 /// managers only, so an employee's bulk save would be refused part way.
