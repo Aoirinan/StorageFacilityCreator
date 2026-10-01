@@ -42,6 +42,9 @@ import 'package:sfcapp/router/back_navigation.dart';
 import 'package:sfcapp/widgets/dnr_blocking_dialog.dart';
 import '../constants/location_options.dart';
 import '../ui/payments/tenant_billing_panel.dart';
+import 'package:sfcapp/services/stripe_payments_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart' show DocumentSnapshot;
+import 'package:sfcapp/widgets/autopay_controls.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' as material;
 import 'package:intl/intl.dart';
@@ -672,23 +675,20 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
               ),
             ],
             const SizedBox(height: 12),
-            Row(
-              children: [
-                if (!autopay.isOn)
-                  ElevatedButton.icon(
-                    onPressed: _isAutopayLoading ? null : () => _setAutopay(true, tenant),
-                    icon: _isAutopayLoading ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.check_circle_outline, size: 18),
-                    label: const Text('Enable autopay'),
-                  ),
-                if (!autopay.isOn) const SizedBox(width: 12),
-                if (autopay.isOn)
-                  OutlinedButton.icon(
-                    onPressed: _isAutopayLoading ? null : () => _setAutopay(false, tenant),
-                    icon: const Icon(Icons.cancel_outlined, size: 18),
-                    label: const Text('Disable autopay'),
-                    style: OutlinedButton.styleFrom(foregroundColor: AppTheme.error),
-                  ),
-              ],
+            // billing/default too: Disable is offered while autopay is set
+            // up there (armed, or a legacy subscription), not only while
+            // this card says ON. See AutopayControls.
+            StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+              stream: StripePaymentsService.watchTenantBilling(
+                facilityId: tenant.facilityId,
+                tenantId: tenant.id,
+              ),
+              builder: (context, billingSnap) => AutopayControls(
+                displayOn: autopay.isOn,
+                billing: billingSnap.data?.data(),
+                busy: _isAutopayLoading,
+                onSet: (enable) => _setAutopay(enable, tenant),
+              ),
             ),
           ],
         ),

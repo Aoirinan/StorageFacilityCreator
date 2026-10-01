@@ -16,6 +16,10 @@ enum LedgerEntryType {
   payment,
   credit,
   adjustment,
+
+  // Positive: paying money back takes away a credit the tenant held, so what
+  // they owe goes back up (the balance is the plain sum of posted amounts).
+  // It was listed with the negatives here, and two writers followed that.
   refund,
 }
 

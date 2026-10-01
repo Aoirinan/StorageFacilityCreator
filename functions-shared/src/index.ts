@@ -148,6 +148,8 @@ export type {
   SubscriptionLabel,
   SubscriptionCanceller,
 } from './stripe/subscriptionCleanup';
+export { cancelLegacyAutopaySubscription, legacySubscriptionId } from './stripe/legacyTenantAutopay';
+export type { LegacyCancelOutcome, LegacySubscriptionStripe } from './stripe/legacyTenantAutopay';
 export { mapStripeErrorToUserMessage } from './stripe/errors';
 export { getOrCreateBasePriceId, getOrCreateAddOnPriceId } from './stripe/subscriptionPricing';
 export { FIRST_MONTH_FREE_COUPON_ID } from './stripe/firstMonthFreeCoupon';

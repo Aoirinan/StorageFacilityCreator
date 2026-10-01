@@ -10,6 +10,95 @@ import {
   cancelSubscriptions,
   collectSubscriptionsToCancel,
 } from '@sfc/functions-shared/stripe/subscriptionCleanup';
+import {
+  LegacyCancelOutcome,
+  LegacySubscriptionStripe,
+  cancelLegacyAutopaySubscription,
+  legacySubscriptionId,
+} from '@sfc/functions-shared/stripe/legacyTenantAutopay';
+
+/** Tenant collections a facility may have; oldTenants is the legacy one. */
+export const TENANT_COLLECTIONS = ['tenants', 'oldTenants'] as const;
+export type TenantCollection = (typeof TENANT_COLLECTIONS)[number];
+
+/** billing/default docs read per getAll. */
+const BILLING_READ_BATCH = 300;
+
+/** One tenant's billing/default doc, as [tenantBillingDocs] reads it. */
+export type TenantBilling = {
+  collection: TenantCollection;
+  tenantId: string;
+  tenant: Record<string, unknown>;
+  billing: Record<string, unknown>;
+};
+
+/**
+ * Every tenant's billing/default doc that exists, in both tenant
+ * collections, active or not. Tenant docs are read with their name only.
+ */
+export async function tenantBillingDocs(
+  db: admin.firestore.Firestore,
+  facilityRef: admin.firestore.DocumentReference,
+): Promise<TenantBilling[]> {
+  const out: TenantBilling[] = [];
+  for (const collection of TENANT_COLLECTIONS) {
+    const tenants = (await facilityRef.collection(collection).select('name').get()).docs;
+    for (let i = 0; i < tenants.length; i += BILLING_READ_BATCH) {
+      const batch = tenants.slice(i, i + BILLING_READ_BATCH);
+      const billing = await db.getAll(...batch.map((t) => t.ref.collection('billing').doc('default')));
+      billing.forEach((snap, j) => {
+        if (!snap.exists) return;
+        out.push({ collection, tenantId: batch[j].id, tenant: batch[j].data(), billing: snap.data() || {} });
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Cancels the tenants' legacy AutoPay subscriptions in [docs], once each
+ * ([seen] carries the ids already handled across facilities, for an account
+ * delete). They are on the platform Stripe account, so deleting the
+ * facility doesn't stop them: a super admin's delete (which skips the
+ * owner's autopay refusal) left them charging tenants with no record
+ * anywhere.
+ *
+ * Through cancelLegacyAutopaySubscription, as every other place that
+ * switches this AutoPay off: one Stripe says is gone, or looks up as
+ * canceled or incomplete_expired, counts as cancelled. The generic
+ * cancelSubscriptions knows an ended subscription only by its error's code
+ * or wording, so a subscription ended long ago whose cancel error was
+ * worded otherwise read as 'failed' on every try, and the purge refused
+ * (FacilityBillingNotStoppedError) for good.
+ */
+export async function cancelTenantLegacySubscriptions(
+  stripe: () => LegacySubscriptionStripe,
+  facilityId: string,
+  docs: TenantBilling[],
+  seen: Set<string> = new Set(),
+): Promise<CancelOutcome[]> {
+  const outcomes: CancelOutcome[] = [];
+  for (const doc of docs) {
+    const id = legacySubscriptionId(doc.billing);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    let outcome: LegacyCancelOutcome;
+    let error = 'not cancelled; it may still be billing';
+    try {
+      outcome = await cancelLegacyAutopaySubscription(stripe, { facilityId, tenantId: doc.tenantId }, doc.billing);
+    } catch (e: unknown) {
+      // No Stripe client (a missing key): nothing was cancelled.
+      outcome = 'failed';
+      error = e instanceof Error ? e.message : String(e);
+    }
+    outcomes.push(
+      outcome === 'failed'
+        ? { id, label: 'tenant-autopay', status: 'failed', error }
+        : { id, label: 'tenant-autopay', status: 'canceled' },
+    );
+  }
+  return outcomes;
+}
 
 /**
  * Permanently removing one facility: shared by superAdminDeleteFacility and
@@ -26,6 +115,12 @@ import {
 export interface FacilityPurgeDeps {
   /** Cancels these subscriptions, carrying on past individual failures. */
   cancelSubscriptions(subscriptions: CancellableSubscription[]): Promise<CancelOutcome[]>;
+  /**
+   * The platform Stripe client the tenants' legacy AutoPay subscriptions
+   * are cancelled with (cancelTenantLegacySubscriptions). Only called when
+   * a tenant has one.
+   */
+  legacyAutopayStripe(): LegacySubscriptionStripe;
   /** Sets the legacy account subscription's quantities for [facilityCount] facilities. */
   alignAccountSubscription(subscriptionId: string, facilityCount: number): Promise<void>;
   /** Removes Storage objects under [prefix]. Best effort: never throws. */
@@ -60,10 +155,16 @@ export async function purgeFacility(
   // Stop the billing before removing the thing being billed for. Done first
   // on purpose: if the delete succeeded and this failed, the customer would
   // keep paying for a facility that no longer exists, and nothing would be
-  // left to point at the charge.
-  const subscriptionOutcomes = await deps.cancelSubscriptions(
-    collectSubscriptionsToCancel(facilityData, null),
-  );
+  // left to point at the charge. Its tenants' legacy AutoPay subscriptions
+  // too (cancelTenantLegacySubscriptions), for the same reason.
+  const subscriptionOutcomes = [
+    ...(await deps.cancelSubscriptions(collectSubscriptionsToCancel(facilityData, null))),
+    ...(await cancelTenantLegacySubscriptions(
+      () => deps.legacyAutopayStripe(),
+      facilityId,
+      await tenantBillingDocs(db, facilityRef),
+    )),
+  ];
   if (anyCancelFailed(subscriptionOutcomes)) {
     throw new FacilityBillingNotStoppedError(subscriptionOutcomes);
   }
@@ -103,6 +204,39 @@ export async function purgeFacility(
   await deps.deleteStoragePrefix(`exports/${facilityId}/`);
   await db.recursiveDelete(facilityRef);
   return { subscriptionOutcomes };
+}
+
+/**
+ * Stops every subscription behind a facility creator account before it is
+ * deleted (superAdminDeleteFacilityCreatorAccount): each of [facilities]'
+ * own and the account's legacy plan, deduped so one shared by two
+ * facilities is cancelled once, then each facility's tenants' legacy
+ * AutoPay subscriptions (cancelTenantLegacySubscriptions). The caller
+ * deletes nothing when any outcome failed.
+ */
+export async function stopAccountBilling(
+  db: admin.firestore.Firestore,
+  facilities: admin.firestore.QueryDocumentSnapshot[],
+  accountData: Record<string, unknown>,
+  deps: Pick<FacilityPurgeDeps, 'cancelSubscriptions' | 'legacyAutopayStripe'>,
+): Promise<CancelOutcome[]> {
+  const subscriptions = [
+    ...facilities.flatMap((f) => collectSubscriptionsToCancel(f.data() as Record<string, unknown>, null)),
+    ...collectSubscriptionsToCancel(null, accountData),
+  ].filter((sub, i, list) => list.findIndex((other) => other.id === sub.id) === i);
+  const outcomes = [...(await deps.cancelSubscriptions(subscriptions))];
+  const seen = new Set(subscriptions.map((s) => s.id));
+  for (const f of facilities) {
+    outcomes.push(
+      ...(await cancelTenantLegacySubscriptions(
+        () => deps.legacyAutopayStripe(),
+        f.id,
+        await tenantBillingDocs(db, f.ref),
+        seen,
+      )),
+    );
+  }
+  return outcomes;
 }
 
 /**
@@ -210,6 +344,7 @@ export function stripeFacilityPurgeDeps(): FacilityPurgeDeps {
       subscriptions.length === 0
         ? Promise.resolve([])
         : cancelSubscriptions(getStripeClient(), subscriptions),
+    legacyAutopayStripe: () => getStripeClient(),
     alignAccountSubscription: (subscriptionId, facilityCount) =>
       alignAccountSubscriptionQuantity(getStripeClient(), subscriptionId, facilityCount),
     deleteStoragePrefix: deleteStoragePrefixBestEffort,

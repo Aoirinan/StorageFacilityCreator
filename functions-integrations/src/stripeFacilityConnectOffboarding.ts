@@ -3,9 +3,12 @@ import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
 import {
   buildFacilityDisconnectUpdate,
+  cancelLegacyAutopaySubscription,
   deauthorizeConnectedAccount,
   getStripeClient,
+  legacySubscriptionId,
   type FacilityDisconnectReason,
+  type LegacySubscriptionStripe,
 } from '@sfc/functions-shared';
 import { STRIPE_CONNECT_CLIENT_ID, STRIPE_SECRETS_WITH_CONNECT } from './secrets';
 
@@ -14,7 +17,11 @@ import { STRIPE_CONNECT_CLIENT_ID, STRIPE_SECRETS_WITH_CONNECT } from './secrets
  * longer reachable from the platform. Charges through the platform key would
  * fail anyway; clearing the flag keeps the scheduled autopay job from trying.
  */
-export async function disableFacilityTenantAutopay(facilityId: string): Promise<number> {
+export async function disableFacilityTenantAutopay(
+  facilityId: string,
+  // The platform Stripe client, made only for a legacy subscription. Tests pass a fake.
+  stripe: () => LegacySubscriptionStripe = getStripeClient,
+): Promise<number> {
   const db = admin.firestore();
   const facilityRef = db.collection('facilities').doc(facilityId);
   const now = admin.firestore.FieldValue.serverTimestamp();
@@ -24,9 +31,24 @@ export async function disableFacilityTenantAutopay(facilityId: string): Promise<
   for (const sub of ['tenants', 'oldTenants'] as const) {
     const tenants = await facilityRef.collection(sub).get();
     for (const tenantDoc of tenants.docs) {
-      const billing = await tenantDoc.ref.collection('billing').where('autopayEnabled', '==', true).get();
+      const billing = await tenantDoc.ref.collection('billing').get();
       for (const doc of billing.docs) {
-        await doc.ref.update({ autopayEnabled: false, stripeSubscriptionId: null, updatedAt: now });
+        const data = doc.data();
+        if (data.autopayEnabled !== true && !legacySubscriptionId(data)) continue;
+        // A legacy subscription is on the platform account, so detaching the
+        // facility's account doesn't stop it: it is cancelled here. Its id
+        // was nulled without that, hiding a live subscription from the
+        // facility delete's check; it now goes only once it is not billing.
+        const legacy = await cancelLegacyAutopaySubscription(
+          stripe,
+          { facilityId, tenantId: tenantDoc.id },
+          data,
+        );
+        await doc.ref.update({
+          autopayEnabled: false,
+          ...(legacy === 'failed' ? {} : { stripeSubscriptionId: null }),
+          updatedAt: now,
+        });
         disabled += 1;
       }
       const methods = await tenantDoc.ref.collection('paymentMethods').where('autopayEnabled', '==', true).get();

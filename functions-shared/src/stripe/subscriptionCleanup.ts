@@ -15,7 +15,11 @@
  *   facilityCreatorAccounts/{id}.stripeSubscriptionId  the legacy account plan
  */
 
-export type SubscriptionLabel = 'platform' | 'website' | 'account';
+/**
+ * 'tenant-autopay' is a tenant's legacy AutoPay subscription (see
+ * legacyTenantAutopay.ts), cancelled with its facility when that is purged.
+ */
+export type SubscriptionLabel = 'platform' | 'website' | 'account' | 'tenant-autopay';
 
 export interface CancellableSubscription {
   id: string;

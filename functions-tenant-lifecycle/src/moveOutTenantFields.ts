@@ -1,4 +1,5 @@
 import { FieldValue } from 'firebase-admin/firestore';
+import { unitStatusOf } from '@sfc/functions-shared';
 
 type DocData = Record<string, unknown>;
 
@@ -8,9 +9,30 @@ export type TenantUnit = { id: string; data: DocData };
 /** A unit's number and monthly rate, as rentAfterUnitChange sums them. */
 export type UnitRent = { unitNumber: string; rate: number };
 
+/** A plain decimal, as Dart's double.tryParse reads one: no hex, no "Infinity", no trailing text. */
+const DECIMAL = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+
+/**
+ * A monthly rate field as a number: a finite number, or a numeric string
+ * (the app's UnitModel and TenantModel read those as their number, through
+ * numberFromField); anything else is 0. Strings used to read as 0 here
+ * only, so a unit at '150' made processMoveOut warn where the app
+ * subtracted it.
+ *
+ * PARITY: TenantService.rateField in lib/services/tenant_service.dart. Both
+ * test suites run the "rates" table in src/test/fixtures/rentAfterUnitChange.json.
+ */
+export function rateFromField(value: unknown): number {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value !== 'string') return 0;
+  const text = value.trim();
+  if (!DECIMAL.test(text)) return 0;
+  const rate = Number(text);
+  return Number.isFinite(rate) ? rate : 0;
+}
+
 function rateOf(data: DocData | null | undefined): number {
-  const rate = data?.monthlyRate;
-  return typeof rate === 'number' && Number.isFinite(rate) ? rate : 0;
+  return rateFromField(data?.monthlyRate);
 }
 
 function numberOf(data: DocData | null | undefined): string {
@@ -55,13 +77,41 @@ function unitsLabel(numbers: string[]): string {
   return `${numbers.length === 1 ? 'unit' : 'units'} ${joinReadable(numbers)}`;
 }
 
-/** Occupied by them in some way: a unit marked available with a stale link is not (as in the app). */
+/**
+ * Occupied by them in some way, as the move-out screen reads the unit:
+ * linked to them (exactly, as the transaction's query matches), a status
+ * other than available as UnitModel reads it (unitStatusOf: no status, or
+ * one that is not a UnitStatus name, reads as available), and not archived
+ * (`(archived ?? false) === false`, the test of the unit list the screen
+ * picks from). A unit marked available with a stale link is not held.
+ *
+ * The screen prorates the vacated unit's rate only while the tenant keeps
+ * another unit by this reading, and the tenant's own otherwise
+ * (moveOutProrationRate); processMoveOut refuses a net that is not the
+ * screen's. This counted a linked unit with no status as kept where the
+ * screen read it as available, so such a move-out was refused every time.
+ *
+ * PARITY: MoveOutService.keepsOtherUnits in lib/services/move_out_service.dart.
+ * Both test suites run src/test/fixtures/moveOutKeepsOtherUnits.json.
+ */
 export function isHeld(unit: TenantUnit, tenantId: string): boolean {
   return (
     unit.data.tenantId === tenantId &&
-    String(unit.data.status ?? '') !== 'available' &&
-    unit.data.archived !== true
+    unitStatusOf(unit.data) !== 'available' &&
+    (unit.data.archived ?? false) === false
   );
+}
+
+/**
+ * The monthly rate a move-out prorates: the tenant's own when it ends their
+ * tenancy (their rate covers only this unit), else only the vacated unit's
+ * ([unit]), since their rate also covers the units they keep.
+ *
+ * PARITY: MoveOutService.prorationRate, with keepsOtherUnits the negation of
+ * [endsTenancy] (tenantFieldsAfterMoveOut, by isHeld).
+ */
+export function moveOutProrationRate(input: { endsTenancy: boolean; tenant: DocData; unit: DocData }): number {
+  return input.endsTenancy ? rateOf(input.tenant) : rateOf(input.unit);
 }
 
 /** A unit by id and number, as the primary-unit rules below compare them. */

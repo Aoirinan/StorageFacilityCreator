@@ -7,9 +7,11 @@ import { FieldValue } from 'firebase-admin/firestore';
 
 import {
   UnitRent,
+  moveOutProrationRate,
   primaryMovesOnRelease,
   primaryUnitAfterRelease,
   primaryUnitFields,
+  rateFromField,
   rentAfterUnitChange,
   tenantFieldsAfterMoveOut,
 } from '../moveOutTenantFields';
@@ -197,13 +199,29 @@ test('rounded to the cent', () => {
   assert.equal(settled.fields.monthlyRate, 150.2);
 });
 
-test('a rate that is not a number counts as 0', () => {
-  const settled = after({ tenant: { name: 'Ada Park', unitNumber: '7', monthlyRate: '250' } });
+test('a numeric string rate is its number, on the tenant and on a unit, as the app reads it', () => {
+  // Both read as 0 here only: a unit at '150' made processMoveOut warn where
+  // the app subtracted it, and a tenant at '250' was warned about as $0.00.
+  const settled = after({
+    tenant: { name: 'Ada Park', unitNumber: '7', monthlyRate: '250' },
+    linkedUnits: [
+      { id: 'u101', data: unit101 },
+      { id: 'u102', data: { ...unit102, monthlyRate: '150' } },
+    ],
+  });
+  assert.equal(settled.fields.monthlyRate, 150);
+  assert.equal(settled.rentNotice, 'Monthly rent is now $150.00 for unit 102.');
+  assert.equal(settled.rentWarning, null);
+});
+
+test('a rate that is not a number at all counts as 0', () => {
+  const settled = after({ tenant: { name: 'Ada Park', unitNumber: '7', monthlyRate: 'about 250' } });
   assert.equal(settled.fields.monthlyRate, undefined);
   assert.match(settled.rentWarning ?? '', /their rent is \$0\.00\.$/);
 });
 
 type Fixture = {
+  rates: Array<[unknown, number]>;
   cases: Array<{
     name: string;
     current: number;
@@ -234,4 +252,51 @@ test('rentAfterUnitChange matches the shared table (the app runs it too)', () =>
     assert.equal(change.notice, c.notice, c.name);
     assert.equal(change.needsCheck, (c.notice ?? '').startsWith('Check '), c.name);
   }
+});
+
+test('rateFromField matches the shared rates table (the app reads rates the same way)', () => {
+  const fixture = JSON.parse(
+    readFileSync(join(__dirname, '..', '..', 'src', 'test', 'fixtures', 'rentAfterUnitChange.json'), 'utf8'),
+  ) as Fixture;
+  assert.ok(fixture.rates.length > 10);
+  for (const [stored, rate] of fixture.rates) {
+    assert.equal(rateFromField(stored), rate, JSON.stringify(stored));
+  }
+});
+
+type DocData = Record<string, unknown>;
+
+type KeepsFixture = {
+  tenant: DocData;
+  vacated: { id: string; data: DocData };
+  otherDefaults: DocData;
+  cases: Array<{ name: string; data: DocData; keepsOtherUnits: boolean; rate: number }>;
+};
+
+test('whether they keep another unit, and so the rate prorated, matches the shared table (the move-out screen runs it too)', () => {
+  // processMoveOut refuses a net that is not the screen's, so both must
+  // pick the same rate: a linked unit with no status was kept here and
+  // available there, and every such move-out was refused.
+  const fixture = JSON.parse(
+    readFileSync(join(__dirname, '..', '..', 'src', 'test', 'fixtures', 'moveOutKeepsOtherUnits.json'), 'utf8'),
+  ) as KeepsFixture;
+  assert.ok(fixture.cases.length > 10);
+  const { tenant, vacated } = fixture;
+  for (const c of fixture.cases) {
+    const other = { id: 'u2', data: { ...fixture.otherDefaults, ...c.data } };
+    // What the transaction's where('tenantId', '==', 't1') returns: exact matches.
+    const linkedUnits = [vacated, other].filter((u) => u.data.tenantId === 't1');
+    const settled = tenantFieldsAfterMoveOut({ tenantId: 't1', tenant, unitId: vacated.id, unit: vacated.data, linkedUnits });
+    assert.equal(!settled.endsTenancy, c.keepsOtherUnits, c.name);
+    assert.equal(
+      moveOutProrationRate({ endsTenancy: settled.endsTenancy, tenant, unit: vacated.data }),
+      c.rate,
+      c.name,
+    );
+  }
+});
+
+test('the rate prorated is a numeric string read as its number, on either side', () => {
+  assert.equal(moveOutProrationRate({ endsTenancy: true, tenant: { monthlyRate: '250' }, unit: { monthlyRate: 100 } }), 250);
+  assert.equal(moveOutProrationRate({ endsTenancy: false, tenant: { monthlyRate: 250 }, unit: { monthlyRate: '100.5' } }), 100.5);
 });

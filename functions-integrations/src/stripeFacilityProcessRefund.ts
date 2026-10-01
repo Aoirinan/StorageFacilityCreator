@@ -8,6 +8,47 @@ import {
 } from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
 
+/** A caller's per-click id for one refund, or null when it sent none (or one that cannot go in a key). */
+export function refundRequestId(raw: unknown): string | null {
+  return typeof raw === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(raw) ? raw : null;
+}
+
+/**
+ * The Stripe idempotency key for one refund.
+ *
+ * With [requestId] (the caller makes one per refund the operator asks for,
+ * and resends it on a retry), a double-click or a retry after a timeout is
+ * the same refund, while a second deliberate refund of the same amount on
+ * the same charge is a new one. Keyed on charge and amount alone, that
+ * second refund within Stripe's 24 hours got the first one back, and the
+ * operator was told it was done when nothing was refunded. Callers that send
+ * no id keep the charge-and-amount key.
+ */
+export function refundIdempotencyKey(chargeId: string, amountCents: number, requestId: string | null): string {
+  return requestId
+    ? `refund_${chargeId}_${amountCents}_${requestId}`
+    : `refund_${chargeId}_${amountCents}`;
+}
+
+/**
+ * The charge a refund of [paymentIntent] goes against: its `latest_charge`,
+ * an id or (expanded) the charge. PaymentIntents have had no `charges` list
+ * since Stripe API 2022-11-15, and this client pins a later version
+ * (functions-shared stripe/client.ts), so the retrieve below used to ask to
+ * expand 'charges', which Stripe refuses: every card refund failed with
+ * "Card refund failed ... No refund was issued". A `charges` list is still
+ * read when present, for a caller on an older version.
+ */
+export function refundChargeId(paymentIntent: unknown): string | null {
+  const pi = paymentIntent as {
+    latest_charge?: string | { id?: string } | null;
+    charges?: { data?: Array<{ id?: string }> };
+  } | null;
+  const latest = pi?.latest_charge;
+  const id = typeof latest === 'string' ? latest : latest?.id ?? pi?.charges?.data?.[0]?.id;
+  return typeof id === 'string' && id.length > 0 ? id : null;
+}
+
 /**
  * Process refund via Stripe
  * Used for move-out refunds and other refund scenarios
@@ -31,6 +72,7 @@ export const processRefund = functions.runWith({ secrets: STRIPE_SECRETS }).http
   if (!facilityId || !tenantId || !amount || amount <= 0) {
     throw new functions.https.HttpsError('invalid-argument', 'Missing required parameters or invalid amount');
   }
+  const requestId = refundRequestId(data?.requestId);
 
   try {
     // Verify user has access to this facility
@@ -67,7 +109,7 @@ export const processRefund = functions.runWith({ secrets: STRIPE_SECRETS }).http
         // told the refund went through while the card was never touched.
         const paymentIntent = await stripe.paymentIntents.retrieve(
           referenceId,
-          { expand: ['charges'] },
+          {},
           { stripeAccount: stripeConnectAccountId },
         );
 
@@ -75,18 +117,14 @@ export const processRefund = functions.runWith({ secrets: STRIPE_SECRETS }).http
           throw new Error('Payment intent not succeeded, cannot refund');
         }
 
-        const chargeId =
-          (paymentIntent as any).charges?.data?.[0]?.id ??
-          (typeof (paymentIntent as any).latest_charge === 'string'
-            ? (paymentIntent as any).latest_charge
-            : (paymentIntent as any).latest_charge?.id);
+        const chargeId = refundChargeId(paymentIntent);
         if (!chargeId) {
           throw new Error('Charge ID not found in payment intent');
         }
 
-        // Create refund on the connected account. The idempotency key is
-        // derived from the charge and amount so a double-click, or a retry
-        // after a timeout, cannot refund the tenant twice.
+        // Create refund on the connected account, under a key that makes a
+        // double-click or a retry after a timeout the same refund
+        // ([refundIdempotencyKey]).
         const refund = await stripe.refunds.create(
           {
             charge: chargeId,
@@ -94,7 +132,7 @@ export const processRefund = functions.runWith({ secrets: STRIPE_SECRETS }).http
           },
           {
             stripeAccount: stripeConnectAccountId,
-            idempotencyKey: `refund_${chargeId}_${Math.round(amount * 100)}`,
+            idempotencyKey: refundIdempotencyKey(chargeId, Math.round(amount * 100), requestId),
           },
         );
 
@@ -114,6 +152,8 @@ export const processRefund = functions.runWith({ secrets: STRIPE_SECRETS }).http
           .doc(facilityId)
           .collection('ledgers')
           .doc(`refund_${refund.id}`)
+          // Merged: the charge.refunded webhook may have written this row
+          // first, and its metadata (account, PaymentIntent) is kept.
           .set({
             tenantId,
             facilityId,
@@ -130,7 +170,7 @@ export const processRefund = functions.runWith({ secrets: STRIPE_SECRETS }).http
               stripeChargeId: chargeId,
               refundMethod,
             },
-          });
+          }, { merge: true });
 
         // Log audit event
         await writeAuditLog(facilityId, {

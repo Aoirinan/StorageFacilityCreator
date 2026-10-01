@@ -4,16 +4,15 @@ import 'package:intl/intl.dart';
 import '../models/contract_model.dart';
 import '../models/tenant_model.dart';
 import '../models/unit_model.dart';
+import 'package:sfcapp/services/move_out_card_refund.dart';
 import '../services/move_out_service.dart';
 import '../services/contract_service.dart';
 import '../services/tenant_service.dart';
 import '../services/unit_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
-import '../router/app_router.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/router/back_navigation.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 
 class MoveOutScreen extends ConsumerStatefulWidget {
   final String contractId;
@@ -43,7 +42,7 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
   TenantModel? _tenant;
   UnitModel? _unit;
 
-  /// The tenant's units, when they hold several and the link named none.
+  /// The units this move-out can free (MoveOutService.moveOutUnitChoices).
   List<UnitModel> _unitChoices = const [];
   MoveOutCalculation? _calculation;
 
@@ -52,14 +51,19 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
   final _damageFeeController = TextEditingController();
   final _otherFeesController = TextEditingController();
   final _notesController = TextEditingController();
-  // Off until the owner ticks it. The prorated line counts days from the
-  // 1st of the month whatever the tenancy: it charged a tenant whose tenancy
-  // starts on 1 Oct for 24 September days, and for days already covered by
-  // rent posted and paid at move-in.
+  // Off until the owner ticks it, as since the move-out hotfix: whether a
+  // move-out prorates rent is the facility's policy. Ticked, it charges used
+  // days no rent covers and credits rent posted for days after the move-out
+  // (MoveOutRent).
   bool _prorateRent = false;
   bool _processRefund = false;
   String? _refundMethod;
   final _refundReferenceController = TextEditingController();
+
+  /// What the app would refund to the tenant's card, for the words under
+  /// Refund Method (MoveOutCardRefund.preview); null while it loads, or when
+  /// the method is not a card.
+  String? _cardRefundPreview;
 
   @override
   void initState() {
@@ -94,25 +98,30 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
         contract.tenantId,
       );
 
-      UnitModel? unit;
-      var unitChoices = const <UnitModel>[];
-      final unitId = widget.unitId;
-      if (unitId != null && unitId.isNotEmpty) {
-        unit = await UnitService.getUnit(widget.facilityId, unitId);
-      } else if (tenant != null) {
+      // The owner picks which of the tenant's units this move-out frees:
+      // it took their unitNumber's unit, or else the facility's first unit,
+      // so a two-unit tenant's second contract freed their primary unit.
+      ({List<UnitModel> choices, UnitModel? initial}) picked =
+          (choices: const [], initial: null);
+      if (tenant != null) {
         final units = await UnitService.getUnitsForFacility(widget.facilityId);
-        unit = unitToVacate(units: units, tenant: tenant);
-        if (unit == null) {
-          unitChoices = units.where((u) => u.tenantId == tenant.id).toList();
-        }
+        picked = MoveOutService.moveOutUnitChoices(
+          tenantId: tenant.id,
+          tenantUnitNumber: tenant.unitNumber,
+          units: units,
+          tenantUnitId: tenant.unitId,
+          contractUnitId: MoveOutService.contractUnitId(contract),
+          // The unit's own menu names the unit it is moving out of.
+          preferredUnitId: widget.unitId,
+        );
       }
 
       if (!mounted) return;
       setState(() {
         _contract = contract;
         _tenant = tenant;
-        _unit = unit;
-        _unitChoices = unitChoices;
+        _unitChoices = picked.choices;
+        _unit = picked.initial;
         _isLoading = false;
       });
     } catch (e) {
@@ -129,6 +138,14 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
       }
     }
   }
+
+  /// Whether the tenant holds a unit besides the one being freed, by the
+  /// rule processMoveOut applies too (MoveOutService.keepsOtherUnits).
+  bool get _keepsOtherUnits => MoveOutService.keepsOtherUnits(
+        tenantId: _tenant?.id,
+        vacated: _unit,
+        units: _unitChoices,
+      );
 
   Future<void> _calculateCharges() async {
     if (_contract == null || _tenant == null) return;
@@ -147,6 +164,9 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
         damageFee: double.tryParse(_damageFeeController.text),
         otherFees: double.tryParse(_otherFeesController.text),
         prorateRent: _prorateRent,
+        unitRate: _unit?.monthlyRate,
+        keepsOtherUnits: _keepsOtherUnits,
+        unitMoveInDate: _unit?.moveInDate,
       );
 
       setState(() {
@@ -154,6 +174,7 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
         _processRefund = calculation.refundAmount > 0;
         _isCalculating = false;
       });
+      if (_refundMethod == 'creditCard') await _loadCardRefundPreview();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -167,6 +188,134 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
         });
       }
     }
+  }
+
+  /// Works out what the app would refund to the tenant's card, from their
+  /// posted ledger, for [_cardRefundPreview]. The refund itself is worked
+  /// out again, from a fresh read, once the move-out is done.
+  Future<void> _loadCardRefundPreview() async {
+    final tenant = _tenant;
+    final calculation = _calculation;
+    if (!mounted || tenant == null || calculation == null || calculation.refundAmount <= 0) return;
+    setState(() => _cardRefundPreview = null);
+    String preview;
+    try {
+      final rows = await MoveOutCardRefund.postedLedgerRows(
+        facilityId: widget.facilityId,
+        tenantId: tenant.id,
+      );
+      preview = MoveOutCardRefund.preview(MoveOutCardRefund.plan(
+        amount: calculation.refundAmount,
+        payments: MoveOutCardRefund.refundablePayments(rows),
+      ));
+    } catch (e) {
+      preview = "Couldn't check their card payments ($e). The app will try when you complete "
+          "the move-out, and tell you what it couldn't refund.";
+    }
+    if (!mounted || _refundMethod != 'creditCard' || !identical(calculation, _calculation)) return;
+    setState(() => _cardRefundPreview = preview);
+  }
+
+  /// A card refund that was not (all) made: what happened and what to do,
+  /// kept on screen until the owner closes it. A snackbar was gone in 15
+  /// seconds, with the credit still on the tenant's ledger.
+  Future<void> _showRefundAlert(String? title, String alert) {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        key: const Key('move-out-card-refund-alert'),
+        title: Text(title ?? 'Card refund not made'),
+        content: SingleChildScrollView(child: SelectableText(alert)),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// A card refund an earlier press of Complete left pending (this press
+  /// was answered "already completed"): that press committed, but its
+  /// answer never arrived, so the card was never refunded, and the owner
+  /// was told only that nothing had changed. They are told now, and asked
+  /// before anything is refunded. The refund is made as the first press
+  /// would have made it (refundAfterMoveOut with this contract, so the same
+  /// processRefund request ids). When a refund has reached the ledger since
+  /// the move-out, or the app has no card payment to refund, nothing is
+  /// offered (MoveOutCardRefund.pendingChoiceFrom): the alert says how to
+  /// finish it in Stripe. The same check runs again on the read the refund
+  /// is made from (pendingSince), as one can land while the offer is open.
+  /// An owner who refunds it in Stripe themselves has that recorded on the
+  /// contract, so it is not offered again.
+  Future<void> _settlePendingCardRefund(PendingCardRefund pending) async {
+    final tenant = _tenant;
+    if (tenant == null) return;
+    final choice = await MoveOutCardRefund.pendingChoice(
+      facilityId: widget.facilityId,
+      tenantId: tenant.id,
+      pending: pending,
+    );
+    if (!mounted) return;
+    final plan = choice.plan;
+    if (plan == null) {
+      await _showRefundAlert(null, choice.alert!);
+      return;
+    }
+    final make = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        key: const Key('move-out-pending-card-refund'),
+        title: const Text('Card refund not made yet'),
+        content: SingleChildScrollView(child: SelectableText(MoveOutCardRefund.pendingOffer(plan))),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Refund it in Stripe myself'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Make the refund'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (make != true) {
+      // No longer pending: left as it was, a later press of Complete
+      // offered the whole refund again after the owner had made it.
+      await MoveOutCardRefund.recordLeftToOwner(
+        facilityId: widget.facilityId,
+        tenantId: tenant.id,
+        contractId: widget.contractId,
+        requested: pending.requested,
+      );
+      if (!mounted) return;
+      await _showRefundAlert(null, MoveOutCardRefund.pendingAlert(pending.requested));
+      return;
+    }
+    final outcome = await MoveOutCardRefund.refundAfterMoveOut(
+      facilityId: widget.facilityId,
+      tenantId: tenant.id,
+      contractId: widget.contractId,
+      amount: pending.requested,
+      pendingSince: pending.since,
+    );
+    if (!mounted) return;
+    final alert = outcome.ownerAlert;
+    if (alert != null) {
+      await _showRefundAlert(outcome.alertTitle, alert);
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Refunded ${MoveOutCardRefund.money(outcome.refunded)} to their card through Stripe.'),
+        backgroundColor: AppTheme.success,
+      ),
+    );
   }
 
   /// The contract's page, by id: where a move-out is started from, and where
@@ -187,10 +336,11 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
     if (_unit == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
+          // Several units and none named for sure (see moveOutUnitChoices):
+          // the owner picks, rather than the first one being freed.
           content: Text(_unitChoices.isNotEmpty
               ? 'Choose the unit the tenant is moving out of.'
-              : "Couldn't tell which unit this tenant rents. Start the "
-                  "move-out from the unit's page: Units > unit > Move out."),
+              : 'This tenant holds no unit to move out of.'),
           backgroundColor: AppTheme.warning,
         ),
       );
@@ -211,6 +361,7 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
     });
 
     var completed = false;
+    MoveOutResult? completedResult;
     try {
       final result = await MoveOutService.completeMoveOut(
         tenantId: _tenant!.id,
@@ -229,11 +380,16 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
 
       if (result.success) {
         completed = true;
+        completedResult = result;
         if (mounted) {
+          final refundLine = result.refund != null && result.refund! > 0
+              ? '\n${result.refundByCard ? 'Refunded to their card' : 'Refund'}: '
+                  '\$${result.refund!.toStringAsFixed(2)}'
+              : '';
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
-                'Move-out completed successfully${result.refund != null && result.refund! > 0 ? '\nRefund: \$${result.refund!.toStringAsFixed(2)}' : ''}'
+                'Move-out completed successfully$refundLine'
                 // The tenant's new rent, or a request to check it.
                 '${result.notice != null ? '\n${result.notice}' : ''}'
                 '${result.warning != null ? '\n${result.warning}' : ''}',
@@ -264,6 +420,16 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
         });
       }
     }
+
+    // A card refund not (all) made stays on screen until the owner closes
+    // it, before the page goes.
+    final refundAlert = completedResult?.refundAlert;
+    if (completed && mounted && refundAlert != null) {
+      await _showRefundAlert(completedResult?.refundAlertTitle, refundAlert);
+    }
+    // One an earlier press left pending: said, and made only if they ask.
+    final pending = completedResult?.pendingCardRefund;
+    if (completed && mounted && pending != null) await _settlePendingCardRefund(pending);
 
     // Leave outside the try, and leave the button off: a bare context.pop
     // threw when the page was opened by a link, the catch reported the
@@ -348,22 +514,37 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
                           color: AppTheme.textSecondary,
                         ),
                       ),
-                      if (_unitChoices.isNotEmpty)
-                        DropdownButton<UnitModel>(
-                          value: _unit,
+                      if (_unitChoices.length > 1)
+                        // A tenant with several units: the owner says which
+                        // one this move-out frees.
+                        DropdownButton<String>(
+                          key: const Key('moveOutUnitPicker'),
+                          value: _unit?.id,
+                          isExpanded: true,
                           hint: const Text('Choose the unit'),
                           items: [
                             for (final u in _unitChoices)
                               DropdownMenuItem(
-                                value: u,
-                                child: Text(u.unitNumber),
+                                value: u.id,
+                                // With its area: two units can share a number.
+                                child: Text(unitPickerLabel(u)),
                               ),
                           ],
-                          onChanged: (u) => setState(() => _unit = u),
+                          onChanged: _isProcessing
+                              ? null
+                              : (id) => setState(() {
+                                    _unit = _unitChoices
+                                        .firstWhere((u) => u.id == id);
+                                    // Worked out for the unit picked.
+                                    _calculation = null;
+                                  }),
                         )
                       else
                         Text(
-                          _unit?.unitNumber ?? _tenant?.unitNumber ?? 'N/A',
+                          _unit == null
+                              ? 'No unit'
+                              : unitPickerLabel(_unit!,
+                                  style: UnitLabelStyle.plain),
                           style: Theme.of(context).textTheme.bodyLarge,
                         ),
                     ],
@@ -409,6 +590,8 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
                 if (date != null) {
                   setState(() {
                     _moveOutDate = date;
+                    // Worked out for the date it was calculated on.
+                    _calculation = null;
                   });
                 }
               },
@@ -424,11 +607,14 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
             const SizedBox(height: 12),
             CheckboxListTile(
               title: const Text('Prorate Rent'),
-              subtitle: const Text('Calculate prorated rent for partial month'),
+              subtitle: const Text(
+                  'Charge days used that no rent covers, and credit rent '
+                  'already posted for days after the move-out'),
               value: _prorateRent,
               onChanged: (value) {
                 setState(() {
                   _prorateRent = value ?? false;
+                  _calculation = null;
                 });
               },
             ),
@@ -698,16 +884,24 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
                   labelText: 'Refund Method',
                   border: OutlineInputBorder(),
                 ),
+                // Whether the app makes the refund is in the name: it
+                // refunds a card through Stripe; cash, a check or ACH the
+                // owner hands over, and the app records.
                 items: const [
-                  DropdownMenuItem(value: 'cash', child: Text('Cash')),
-                  DropdownMenuItem(value: 'check', child: Text('Check')),
-                  DropdownMenuItem(value: 'creditCard', child: Text('Credit Card Refund')),
-                  DropdownMenuItem(value: 'ach', child: Text('ACH')),
+                  DropdownMenuItem(value: 'cash', child: Text('Cash (you pay it; recorded now)')),
+                  DropdownMenuItem(value: 'check', child: Text('Check (you pay it; recorded now)')),
+                  DropdownMenuItem(
+                    value: 'creditCard',
+                    child: Text('Card (the app refunds it through Stripe)'),
+                  ),
+                  DropdownMenuItem(value: 'ach', child: Text('ACH (you send it; recorded now)')),
                 ],
                 onChanged: (value) {
                   setState(() {
                     _refundMethod = value;
+                    _cardRefundPreview = null;
                   });
+                  if (value == 'creditCard') _loadCardRefundPreview();
                 },
                 validator: (value) {
                   if (_processRefund && (value == null || value.isEmpty)) {
@@ -716,15 +910,32 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
                   return null;
                 },
               ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _refundReferenceController,
-                decoration: const InputDecoration(
-                  labelText: 'Reference Number (Optional)',
-                  border: OutlineInputBorder(),
-                  helperText: 'Check number, transaction ID, etc.',
+              if (_refundMethod != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _refundMethod == 'creditCard'
+                      ? _cardRefundPreview ?? 'Checking their card payments...'
+                      : 'You hand over the refund yourself; the app records it on their '
+                          'ledger as made when you complete the move-out.',
+                  key: const Key('move-out-refund-method-note'),
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: AppTheme.textSecondary),
                 ),
-              ),
+              ],
+              // The app fills in a card refund's Stripe ids itself.
+              if (_refundMethod != 'creditCard') ...[
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _refundReferenceController,
+                  decoration: const InputDecoration(
+                    labelText: 'Reference Number (Optional)',
+                    border: OutlineInputBorder(),
+                    helperText: 'Check number, transaction ID, etc.',
+                  ),
+                ),
+              ],
             ],
           ],
         ),

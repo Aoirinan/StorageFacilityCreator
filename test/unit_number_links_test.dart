@@ -308,20 +308,25 @@ void main() {
         expect(after.unitNumber, '14');
       });
 
-      test('never below zero', () {
-        // A discounted rent lower than the unit they leave: 10 - 100 + 80.
+      test('never below zero: a rent that is not the sum of their units is left for the owner to check', () {
+        // A discounted rent lower than the unit they leave: 10 - 100 + 80
+        // was set to 0. Under the sum rule (TenantService.rentAfterUnitChange)
+        // a rent that isn't the sum of their units' rates is not worked out
+        // at all: it stays, and the owner is asked.
         final after = TransferService.tenantAfterTransfer(
           transfer: transfer(),
           currentRate: 10,
           currentUnitNumber: '7',
           otherUnits: [_unit('u7', '7', UnitStatus.occupied, 't1')],
+          tenantName: 'Ada Park',
         );
-        expect(after.monthlyRate, 0);
+        expect(after.monthlyRate, isNull);
+        expect(after.notice, startsWith("Check Ada Park's rent"));
       });
 
       test('completeTransfer uses it, with the other units read before the units change', () {
         final source = File('lib/services/transfer_service.dart').readAsStringSync();
-        final complete = source.substring(source.indexOf('static Future<void> completeTransfer('));
+        final complete = source.substring(source.indexOf('static Future<String?> completeTransfer('));
         expect(complete, contains('tenantAfterTransfer('));
         expect(complete, isNot(contains('monthlyRate: transfer.toUnitRate')));
         expect(complete.indexOf('.linkedUnits(transfer.tenantId)'),

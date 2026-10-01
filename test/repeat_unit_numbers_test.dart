@@ -471,11 +471,29 @@ void main() {
     final both = [held('c2-12', '12', 'Complex 2'), held('c3-12', '12', 'Complex 3')];
 
     test('move-out with no unit in the link: their primary unit', () {
-      expect(unitToVacate(units: both, tenant: tenant('12', unitId: 'c3-12'))?.id, 'c3-12');
+      // The move-out screen's pick (moveOutUnitChoices replaced the
+      // hotfix's unitToVacate; the unitId-first rule came with it).
+      UnitModel? vacate(TenantModel t) => MoveOutService.moveOutUnitChoices(
+            tenantId: t.id,
+            tenantUnitNumber: t.unitNumber,
+            units: both,
+            tenantUnitId: t.unitId,
+          ).initial;
+      expect(vacate(tenant('12', unitId: 'c3-12'))?.id, 'c3-12');
       // Without unitId the number names both: the owner chooses.
-      expect(unitToVacate(units: both, tenant: tenant('12')), isNull);
+      expect(vacate(tenant('12')), isNull);
       // A unitId they no longer hold is not taken.
-      expect(unitToVacate(units: both, tenant: tenant('12', unitId: 'gone')), isNull);
+      expect(vacate(tenant('12', unitId: 'gone')), isNull);
+      // Both are offered, with their areas, for the owner to pick from.
+      expect(
+          MoveOutService.moveOutUnitChoices(
+                  tenantId: 't1', tenantUnitNumber: '12', units: both)
+              .choices
+              .map(unitPickerLabel),
+          ['Unit 12 (Complex 2)', 'Unit 12 (Complex 3)']);
+      final screen = File('lib/screens/move_out_screen.dart').readAsStringSync();
+      expect(screen, contains('tenantUnitId: tenant.unitId,'));
+      expect(screen, contains('child: Text(unitPickerLabel(u)),'));
     });
 
     test('transfer: the unit moved out of is their primary unit', () {

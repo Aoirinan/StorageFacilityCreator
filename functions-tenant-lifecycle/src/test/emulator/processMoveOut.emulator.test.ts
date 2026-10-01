@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as functions from 'firebase-functions/v1';
+import * as admin from 'firebase-admin';
 
 import { processMoveOut } from '../../moveOutPortalHold';
 import { clearEmulator, emulatorDb, skipWithoutEmulator } from './firestoreEmulator';
@@ -335,4 +336,335 @@ test('a move-out date that is not a date is refused before anything is written',
   assert.equal((await unit('u101')).status, 'occupied');
   assert.equal((await contract('c101')).isActive, true);
   assert.equal((await ledger()).length, 0);
+});
+
+test('a move-out dated after today (UTC) is refused before anything is written', { skip: skipWithoutEmulator }, async () => {
+  // The screen offers no later day; a direct call or an old page could.
+  await seed();
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  await rejectsWith(
+    moveOut('u101', 'c101', { moveOutDate: tomorrow, moveOutCharges: 10 }),
+    'invalid-argument',
+    /^The move-out date is after today, so nothing was moved out\./,
+  );
+  assert.equal((await unit('u101')).status, 'occupied');
+  assert.equal((await contract('c101')).isActive, true);
+  assert.equal((await ledger()).length, 0);
+  // Today (UTC) is allowed.
+  const today = new Date().toISOString().slice(0, 10);
+  assert.equal((await moveOut('u101', 'c101', { moveOutDate: today })).success, true);
+});
+
+test("another tenant's contract is refused before anything, and their own move-out still runs", { skip: skipWithoutEmulator }, async () => {
+  // t1 sent with t2's contract c7 ended c7 and moved t1 out; t2's real
+  // move-out through c7 was then answered "already completed".
+  await seed();
+  await fac().collection('tenants').doc('t2').set({ name: 'Bo Diaz', isActive: true, unitNumber: '7', monthlyRate: 80 });
+  await fac().collection('units').doc('u7').set({ unitNumber: '7', status: 'occupied', tenantId: 't2', monthlyRate: 80 });
+  await fac().collection('contracts').doc('c7').set({ tenantId: 't2', isActive: true, status: 'active' });
+
+  await rejectsWith(moveOut('u101', 'c7'), 'failed-precondition', /belongs to another tenant, so nothing was moved out/);
+  assert.equal((await fac().collection('contracts').doc('c7').get()).get('moveOutStatus'), undefined);
+  assert.equal((await unit('u101')).status, 'occupied');
+  assert.equal((await tenant()).monthlyRate, 250);
+
+  // Even once c7 is completed, t1 is refused, not told "already completed".
+  const own = await callable.run(
+    { facilityId: FACILITY, tenantId: 't2', unitId: 'u7', contractId: 'c7', moveOutDate: '2026-09-23T12:00:00Z' },
+    context,
+  );
+  assert.equal(own.alreadyCompleted, false);
+  assert.equal((await tenant('t2')).isActive, false);
+  await rejectsWith(moveOut('u101', 'c7'), 'failed-precondition', /belongs to another tenant/);
+});
+
+test('a contract for another unit they still rent is refused; one for a unit they gave up is not', { skip: skipWithoutEmulator }, async () => {
+  await seed();
+  // c102 was signed for unit 102, which t1 keeps: leaving 101 through it
+  // would end the agreement for 102. 102 is in Complex 3, and is named so:
+  // where numbers repeat across areas "unit 102" can be two units.
+  await rejectsWith(
+    moveOut('u101', 'c102'),
+    'failed-precondition',
+    /This contract is for unit 102 \(Complex 3\), which this tenant still rents.*Units > unit 101 > Unassign Tenant/,
+  );
+  assert.equal((await unit('u101')).status, 'occupied');
+  assert.equal((await fac().collection('contracts').doc('c102').get()).get('isActive'), true);
+
+  // Moved from 102 to 103 since signing (online move-in context): the
+  // contract ends with the unit they are in.
+  await fac().collection('units').doc('u102').update({ status: 'available', tenantId: null });
+  await fac().collection('units').doc('u103').set({ unitNumber: '103', status: 'occupied', tenantId: 't1', monthlyRate: 150 });
+  await fac()
+    .collection('contracts')
+    .doc('c102')
+    .set({ tenantId: 't1', isActive: true, status: 'active', customFields: { onlineMoveInContext: { unitId: 'u102' } } });
+  const result = await moveOut('u103', 'c102');
+  assert.equal(result.success, true);
+  assert.equal((await unit('u103')).status, 'available');
+});
+
+test('a refund is posted positive, only once made, and the credit it pays out is posted too', { skip: skipWithoutEmulator }, async () => {
+  // Paid in full for the month, leaving early: the screen nets a $66.67
+  // credit for unused days and a $30 cleaning fee to -$36.67 and refunds
+  // $36.67. The credit was dropped (only a positive net was posted) and the
+  // refund posted as -36.67: the tenant was left showing a $36.67 credit
+  // they had already been paid.
+  const balance = async () => {
+    const rows = await fac().collection('ledgers').where('tenantId', '==', 't1').get();
+    return Math.round(rows.docs.reduce((sum, d) => sum + (d.get('amount') as number), 0) * 100) / 100;
+  };
+  await seed();
+  const cash = await moveOut('u101', 'c101', {
+    moveOutCharges: -36.67,
+    moveOutRefund: 36.67,
+    processRefund: true,
+    refundMethod: 'cash',
+  });
+  assert.equal(cash.refundRecorded, true);
+  assert.equal(await balance(), 0);
+  const refund = (await fac().collection('ledgers').where('type', '==', 'refund').get()).docs[0].data();
+  assert.equal(refund.amount, 36.67);
+  assert.equal(refund.metadata.refundMethod, 'cash');
+
+  // Not refunded: the credit stays theirs.
+  await clearEmulator();
+  await seed();
+  const kept = await moveOut('u101', 'c101', { moveOutCharges: -36.67, moveOutRefund: 36.67, processRefund: false });
+  assert.equal(kept.refundRecorded, false);
+  assert.equal(await balance(), -36.67);
+
+  // By card: nothing here refunds the card or posts a refund. The amount
+  // goes back as cardRefundDue for the screen to refund through
+  // processRefund, and the contract says a card refund is pending until
+  // the screen records what happened.
+  await clearEmulator();
+  await seed();
+  const card = await moveOut('u101', 'c101', {
+    moveOutCharges: -36.67,
+    moveOutRefund: 36.67,
+    processRefund: true,
+    refundMethod: 'creditCard',
+  });
+  assert.equal(card.refundRecorded, false);
+  assert.equal(card.refundPosted, false);
+  assert.equal(card.cardRefundDue, 36.67);
+  assert.equal(card.refundProcessed, false);
+  assert.match(String(card.refundWarning), /card refund was not made by the move-out/);
+  assert.doesNotMatch(String(card.refundWarning), /when Stripe confirms/);
+  assert.equal(await balance(), -36.67);
+  const signed = await contract('c101');
+  assert.equal(signed.moveOutRefund, 0);
+  assert.equal(signed.moveOutRefundMethod, 'creditCard');
+  const { at, ...pending } = signed.moveOutCardRefund;
+  assert.deepEqual(pending, { status: 'pending', requested: 36.67, refunded: 0 });
+  assert.ok(at instanceof admin.firestore.Timestamp);
+  // A retry (a dropped connection) refunds nothing on its own. The refund
+  // the first run left pending comes back for the screen to ask the owner
+  // about: with the first answer lost, the screen never made it, and the
+  // retry said only that nothing had changed.
+  const again = await moveOut('u101', 'c101', {
+    moveOutCharges: -36.67,
+    moveOutRefund: 36.67,
+    processRefund: true,
+    refundMethod: 'creditCard',
+  });
+  assert.equal(again.alreadyCompleted, true);
+  assert.equal(again.cardRefundDue, 0);
+  assert.deepEqual(again.pendingCardRefund, { requested: 36.67, since: at.toDate().toISOString() });
+  assert.equal(await balance(), -36.67);
+  // Once the screen has reported back, a retry has nothing pending.
+  await fac().collection('contracts').doc('c101').update({
+    moveOutCardRefund: { status: 'refunded', requested: 36.67, refunded: 36.67 },
+  });
+  const reported = await moveOut('u101', 'c101', {
+    moveOutCharges: -36.67,
+    moveOutRefund: 36.67,
+    processRefund: true,
+    refundMethod: 'creditCard',
+  });
+  assert.equal(reported.alreadyCompleted, true);
+  assert.equal(reported.pendingCardRefund, null);
+
+  // Cash: no card refund, and none pending on the contract.
+  await clearEmulator();
+  await seed();
+  const byCash = await moveOut('u101', 'c101', {
+    moveOutCharges: -36.67,
+    moveOutRefund: 36.67,
+    processRefund: true,
+    refundMethod: 'cash',
+  });
+  assert.equal(byCash.cardRefundDue, 0);
+  assert.equal((await contract('c101')).moveOutRefundMethod, 'cash');
+  assert.equal((await contract('c101')).moveOutCardRefund, undefined);
+  const cashAgain = await moveOut('u101', 'c101', { moveOutCharges: -36.67, moveOutRefund: 36.67, processRefund: true, refundMethod: 'cash' });
+  assert.equal(cashAgain.alreadyCompleted, true);
+  assert.equal(cashAgain.pendingCardRefund, null);
+});
+
+/**
+ * The rent line, worked out here from the ledger by the screen's rule
+ * (moveOutRent). A test tenant whose tenancy starts 1 Oct and who paid
+ * October's $1 online at move-in was moved out on 24 Sep and charged
+ * "Prorated Rent (24 days) $0.80" for days before their tenancy.
+ */
+async function seedFutureTenancy(): Promise<void> {
+  await fac().set({ name: 'Acme Storage', ownerUid: OWNER });
+  await fac().collection('tenants').doc('t1').set({ name: 'Test Tenant', isActive: true, unitNumber: 'TEST-1', monthlyRate: 1 });
+  const october = new Date('2026-10-01T00:00:00Z');
+  await fac().collection('units').doc('u1').set({
+    unitNumber: 'TEST-1', status: 'occupied', tenantId: 't1', monthlyRate: 1, moveInDate: october,
+  });
+  await fac().collection('contracts').doc('c1').set({ tenantId: 't1', isActive: true, status: 'signed' });
+  const ledgers = fac().collection('ledgers');
+  await ledgers.doc('rent').set({
+    tenantId: 't1', type: 'proratedRent', amount: 1, description: 'Prorated Rent', referenceId: 'c1',
+    entryDate: october, status: 'posted', metadata: { lineItemId: null, isProrated: true },
+  });
+  await ledgers.doc('paid').set({
+    tenantId: 't1', type: 'payment', amount: -1, description: 'Online move-in payment', referenceId: 'pi_1',
+    entryDate: new Date('2026-09-23T18:12:00Z'), status: 'posted', metadata: {},
+  });
+}
+
+const screen = (extra: Record<string, unknown> = {}) => ({
+  moveOutDate: '2026-09-24T00:00:00.000',
+  prorateRent: true,
+  moveOutFees: 0,
+  moveOutCharges: -1,
+  moveOutRefund: 1,
+  processRefund: false,
+  ...extra,
+});
+
+async function moveOutLedger() {
+  const rows = await fac().collection('ledgers').where('tenantId', '==', 't1').get();
+  return rows.docs.filter((d) => !['rent', 'paid'].includes(d.id)).map((d) => d.data());
+}
+
+test('out before a future move-in date: nothing charged, the prepaid month credited', { skip: skipWithoutEmulator }, async () => {
+  await seedFutureTenancy();
+  const result = await moveOut('u1', 'c1', screen());
+  assert.equal(result.success, true);
+  assert.equal(result.charges, -1);
+
+  const posted = await moveOutLedger();
+  assert.deepEqual(
+    posted.map((r) => [r.type, r.amount, r.description, r.referenceId, r.metadata.moveOutLine]),
+    [['credit', -1, 'Prorated rent credit (31 unused days)', 'c1', 'proratedRentCredit']],
+  );
+  // Not refunded: the dollar stays theirs, as a credit on the ledger.
+  const all = await fac().collection('ledgers').where('tenantId', '==', 't1').get();
+  assert.equal(all.docs.reduce((sum, d) => sum + (d.get('amount') as number), 0), -1);
+  assert.equal((await fac().collection('contracts').doc('c1').get()).get('moveOutCharges'), -1);
+});
+
+test('the credit refunded in cash leaves them owing nothing', { skip: skipWithoutEmulator }, async () => {
+  await seedFutureTenancy();
+  await moveOut('u1', 'c1', screen({ processRefund: true, refundMethod: 'cash' }));
+  const posted = await moveOutLedger();
+  assert.deepEqual(
+    posted.map((r) => [r.type, r.amount]).sort(),
+    [['credit', -1], ['refund', 1]],
+  );
+});
+
+test('charges the owner was not shown are refused and nothing is written', { skip: skipWithoutEmulator }, async () => {
+  await seedFutureTenancy();
+  // The old screen's figure: $0.80 for 24 September days.
+  await rejectsWith(
+    moveOut('u1', 'c1', screen({ moveOutCharges: 0.8, moveOutRefund: 0 })),
+    'failed-precondition',
+    /now come to a \$1\.00 credit, not \$0\.80\. Nothing was moved out/,
+  );
+  assert.deepEqual(await moveOutLedger(), []);
+  const contract = (await fac().collection('contracts').doc('c1').get()).data()!;
+  assert.equal(contract.isActive, true);
+  assert.equal(contract.moveOutStatus, undefined);
+  assert.equal((await unit('u1')).status, 'occupied');
+});
+
+test('a page from before the rent line still posts its net as one line', { skip: skipWithoutEmulator }, async () => {
+  await seedFutureTenancy();
+  await moveOut('u1', 'c1', { moveOutDate: '2026-09-24T00:00:00.000', moveOutCharges: 25 });
+  assert.deepEqual(
+    (await moveOutLedger()).map((r) => [r.type, r.amount, r.description]),
+    [['moveOutFee', 25, 'Move-out charges']],
+  );
+});
+
+test("a free month's coupon: no credit, and a cash refund for it is refused", { skip: skipWithoutEmulator }, async () => {
+  // The app's move-in with a free-month coupon: +300 rent, -300 discount.
+  await fac().set({ name: 'Acme Storage', ownerUid: OWNER });
+  await fac().collection('tenants').doc('t1').set({ name: 'Ada Park', isActive: true, unitNumber: '7', monthlyRate: 300 });
+  await fac().collection('units').doc('u7').set({ unitNumber: '7', status: 'occupied', tenantId: 't1', monthlyRate: 300 });
+  await fac().collection('contracts').doc('c7').set({ tenantId: 't1', isActive: true, status: 'draft' });
+  const moveIn = { moveInDate: '2026-09-01T00:00:00.000' };
+  const at = new Date('2026-09-01T05:00:00Z');
+  await fac().collection('ledgers').doc('rent').set({
+    tenantId: 't1', type: 'rentCharge', amount: 300, referenceId: 'c7', entryDate: at, status: 'posted',
+    metadata: { lineItemType: 'proratedRent', isProrated: true, ...moveIn },
+  });
+  await fac().collection('ledgers').doc('free').set({
+    tenantId: 't1', type: 'otherCharge', amount: -300, referenceId: 'c7', entryDate: at, status: 'posted',
+    metadata: { lineItemType: 'discount', ...moveIn },
+  });
+  const out = (extra: Record<string, unknown>) =>
+    moveOut('u7', 'c7', { moveOutDate: '2026-09-10T00:00:00.000', prorateRent: true, moveOutFees: 0, ...extra });
+
+  // What the rent-rate credit offered: $200 back, refunded in cash.
+  await rejectsWith(
+    out({ moveOutCharges: -200, moveOutRefund: 200, processRefund: true, refundMethod: 'cash' }),
+    'failed-precondition',
+    /now come to \$0\.00, not a \$200\.00 credit/,
+  );
+  await rejectsWith(
+    out({ moveOutCharges: 0, moveOutRefund: 200, processRefund: true, refundMethod: 'cash' }),
+    'failed-precondition',
+    /The \$200\.00 refund is more than the \$0\.00 this tenant is owed/,
+  );
+  assert.equal((await fac().collection('ledgers').where('tenantId', '==', 't1').get()).size, 2, 'nothing posted');
+
+  // What the screen now shows: nothing to charge or credit.
+  const done = await out({ moveOutCharges: 0, moveOutRefund: 0 });
+  assert.equal(done.success, true);
+  assert.equal((await fac().collection('ledgers').where('tenantId', '==', 't1').get()).size, 2, 'no rows for a $0 move-out');
+});
+
+test('a second linked unit with no status is not one they keep, as the screen reads it: their own rate, tenancy ended', { skip: skipWithoutEmulator }, async () => {
+  // The screen reads a unit with no status as available (UnitModel), so a
+  // tenant whose other linked unit has none keeps no unit there, and it
+  // prorates their own rate. This counted that unit as kept, prorated the
+  // vacated unit's rate instead, and refused every such move-out as not
+  // what the owner was shown.
+  await fac().set({ name: 'Acme Storage', ownerUid: OWNER });
+  await fac().collection('tenants').doc('t1').set({ name: 'Ada Park', isActive: true, unitNumber: '1', unitId: 'u1', monthlyRate: 300 });
+  await fac().collection('units').doc('u1').set({ unitNumber: '1', status: 'occupied', tenantId: 't1', monthlyRate: 90 });
+  await fac().collection('units').doc('u2').set({ unitNumber: '2', tenantId: 't1', monthlyRate: 210 });
+  await fac().collection('contracts').doc('c1').set({ tenantId: 't1', isActive: true, status: 'active' });
+  await fac().collection('gateAccess').doc('g1').set({ tenantId: 't1', accessCode: '1234', isActive: true });
+  // No September rent posted: days 1 to 10 are used and charged, at $10 a
+  // day on their $300 (the screen's figure), not $3 a day on the unit's $90.
+  const out = (moveOutCharges: number) =>
+    moveOut('u1', 'c1', {
+      moveOutDate: '2026-09-10T00:00:00.000',
+      prorateRent: true,
+      moveOutFees: 0,
+      moveOutCharges,
+      moveOutRefund: 0,
+    });
+
+  await rejectsWith(out(30), 'failed-precondition', /now come to \$100\.00, not \$30\.00/);
+  const done = await out(100);
+  assert.equal(done.success, true);
+  assert.equal(done.charges, 100);
+
+  // Their only unit as the app reads it: the tenancy ends, gate code off,
+  // as the app's own move-out and Unassign do.
+  const t = await tenant();
+  assert.equal(t.isActive, false);
+  assert.equal(t.unitNumber, '');
+  assert.equal(t.monthlyRate, 300, 'kept as history');
+  assert.equal((await fac().collection('gateAccess').doc('g1').get()).get('isActive'), false);
 });

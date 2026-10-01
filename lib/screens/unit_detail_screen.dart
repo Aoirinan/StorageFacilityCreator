@@ -45,6 +45,18 @@ UnitStatus statusAfterRemovingLockout(UnitModel unit) =>
         ? UnitStatus.available
         : UnitStatus.occupied;
 
+/// Assign Tenant's list: active tenants first, then inactive ones, each by
+/// name. It listed active tenants only, so a tenant whose only unit had
+/// just been unassigned (Unassign, then Assign is how an owner moves one)
+/// could not be found; assigning them a unit makes them active again.
+@visibleForTesting
+List<TenantModel> tenantsForAssignPicker(List<TenantModel> tenants) => [
+      ...tenants.where((t) => t.isActive).toList()
+        ..sort(TenantService.compareTenantsByName),
+      ...tenants.where((t) => !t.isActive).toList()
+        ..sort(TenantService.compareTenantsByName),
+    ];
+
 /// What the unit screen reads for its tenant and writes for Remove Lockout.
 /// A provider so widget tests can open the real menu without Firebase.
 class UnitDetailActions {
@@ -686,7 +698,11 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
       context: context,
       builder: (context) => Consumer(
         builder: (context, ref, _) {
-          final tenantsAsync = ref.watch(activeTenantsProvider(widget.facilityId));
+          // Every tenant, inactive ones after the active: a tenant whose
+          // only unit was just unassigned (the first step of moving them)
+          // is inactive, and the active-only list left them nowhere to be
+          // found. Assigning makes them active again.
+          final tenantsAsync = ref.watch(facilityTenantsProvider(widget.facilityId));
           // Each tenant's current units, so two records with one name (a
           // person imported once per unit) can be told apart in the list.
           final units = TenantUnitAreaIndex(
@@ -697,14 +713,15 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
             content: SizedBox(
               width: 400,
               child: tenantsAsync.when(
-                data: (tenants) {
+                data: (all) {
+                  final tenants = tenantsForAssignPicker(all);
                   if (tenants.isEmpty) {
                     return const Padding(
                       padding: EdgeInsets.all(16.0),
-                      child: Text('No active tenants available. Please create a tenant first.'),
+                      child: Text('No tenants yet. Please create a tenant first.'),
                     );
                   }
-                  
+
                   return _TenantSelectionDialogContent(
                     facilityId: widget.facilityId,
                     tenants: tenants,
@@ -900,6 +917,20 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
   }
 
   void _showUnassignTenantDialog() async {
+    // Says beforehand when this is the tenant's only unit, so unassigning
+    // ends their tenancy and turns their gate code off.
+    String message;
+    try {
+      message = await UnitService.unassignConfirmation(
+        facilityId: widget.facilityId,
+        unitId: widget.unitId,
+      );
+    } catch (_) {
+      message = 'Unassign the tenant from unit ${_unit!.unitNumber}? If it is '
+          'the only unit they hold, their tenancy ends: they are set inactive '
+          'and their gate code is turned off.';
+    }
+    if (!mounted) return;
     // Unassign posts no charges and no refund, so the deposit the facility
     // still holds is only mentioned here: settle it now only if this was
     // their last unit. Null when the other units could not be read.
@@ -927,7 +958,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Are you sure you want to unassign the tenant from unit ${_unit!.unitNumber}?'),
+            Text(message),
             if (depositNote != null) ...[
               const SizedBox(height: 12),
               Text(
@@ -1334,6 +1365,7 @@ class _TenantSelectionDialogContentState extends State<_TenantSelectionDialogCon
                     return RadioListTile<String>(
                       title: Text(tenant.name),
                       subtitle: Text([
+                        if (!tenant.isActive) 'Inactive',
                         tenantPickerUnitsText(tenant, widget.units),
                         if (tenant.email.isNotEmpty) tenant.email,
                         if (tenant.phone.isNotEmpty) tenant.phone,
