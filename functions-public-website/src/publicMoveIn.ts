@@ -74,7 +74,7 @@ import {
   PAYMENT_REFUNDED_MESSAGE,
   PAYMENT_RETURNED_BEFORE_MOVE_IN_MESSAGE,
   PUBLIC_MOVE_IN_PAYMENTS_COLLECTION,
-  isRefundedMoveInPayment,
+  moveInPaymentStoppedBy,
   paymentOwnership,
   refusePaidMoveIn,
   resumePaidMoveInRefund,
@@ -1286,12 +1286,17 @@ export const confirmPublicMoveInCheckout = functions
     throw new functions.https.HttpsError('failed-precondition', 'No payment intent found on checkout session');
   }
   // Refused at completion and refunded (changed charges leave the
-  // reservation open to pay again): it can never move anyone in. Handed
-  // back, the page offered it as the payment to finish with, completion
-  // refused it again, and each look held the unit an hour for it.
-  if (await isRefundedMoveInPayment(paymentIntentId)) {
+  // reservation open to pay again), or refunded in Stripe or disputed before
+  // the move-in: it can never move anyone in. Handed back, the page offered
+  // it as the payment to finish with, the renter filled in and signed the
+  // whole form, and completion refused it.
+  const stoppedBy = await moveInPaymentStoppedBy(paymentIntentId);
+  if (stoppedBy) {
     if (!sessionId) return notPaid;
-    throw new functions.https.HttpsError('failed-precondition', PAYMENT_REFUNDED_MESSAGE);
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      stoppedBy === 'refunded' ? PAYMENT_REFUNDED_MESSAGE : PAYMENT_RETURNED_BEFORE_MOVE_IN_MESSAGE,
+    );
   }
   if (!sessionId) {
     functions.logger.info('confirmPublicMoveInCheckout: found a paid session no redirect confirmed', {
