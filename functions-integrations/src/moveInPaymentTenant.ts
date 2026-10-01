@@ -1,6 +1,11 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-import { UNTENANTED_DISPUTES_FIELD, UNTENANTED_REFUNDS_FIELD } from '@sfc/functions-shared';
+import {
+  CHECKOUT_PAID_FIELD,
+  UNTENANTED_DISPUTES_FIELD,
+  UNTENANTED_REFUNDS_FIELD,
+  unitHoldRef,
+} from '@sfc/functions-shared';
 
 /**
  * Online move-in payments and the tenant they paid for.
@@ -18,7 +23,11 @@ import { UNTENANTED_DISPUTES_FIELD, UNTENANTED_REFUNDS_FIELD } from '@sfc/functi
  * transaction that created them: `publicMoveInPayments/{paymentIntentId}`
  * (from when that record existed), or else the reservation, which keeps the
  * PaymentIntent and the tenant it became (`publicReservations/{id}`
- * `paymentIntentId`, `tenantId`).
+ * `paymentIntentId`, `tenantId`). A refund the app made (processRefund, the
+ * move-out screen's card refund among others) names its tenant on its own
+ * ledger row, `refund_<id>`, which is read first: a move-in completed before
+ * reservations recorded their PaymentIntent (about 2026-09-24) names its
+ * tenant nowhere else.
  *
  * When there is no tenant (the renter was refunded, or disputed the charge,
  * before the move-in was completed) nothing goes on any ledger. The refund or
@@ -26,7 +35,9 @@ import { UNTENANTED_DISPUTES_FIELD, UNTENANTED_REFUNDS_FIELD } from '@sfc/functi
  * owner gets an in-app notification. That record also stops the payment from
  * completing a move-in afterwards (completePublicMoveIn refuses a payment
  * that has one), which is right: the money has been handed back or taken
- * back.
+ * back. So the reservation that payment paid for is cancelled and its hold
+ * on the unit released, rather than kept for up to a day for a renter who
+ * can no longer finish.
  */
 export const PUBLIC_MOVE_IN_PAYMENTS_COLLECTION = 'publicMoveInPayments';
 export const PUBLIC_MOVE_IN_PAYMENT_TYPE = 'public_move_in';
@@ -42,8 +53,8 @@ export type UntenantedMoveInMoney =
   | { kind: 'dispute'; id: string; amountCents: number; status: string | null; reason: string | null };
 
 export type MoveInTenantResolution =
-  /** The tenant the payment moved in. */
-  | { tenantId: string; source: 'move_in_payment' | 'reservation' }
+  /** The tenant the payment moved in, or (refund_row) the tenant the app refunded. */
+  | { tenantId: string; source: 'refund_row' | 'move_in_payment' | 'reservation' }
   /** No tenant: recorded on the move-in payment record instead (and the owner told, once). */
   | { tenantId: null; recorded: true }
   /** The records name another facility: nothing written anywhere. */
@@ -88,27 +99,39 @@ function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
-function alertId(money: UntenantedMoveInMoney): string {
+function alertId(money: Pick<UntenantedMoveInMoney, 'kind' | 'id'>): string {
   return money.kind === 'refund' ? `moveInPaymentRefund_${money.id}` : `moveInPaymentDispute_${money.id}`;
 }
 
-function alertMessage(money: UntenantedMoveInMoney, reservationId: string | null): string {
+const MOVE_IN_REFUND_ALERT_REASON = 'move_in_refund_without_tenant';
+
+function hasText(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function alertMessage(money: UntenantedMoveInMoney, reservationId: string | null, released: boolean): string {
   const reservation = reservationId ? ` (reservation ${reservationId})` : '';
+  const cannotMoveIn = released
+    ? 'That payment can no longer be used to move in, so the reservation was cancelled and the unit is free to rent again.'
+    : 'That payment can no longer be used to move in.';
   if (money.kind === 'refund') {
     return (
       `A refund of ${dollars(money.amountCents)} was made on an online move-in payment${reservation} ` +
       'that never completed a move-in, so there is no tenant to post it to and nothing was put on any ledger. ' +
-      'That payment can no longer be used to move in. Check the reservation and the payment in your Stripe Dashboard.'
+      `${cannotMoveIn} Check the ${released ? '' : 'reservation and the '}payment in your Stripe Dashboard.`
     );
   }
   return (
     `A card dispute of ${dollars(money.amountCents)}` +
     (money.reason ? ` (${money.reason})` : '') +
     ` was opened on an online move-in payment${reservation} that never completed a move-in, ` +
-    'so there is no tenant to post it to and nothing was put on any ledger. That payment can no longer be used ' +
-    'to move in. Respond to the dispute in your Stripe Dashboard.'
+    `so there is no tenant to post it to and nothing was put on any ledger. ${cannotMoveIn} ` +
+    'Respond to the dispute in your Stripe Dashboard.'
   );
 }
+
+/** Reservation statuses a returned payment's reservation is cancelled from (as completion's refusals close them). */
+const RELEASABLE_RESERVATION_STATUSES = new Set(['pending', 'confirmed', 'expired']);
 
 /**
  * The tenant a move-in PaymentIntent paid for, or, when there is none, a
@@ -133,15 +156,28 @@ export async function resolveMoveInTenantOrRecord(params: {
   const reservationRef = reservationId ? db.collection('publicReservations').doc(reservationId) : null;
   const facilityRef = db.collection('facilities').doc(facilityId);
   const notificationRef = facilityRef.collection('Notifications').doc(alertId(money));
+  const refundRowRef = money.kind === 'refund' ? facilityRef.collection('ledgers').doc(`refund_${money.id}`) : null;
   const timestamp = admin.firestore.Timestamp.fromDate(params.now ?? new Date());
 
   const outcome = await db.runTransaction(async (tx): Promise<MoveInTenantResolution> => {
     const paymentSnap = await tx.get(paymentRef);
     const reservationSnap = reservationRef ? await tx.get(reservationRef) : null;
     const notificationSnap = await tx.get(notificationRef);
+    const refundRowSnap = refundRowRef ? await tx.get(refundRowRef) : null;
 
     const payment = paymentSnap.exists ? ((paymentSnap.data() || {}) as Record<string, unknown>) : null;
     if (payment && payment.facilityId !== facilityId) return { tenantId: null, recorded: false };
+
+    // processRefund writes `refund_<id>` with the tenant it refunded, and
+    // usually before this event arrives. For a move-in whose records name no
+    // tenant, this recorded the refund as made before any move-in and told
+    // the owner nothing was put on any ledger, when processRefund already
+    // had. Read in this transaction, so a row written while it runs retries
+    // it; one written after it commits withdraws what it recorded
+    // ([withdrawUntenantedMoveInRefund]).
+    const refundRowTenant = refundRowSnap?.exists ? refundRowSnap.get('tenantId') : null;
+    if (hasText(refundRowTenant)) return { tenantId: refundRowTenant, source: 'refund_row' };
+
     if (payment && typeof payment.tenantId === 'string' && payment.tenantId) {
       return { tenantId: payment.tenantId, source: 'move_in_payment' };
     }
@@ -156,6 +192,26 @@ export async function resolveMoveInTenantOrRecord(params: {
     ) {
       return { tenantId: reservation.tenantId, source: 'reservation' };
     }
+
+    // The payment can no longer move anyone in (completion refuses it once
+    // this is recorded). The reservation it paid for kept the payment
+    // (CHECKOUT_PAID_FIELD), so the renter could not pay again, and its hold
+    // kept the unit from everyone for up to PAID_HOLD_MAX_HOURS after the
+    // payment. That reservation is cancelled and its hold released, as
+    // completion does when it refuses and refunds a paid renter. Not for a
+    // refund the move-in itself made (`refund`: that path already closed or
+    // reopened the reservation), and not when the reservation records
+    // another payment: the hold is that one's.
+    const releases =
+      !payment?.refund &&
+      reservationRef !== null &&
+      reservation !== null &&
+      reservation.facilityId === facilityId &&
+      RELEASABLE_RESERVATION_STATUSES.has(String(reservation.status ?? '')) &&
+      reservation[CHECKOUT_PAID_FIELD] === paymentIntent.id;
+    const unitId = releases ? docIdOf(reservation?.unitId) : null;
+    const holdRef = unitId ? unitHoldRef(db, facilityId, unitId) : null;
+    const holdSnap = holdRef ? await tx.get(holdRef) : null;
 
     const field = money.kind === 'refund' ? UNTENANTED_REFUNDS_FIELD : UNTENANTED_DISPUTES_FIELD;
     const entry: Record<string, unknown> = {
@@ -177,6 +233,17 @@ export async function resolveMoveInTenantOrRecord(params: {
       },
       { merge: true },
     );
+    if (releases && reservationRef) {
+      tx.update(reservationRef, {
+        status: 'cancelled',
+        cancelledAt: timestamp,
+        cancelledBy: 'system@stripe-webhook',
+        cancelReason: `paid-move-in-returned:${money.kind}`,
+        returnedPaymentIntentId: paymentIntent.id,
+        updatedAt: timestamp,
+      });
+      if (holdRef && holdSnap?.exists && holdSnap.get('reservationId') === reservationId) tx.delete(holdRef);
+    }
     // Once. And not for a refund the move-in itself made because it could
     // not complete: that path records `refund` here and tells the owner.
     const ownerAlreadyTold = money.kind === 'refund' && Boolean(payment?.refund);
@@ -186,12 +253,12 @@ export async function resolveMoveInTenantOrRecord(params: {
         tenantId: null,
         tenantName: null,
         type: 'STRIPE_ACTION_REQUIRED',
-        message: alertMessage(money, reservationId),
+        message: alertMessage(money, reservationId, releases),
         readAt: null,
         createdAt: timestamp,
         createdBy: 'system@stripe-webhook',
         metadata: {
-          reason: money.kind === 'refund' ? 'move_in_refund_without_tenant' : 'move_in_dispute_without_tenant',
+          reason: money.kind === 'refund' ? MOVE_IN_REFUND_ALERT_REASON : 'move_in_dispute_without_tenant',
           paymentIntentId: paymentIntent.id,
           reservationId,
           [money.kind === 'refund' ? 'refundId' : 'disputeId']: money.id,
@@ -212,4 +279,73 @@ export async function resolveMoveInTenantOrRecord(params: {
     );
   }
   return outcome;
+}
+
+const REFUND_ID = /^[A-Za-z0-9_]{1,128}$/;
+
+/**
+ * processRefund refunded [refundId] on an online move-in payment and put it
+ * on the tenant's ledger, but its charge.refunded event got there first.
+ * With no record naming the tenant (a move-in completed before about
+ * 2026-09-24) and no `refund_<id>` row yet, the webhook recorded the refund
+ * as made before any move-in, told the owner nothing was put on any ledger,
+ * and wrote no row of its own. Called by processRefund once its row is
+ * written: the record and the alert are withdrawn, and the row gets the
+ * metadata the webhook would have added. Rows that already have a key keep it.
+ *
+ * Nothing changes unless the move-in payment record holds this refund and
+ * the row names a tenant. Returns whether anything was withdrawn.
+ */
+export async function withdrawUntenantedMoveInRefund(params: {
+  facilityId: string;
+  paymentIntentId: string;
+  refundId: string;
+  chargeId: string;
+  connectedAccountId: string | null;
+  updatedBy: string;
+  now?: Date;
+}): Promise<boolean> {
+  const { facilityId, paymentIntentId, refundId } = params;
+  if (!REFUND_ID.test(refundId) || !DOC_ID.test(paymentIntentId)) return false;
+  const db = admin.firestore();
+  const paymentRef = db.collection(PUBLIC_MOVE_IN_PAYMENTS_COLLECTION).doc(paymentIntentId);
+  const facilityRef = db.collection('facilities').doc(facilityId);
+  const notificationRef = facilityRef.collection('Notifications').doc(alertId({ kind: 'refund', id: refundId }));
+  const rowRef = facilityRef.collection('ledgers').doc(`refund_${refundId}`);
+  const timestamp = admin.firestore.Timestamp.fromDate(params.now ?? new Date());
+
+  return db.runTransaction(async (tx) => {
+    const paymentSnap = await tx.get(paymentRef);
+    const notificationSnap = await tx.get(notificationRef);
+    const rowSnap = await tx.get(rowRef);
+
+    const payment = paymentSnap.exists ? ((paymentSnap.data() || {}) as Record<string, unknown>) : null;
+    const recorded = payment?.[UNTENANTED_REFUNDS_FIELD] as Record<string, unknown> | undefined;
+    if (!payment || payment.facilityId !== facilityId || !recorded?.[refundId]) return false;
+    if (!rowSnap.exists || !hasText(rowSnap.get('tenantId'))) return false;
+
+    tx.update(paymentRef, {
+      [`${UNTENANTED_REFUNDS_FIELD}.${refundId}`]: admin.firestore.FieldValue.delete(),
+      updatedAt: timestamp,
+      updatedBy: params.updatedBy,
+    });
+    const alert = notificationSnap.exists ? notificationSnap.data() : undefined;
+    if ((alert?.metadata as Record<string, unknown> | undefined)?.reason === MOVE_IN_REFUND_ALERT_REASON) {
+      tx.delete(notificationRef);
+    }
+    // What charge.refunded adds to the row (stripeWebhookChargeRefunded.ts).
+    const existing = (rowSnap.get('metadata') as Record<string, unknown> | undefined) ?? {};
+    const fromEvent: Record<string, unknown> = {
+      chargeId: params.chargeId,
+      paymentIntentId,
+      refundId,
+      connectedAccountId: params.connectedAccountId,
+    };
+    const fill: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(fromEvent)) {
+      if (value !== null && existing[key] === undefined) fill[`metadata.${key}`] = value;
+    }
+    if (Object.keys(fill).length > 0) tx.update(rowRef, fill);
+    return true;
+  });
 }

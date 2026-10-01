@@ -180,6 +180,20 @@ export async function isRefundedMoveInPayment(paymentIntentId: string): Promise<
   return Boolean(snap.exists && (snap.data() || {}).refund);
 }
 
+/**
+ * Why [paymentIntentId] can no longer complete a move-in, from its use
+ * record: 'refunded' when completion refused it and refunded it
+ * ([isRefundedMoveInPayment]), 'returned' when it was refunded in Stripe or
+ * disputed before the move-in (moveInPaymentReturnedBeforeMoveIn). Null
+ * when neither applies.
+ */
+export async function moveInPaymentStoppedBy(paymentIntentId: string): Promise<'refunded' | 'returned' | null> {
+  const snap = await paymentUseRef(paymentIntentId).get();
+  const use = snap.exists ? ((snap.data() || {}) as Record<string, unknown>) : null;
+  if (use?.refund) return 'refunded';
+  return moveInPaymentReturnedBeforeMoveIn(use) ? 'returned' : null;
+}
+
 function alertRef(facilityId: string, alertId: string): admin.firestore.DocumentReference {
   return admin.firestore().collection('facilities').doc(facilityId).collection('Notifications').doc(alertId);
 }

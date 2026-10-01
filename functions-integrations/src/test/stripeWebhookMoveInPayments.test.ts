@@ -20,7 +20,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type Stripe from 'stripe';
+import { getStripeClient } from '@sfc/functions-shared';
 import { dispatchStripeWebhookEvent } from '../stripeWebhook';
+import { processRefund } from '../stripeFacilityProcessRefund';
 import { ACCOUNT, event, LEDGERS, setup } from './support/webhookFakes';
 
 const PI = 'pi_movein';
@@ -257,4 +259,220 @@ test('another account\'s PaymentIntent naming this facility\'s reservation is re
   const refusals = fake.list('stripeWebhookRefusals');
   assert.equal(refusals.length, 2);
   for (const id of refusals) assert.equal(fake.read(`stripeWebhookRefusals/${id}`)!.facilityId, 'f1');
+});
+
+// The app's own card refund (processRefund: the move-out screen's, among
+// others) on a move-in whose records name no tenant: completed before
+// reservations recorded their PaymentIntent (about 2026-09-24).
+
+const OWNER = 'owner_uid';
+const staff = { auth: { uid: OWNER }, app: { appId: 'test' } };
+const runProcessRefund = (processRefund as unknown as {
+  run: (data: unknown, context: unknown) => Promise<Record<string, unknown>>;
+}).run;
+
+function olderMoveInSetup() {
+  const ctx = moveInSetup();
+  ctx.fake.seed('facilities/f1', { ...ctx.fake.read('facilities/f1')!, ownerUid: OWNER });
+  // Completed, but the reservation never recorded the PaymentIntent.
+  ctx.fake.seed('publicReservations/res_1', { facilityId: 'f1', status: 'completed', tenantId: 't_old' });
+  ctx.stripe.put(ACCOUNT, PI, { ...moveInPaymentIntent(), latest_charge: 'ch_movein' });
+  const client = getStripeClient() as unknown as Record<string, Record<string, unknown>>;
+  client.refunds.create = async () => ({ id: 're_1', amount: 5000, status: 'succeeded' });
+  return ctx;
+}
+
+const appRefund = () =>
+  runProcessRefund(
+    { facilityId: 'f1', tenantId: 't_old', amount: 50, refundMethod: 'creditCard', referenceId: PI, requestId: `mo_contractA_${PI}` },
+    staff,
+  );
+
+const untenantedRefunds = (fake: ReturnType<typeof setup>['fake']) =>
+  fake.read(MOVE_IN_PAYMENT)?.untenantedRefunds as Record<string, unknown> | undefined;
+
+/** What the refund row should hold once both writers have run, in either order. */
+function assertPostedToTenant(fake: ReturnType<typeof setup>['fake']) {
+  const row = fake.read(`${LEDGERS}/refund_re_1`)!;
+  assert.equal(row.tenantId, 't_old');
+  assert.equal(row.createdBy, OWNER);
+  assert.equal(row.amount, 50);
+  assert.equal(row.status, 'posted');
+  const metadata = row.metadata as Record<string, unknown>;
+  assert.equal(metadata.stripeRefundId, 're_1');
+  assert.equal(metadata.refundId, 're_1');
+  assert.equal(metadata.chargeId, 'ch_movein');
+  assert.equal(metadata.paymentIntentId, PI);
+  assert.equal(metadata.connectedAccountId, ACCOUNT);
+}
+
+test('the app refunds an older move-in and the webhook lands second: the row\'s tenant is used, nothing recorded, no alert', async () => {
+  const { fake } = olderMoveInSetup();
+
+  await appRefund();
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge('re_1', 5000), ACCOUNT));
+
+  // Before: recorded as refunded before any move-in (creating this record),
+  // the owner told nothing was put on any ledger, and the row left without
+  // the webhook's metadata.
+  assert.equal(fake.read(MOVE_IN_PAYMENT), undefined);
+  assert.deepEqual(fake.list(NOTIFICATIONS), []);
+  assertPostedToTenant(fake);
+});
+
+test('the webhook lands first: what it recorded is withdrawn once the app posts the refund', async () => {
+  const { fake } = olderMoveInSetup();
+
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge('re_1', 5000), ACCOUNT));
+  // No row and no record name the tenant yet.
+  assert.ok(untenantedRefunds(fake)?.re_1);
+  assert.deepEqual(fake.list(NOTIFICATIONS), ['moveInPaymentRefund_re_1']);
+  assert.equal(fake.read(`${LEDGERS}/refund_re_1`), undefined);
+
+  await appRefund();
+
+  assert.deepEqual(untenantedRefunds(fake), {});
+  assert.deepEqual(fake.list(NOTIFICATIONS), []);
+  assertPostedToTenant(fake);
+
+  // A redelivery finds the row's tenant: nothing recorded, no alert.
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge('re_1', 5000), ACCOUNT));
+  assert.deepEqual(untenantedRefunds(fake), {});
+  assert.deepEqual(fake.list(NOTIFICATIONS), []);
+  assertPostedToTenant(fake);
+});
+
+test('a refund made before the move-in stays recorded, with its alert, when the app refunds another', async () => {
+  const { fake } = olderMoveInSetup();
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge('re_dashboard', 1000), ACCOUNT));
+
+  await appRefund();
+
+  assert.ok(untenantedRefunds(fake)?.re_dashboard);
+  assert.deepEqual(fake.list(NOTIFICATIONS), ['moveInPaymentRefund_re_dashboard']);
+  assert.equal(fake.read(`${LEDGERS}/refund_re_dashboard`), undefined);
+  assert.equal(fake.read(`${LEDGERS}/refund_re_1`)!.tenantId, 't_old');
+});
+
+test('a refund row with no tenant is not one: the refund is still recorded on the move-in payment', async () => {
+  const { fake } = olderMoveInSetup();
+  fake.seed(`${LEDGERS}/refund_re_1`, { tenantId: null, facilityId: 'f1', type: 'refund', amount: 50, status: 'posted' });
+
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge('re_1', 5000), ACCOUNT));
+
+  assert.ok(untenantedRefunds(fake)?.re_1);
+  assert.equal(fake.read(`${LEDGERS}/refund_re_1`)!.tenantId, null);
+});
+
+test('the refund is made and posted even when withdrawing the webhook\'s record fails', async () => {
+  const { fake } = olderMoveInSetup();
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge('re_1', 5000), ACCOUNT));
+  const f = fake as unknown as { applyAll: (writes: Array<{ path: string }>) => void };
+  const original = f.applyAll.bind(fake);
+  f.applyAll = (writes) => {
+    if (writes.some((w) => w.path === MOVE_IN_PAYMENT)) throw new Error('UNAVAILABLE: try again');
+    original(writes);
+  };
+
+  // Thrown, processRefund would have said no refund was issued.
+  const result = await appRefund();
+  f.applyAll = original;
+
+  assert.equal(result.success, true);
+  assert.equal(result.stripeRefundId, 're_1');
+  assert.equal(fake.read(`${LEDGERS}/refund_re_1`)!.tenantId, 't_old');
+});
+
+// A payment returned before the move-in: the reservation it paid for, and its
+// hold on the unit. Checkout records the payment on the reservation
+// (checkoutPaidPaymentIntentId) and holds the unit until a day after it.
+
+const HOLD = 'facilities/f1/mapEngine/activeHolds/items/u1';
+const HELD_UNTIL = new Date(Date.now() + 20 * 60 * 60 * 1000);
+
+/** Paid at checkout, not yet moved in: the reservation names the payment and holds unit u1. */
+function paidNotMovedIn(reservation: Record<string, unknown> = {}, hold: Record<string, unknown> = {}) {
+  const ctx = moveInSetup();
+  ctx.fake.seed('publicReservations/res_1', {
+    facilityId: 'f1',
+    unitId: 'u1',
+    status: 'pending',
+    checkoutPaidPaymentIntentId: PI,
+    ...reservation,
+  });
+  ctx.fake.seed(HOLD, { facilityId: 'f1', unitId: 'u1', reservationId: 'res_1', status: 'active', expiresAt: HELD_UNTIL, ...hold });
+  return ctx;
+}
+
+const RETURNED: Array<[string, () => Stripe.Event, string, string]> = [
+  ['refunded in Stripe', () => event('charge.refunded', refundedCharge('re_1', 1000), ACCOUNT), 'refund', 'moveInPaymentRefund_re_1'],
+  ['disputed', () => event('charge.dispute.created', dispute(), ACCOUNT), 'dispute', 'moveInPaymentDispute_du_movein'],
+];
+
+for (const [label, returned, kind, alert] of RETURNED) {
+  test(`a payment ${label} before the move-in cancels the reservation it paid for and frees the unit`, async () => {
+    const { fake } = paidNotMovedIn();
+
+    await dispatchStripeWebhookEvent(returned());
+
+    // Before: the reservation kept the payment and the unit stayed held for a
+    // day after it ("Unit is currently in checkout" for anyone), while the
+    // renter could neither finish nor pay again.
+    const reservation = fake.read('publicReservations/res_1')!;
+    assert.equal(reservation.status, 'cancelled');
+    assert.equal(reservation.cancelledBy, 'system@stripe-webhook');
+    assert.equal(reservation.cancelReason, `paid-move-in-returned:${kind}`);
+    assert.equal(reservation.returnedPaymentIntentId, PI);
+    assert.equal(fake.read(HOLD), undefined);
+    assert.deepEqual(fake.list(NOTIFICATIONS), [alert]);
+    assert.match(String(fake.read(`${NOTIFICATIONS}/${alert}`)!.message), /the reservation was cancelled and the unit is free to rent again/);
+
+    // Redelivered: nothing more.
+    const writes = fake.writes.length;
+    await dispatchStripeWebhookEvent(returned());
+    assert.deepEqual(
+      fake.writes.slice(writes).filter((w) => w.path.startsWith('publicReservations/') || w.path === HOLD),
+      [],
+    );
+  });
+}
+
+test('a reservation that records another payment keeps its hold when this one is returned', async () => {
+  // A second payment for the same reservation: the hold is that payment's.
+  const { fake } = paidNotMovedIn({ checkoutPaidPaymentIntentId: 'pi_other' });
+
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge('re_1', 1000), ACCOUNT));
+
+  assert.equal(fake.read('publicReservations/res_1')!.status, 'pending');
+  assert.ok(fake.read(HOLD));
+  assert.ok(untenantedRefunds(fake)?.re_1);
+  assert.doesNotMatch(String(fake.read(`${NOTIFICATIONS}/moveInPaymentRefund_re_1`)!.message), /cancelled/);
+});
+
+test('a refund the move-in itself made leaves the reservation and the hold to that path', async () => {
+  const { fake } = paidNotMovedIn();
+  fake.seed(MOVE_IN_PAYMENT, { paymentIntentId: PI, facilityId: 'f1', reservationId: 'res_1', refund: { status: 'pending' } });
+
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge('re_1', 1000), ACCOUNT));
+
+  assert.equal(fake.read('publicReservations/res_1')!.status, 'pending');
+  assert.ok(fake.read(HOLD));
+});
+
+test('a hold that has passed to another reservation is not released', async () => {
+  const { fake } = paidNotMovedIn({}, { reservationId: 'res_other' });
+
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge('re_1', 1000), ACCOUNT));
+
+  assert.equal(fake.read('publicReservations/res_1')!.status, 'cancelled');
+  assert.equal(fake.read(HOLD)!.reservationId, 'res_other');
+});
+
+test('a reservation already closed is left as it is', async () => {
+  const { fake } = paidNotMovedIn({ status: 'cancelled', cancelReason: 'renter' });
+
+  await dispatchStripeWebhookEvent(event('charge.dispute.created', dispute(), ACCOUNT));
+
+  assert.equal(fake.read('publicReservations/res_1')!.cancelReason, 'renter');
+  assert.ok(fake.read(HOLD));
 });

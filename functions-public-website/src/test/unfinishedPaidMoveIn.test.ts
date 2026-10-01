@@ -230,11 +230,12 @@ function load(inMemory: InMemoryFirestore, stub: Stub) {
         holdMinutes: 'until-cap',
         recordedBy: 'stripeWebhook',
       }),
-    confirm: () =>
+    /** Confirms [sessionId] (Stripe's redirect), or with none, the session checkout recorded. */
+    confirm: (sessionId?: string) =>
       testEnv.wrap(moveIn.confirmPublicMoveInCheckout)(
-        { reservationId: RESERVATION, token: TOKEN },
+        { reservationId: RESERVATION, token: TOKEN, ...(sessionId ? { sessionId } : {}) },
         callableContext,
-      ) as Promise<{ paid?: boolean; paymentIntentId?: string }>,
+      ) as Promise<{ success?: boolean; paid?: boolean; paymentIntentId?: string }>,
     complete: () =>
       testEnv.wrap(moveIn.completePublicMoveIn)(
         {
@@ -766,7 +767,7 @@ for (const [label, recorded] of RETURNED_IN_STRIPE) {
   test(`a payment ${label} before the renter finished is not read as a move-in, and nothing refunds it`, async () => {
     const inMemory = new InMemoryFirestore();
     seedCheckout(inMemory, 34);
-    const { webhook, settle, complete, calls, refunds } = load(inMemory, { sessions: { [SESSION]: paidSession(inMemory) } });
+    const { webhook, settle, complete, confirm, calls, refunds } = load(inMemory, { sessions: { [SESSION]: paidSession(inMemory) } });
     await webhook();
     assert.equal((await settle(31)).alerted, 1);
 
@@ -777,6 +778,16 @@ for (const [label, recorded] of RETURNED_IN_STRIPE) {
       ...recorded,
       updatedBy: 'system@stripe-webhook',
     });
+
+    // The renter's page asking about the payment is not told it is paid.
+    // Before: paid, so the renter filled in and signed the whole form before
+    // completion refused it.
+    assert.deepEqual(await confirm(), { success: false, paid: false });
+    await assert.rejects(() => confirm(SESSION), (err: any) => {
+      assert.equal(err.message, refunds.PAYMENT_RETURNED_BEFORE_MOVE_IN_MESSAGE);
+      return true;
+    });
+
     assert.deepEqual(await settle(46), { refunded: 0, alerted: 0, closed: 1, skipped: 0 });
 
     // Before: rewritten to "...and has now finished moving in." and marked read.

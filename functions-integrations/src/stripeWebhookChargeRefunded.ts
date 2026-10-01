@@ -121,9 +121,11 @@ export async function handleChargeRefunded(
     // An online move-in's PaymentIntent names no tenant. Its refund used to
     // go on the ledger with tenantId null: on nobody's ledger, while the
     // tenant it moved in kept the credit for money handed back. Found through
-    // the move-in's records instead; with no tenant (refunded before the
-    // move-in was completed) it goes on no ledger at all, and is recorded on
-    // the move-in payment for the owner (moveInPaymentTenant.ts).
+    // the refund's own row when the app made it (processRefund writes
+    // `refund_<id>` with the tenant it refunded), else the move-in's records;
+    // with no tenant (refunded before the move-in was completed) it goes on
+    // no ledger at all, and is recorded on the move-in payment for the owner
+    // (moveInPaymentTenant.ts).
     // Each refund is resolved on its own: one recorded before the move-in
     // completed has no tenant, and a later one may.
     const tenantByRefund = new Map<string, string | null>();
