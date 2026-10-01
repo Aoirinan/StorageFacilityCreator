@@ -125,7 +125,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                     ),
                   if (_invoice.isOverdue)
                     Text(
-                      '${_invoice.daysOverdue} days overdue',
+                      _invoice.daysOverdueLabel,
                       style: TextStyle(
                         color: AppTheme.error,
                         fontWeight: FontWeight.w500,

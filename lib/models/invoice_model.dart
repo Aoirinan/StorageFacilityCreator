@@ -175,14 +175,40 @@ class InvoiceModel {
 
   // Helper getters
   bool get isPaid => status == InvoiceStatus.paid || balance <= 0;
-  bool get isOverdue =>
-      status == InvoiceStatus.overdue ||
-      (status == InvoiceStatus.sent &&
-          DateTime.now().isAfter(dueDate) &&
-          balance > 0);
-  int get daysOverdue => isOverdue
-      ? DateTime.now().difference(dueDate).inDays
+  bool get isOverdue => isOverdueAt(DateTime.now());
+  int get daysOverdue => daysOverdueAt(DateTime.now());
+
+  /// "1 day overdue", "3 days overdue", as of today.
+  String get daysOverdueLabel => overdueDaysText(daysOverdue);
+
+  /// "1 day overdue", "3 days overdue".
+  static String overdueDaysText(int days) =>
+      '$days ${days == 1 ? 'day' : 'days'} overdue';
+
+  /// Whether this invoice is overdue on [now]'s calendar day: it went to the
+  /// tenant (sent, or the older stored "overdue" status), money is still owed
+  /// on it, and it was due on a day before today.
+  ///
+  /// A draft is never overdue: it was never sent, so nobody has been asked to
+  /// pay it yet. Paid and voided invoices are closed. An invoice due today
+  /// becomes overdue tomorrow, whatever time of day its due date carries.
+  bool isOverdueAt(DateTime now) {
+    if (status != InvoiceStatus.sent && status != InvoiceStatus.overdue) {
+      return false;
+    }
+    if (balance <= 0) return false;
+    return _calendarDay(dueDate).isBefore(_calendarDay(now));
+  }
+
+  /// Whole days between the due date and [now], or 0 when not overdue.
+  int daysOverdueAt(DateTime now) => isOverdueAt(now)
+      ? _calendarDay(now).difference(_calendarDay(dueDate)).inDays
       : 0;
+
+  /// The calendar day of [t], in UTC so a daylight-saving change between two
+  /// days cannot make them 23 hours (0 whole days) apart.
+  static DateTime _calendarDay(DateTime t) =>
+      DateTime.utc(t.year, t.month, t.day);
 
   String get statusDisplayName {
     switch (status) {
