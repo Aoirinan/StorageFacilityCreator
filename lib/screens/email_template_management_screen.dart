@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
-import '../widgets/modern_page_wrapper.dart';
+import '../widgets/shell_page.dart';
 import '../theme/app_theme.dart';
 import '../models/email_template_model.dart';
 import '../services/template_service.dart';
@@ -67,10 +66,7 @@ class _EmailTemplateManagementScreenState extends State<EmailTemplateManagementS
 
   @override
   Widget build(BuildContext context) {
-    final currentRoute = GoRouter.of(context).routeInformationProvider.value.location ?? '/templates/email';
-    
-    return ModernPageWrapper(
-      currentRoute: currentRoute,
+    return ShellPage(
       title: 'Email Templates',
       actions: [
         IconButton(

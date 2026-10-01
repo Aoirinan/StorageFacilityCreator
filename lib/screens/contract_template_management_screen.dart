@@ -10,9 +10,8 @@ import '../providers/search_provider.dart';
 import '../services/contract_service.dart';
 import '../services/facility_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
+import '../widgets/shell_page.dart';
 import '../utils/error_message_helper.dart';
-import '../services/modern_navigation_service.dart';
 import '../router/app_route.dart';
 import '../router/app_router.dart';
 import '../widgets/keyboard_scrollable.dart';
@@ -109,26 +108,16 @@ class _ContractTemplateManagementScreenState extends ConsumerState<ContractTempl
     });
 
     if (_isLoadingFacility) {
-      return ModernPageWrapper(
-        currentRoute: '/contracts',
+      return ShellPage(
         title: 'Contract Templates',
-        showSidebar: false,
-        onNavigate: (route) {
-          ModernNavigationService.navigateToRoute(context, route);
-        },
         child: const Center(child: CircularProgressIndicator()),
       );
     }
 
     final isAllFacilities = _selectedFacilityId == _kAllFacilities || _selectedFacilityId == null;
 
-    return ModernPageWrapper(
-      currentRoute: '/contracts',
+    return ShellPage(
       title: 'Contract Templates',
-      showSidebar: false,
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
       actions: [
         IconButton(
           icon: const Icon(Icons.add),

@@ -5,8 +5,7 @@ import '../models/contact_log_model.dart';
 import '../models/tenant_model.dart';
 import '../services/contact_log_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
+import '../widgets/shell_page.dart';
 import '../utils/error_message_helper.dart';
 
 /// Provider for contact logs stream
@@ -41,12 +40,8 @@ class _ContactLogsScreenState extends ConsumerState<ContactLogsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/contact-logs',
+    return ShellPage(
       title: 'Contact Logs${widget.tenant != null ? ' - ${widget.tenant!.name}' : ''}',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
       actions: [
         IconButton(
           icon: const Icon(Icons.add),

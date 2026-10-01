@@ -7,7 +7,7 @@ import '../services/api_key_service.dart';
 import '../providers/facility_provider.dart';
 import '../providers/search_provider.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
+import '../widgets/shell_page.dart';
 
 /// Screen for managing API keys
 class ApiKeysManagementScreen extends ConsumerStatefulWidget {
@@ -72,10 +72,7 @@ class _ApiKeysManagementScreenState extends ConsumerState<ApiKeysManagementScree
       });
     }
 
-    final currentRoute = GoRouter.of(context).routeInformationProvider.value.location ?? '/api-keys';
-
-    return ModernPageWrapper(
-      currentRoute: currentRoute,
+    return ShellPage(
       title: 'API Keys',
       actions: [
         IconButton(

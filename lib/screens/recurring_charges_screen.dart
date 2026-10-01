@@ -10,9 +10,8 @@ import '../providers/auth_provider.dart';
 import '../services/facility_creator_account_service.dart';
 import '../services/recurring_charges_service.dart';
 import 'package:sfcapp/services/rent_generation_history.dart';
-import '../widgets/modern_page_wrapper.dart';
+import '../widgets/shell_page.dart';
 import '../theme/app_theme.dart';
-import '../services/modern_navigation_service.dart';
 import '../router/app_router.dart';
 import '../router/app_route.dart';
 
@@ -75,12 +74,8 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/recurring-charges',
+    return ShellPage(
       title: 'Recurring Charges',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
       actions: [
         if (_selectedFacilityId.isNotEmpty)
           ElevatedButton.icon(

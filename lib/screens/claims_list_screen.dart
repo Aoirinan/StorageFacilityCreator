@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:go_router/go_router.dart';
 import '../models/claim_model.dart';
-import '../widgets/modern_page_wrapper.dart';
+import '../widgets/shell_page.dart';
 import '../theme/app_theme.dart';
 import 'claim_detail_screen.dart';
 import '../router/app_router.dart';
@@ -19,9 +19,7 @@ class ClaimsListScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final currentRoute = GoRouter.of(context).routeInformationProvider.value.location ?? '/insurance/claims';
-    return ModernPageWrapper(
-      currentRoute: currentRoute,
+    return ShellPage(
       title: 'Insurance Claims',
       actions: [
         IconButton(

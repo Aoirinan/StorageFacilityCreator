@@ -1,27 +1,45 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter/services.dart';
-import '../widgets/modern_page_wrapper.dart';
+import 'package:sfcapp/providers/active_facility_provider.dart';
+import 'package:sfcapp/providers/auth_provider.dart';
+import 'package:sfcapp/providers/facility_provider.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/widgets/shell_page.dart';
 import '../theme/app_theme.dart';
 import '../services/public_payment_link_service.dart';
 import '../services/tenant_service.dart';
 import '../models/tenant_model.dart';
 import 'package:intl/intl.dart';
 
-/// Screen for managing public payment links
-class PaymentLinksManagementScreen extends StatefulWidget {
+typedef LoadPaymentLinks = Future<List<PublicPaymentLink>> Function(String facilityId, String? status);
+typedef LoadFacilityTenants = Future<List<TenantModel>> Function(String facilityId);
+
+Future<List<PublicPaymentLink>> _loadLinks(String facilityId, String? status) =>
+    PublicPaymentLinkService.getPaymentLinksForFacility(facilityId: facilityId, status: status);
+
+/// Screen for managing public payment links. It sits inside the ShellRoute,
+/// so AppShell draws the sidebar and top bar around it.
+class PaymentLinksManagementScreen extends ConsumerStatefulWidget {
   final String facilityId;
+
+  /// [loadLinks] and [loadTenants] are seams for tests; the app uses Firestore.
+  final LoadPaymentLinks loadLinks;
+  final LoadFacilityTenants loadTenants;
 
   const PaymentLinksManagementScreen({
     super.key,
     required this.facilityId,
+    this.loadLinks = _loadLinks,
+    this.loadTenants = TenantService.getTenantsForFacility,
   });
 
   @override
-  State<PaymentLinksManagementScreen> createState() => _PaymentLinksManagementScreenState();
+  ConsumerState<PaymentLinksManagementScreen> createState() => _PaymentLinksManagementScreenState();
 }
 
-class _PaymentLinksManagementScreenState extends State<PaymentLinksManagementScreen> {
+class _PaymentLinksManagementScreenState extends ConsumerState<PaymentLinksManagementScreen> {
   List<PublicPaymentLink> _links = [];
   List<TenantModel> _tenants = [];
   bool _isLoading = true;
@@ -34,6 +52,12 @@ class _PaymentLinksManagementScreenState extends State<PaymentLinksManagementScr
     _loadData();
   }
 
+  @override
+  void didUpdateWidget(PaymentLinksManagementScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.facilityId != widget.facilityId) _loadData();
+  }
+
   Future<void> _loadData() async {
     setState(() {
       _isLoading = true;
@@ -42,13 +66,10 @@ class _PaymentLinksManagementScreenState extends State<PaymentLinksManagementScr
 
     try {
       // Load payment links
-      final links = await PublicPaymentLinkService.getPaymentLinksForFacility(
-        facilityId: widget.facilityId,
-        status: _statusFilter,
-      );
+      final links = await widget.loadLinks(widget.facilityId, _statusFilter);
 
       // Load tenants for display
-      final tenants = await TenantService.getTenantsForFacility(widget.facilityId);
+      final tenants = await widget.loadTenants(widget.facilityId);
 
       setState(() {
         _links = links;
@@ -173,13 +194,37 @@ class _PaymentLinksManagementScreenState extends State<PaymentLinksManagementScr
     }
   }
 
+  /// The facility's name from the list the top bar's picker shows, so the
+  /// page says which facility it is for while the picker reads All Facilities.
+  String? _facilityName() {
+    final uid = ref.watch(authStateProvider).value?.uid;
+    if (uid == null) return null;
+    final facilities = ref.watch(userFacilitiesProvider(uid)).value ?? const [];
+    for (final f in facilities) {
+      if (f.id == widget.facilityId) return f.name;
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final currentRoute = GoRouter.of(context).routeInformationProvider.value.location ?? '/payment-links';
-    
-    return ModernPageWrapper(
-      currentRoute: currentRoute,
+    // Picking a facility in the top bar shows that facility's links. All
+    // Facilities keeps this one: links belong to a single facility. The
+    // saved choice arriving on first load is not a pick, so a link to
+    // another facility's page is not redirected.
+    ref.listen<AsyncValue<String?>>(activeFacilityIdProvider, (prev, next) {
+      if (prev == null || !prev.hasValue) return;
+      final picked = next.whenOrNull(data: (id) => id);
+      if (picked == null || picked == widget.facilityId) return;
+      context.go(Uri(
+        path: AppRoute.paymentLinks,
+        queryParameters: {'facilityId': picked},
+      ).toString());
+    });
+
+    return ShellPage(
       title: 'Payment Links',
+      subtitle: _facilityName(),
       actions: [
         IconButton(
           icon: const Icon(Icons.refresh),

@@ -42,7 +42,8 @@ class ModernSidebar extends StatelessWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     // Enhanced route matching: exact match or starts with, and handle query parameters.
-    // Rent & payments hub: highlight for payments and legacy redirect paths.
+    // Rent & payments hub: highlight for payments, the payment links page
+    // opened from its Collect tab, and legacy redirect paths.
     final routeWithoutQuery = currentRoute.split('?').first;
     final isRentPaymentsActive =
         routeWithoutQuery == '/payments' ||
@@ -51,7 +52,8 @@ class ModernSidebar extends StatelessWidget {
         routeWithoutQuery == '/billing' ||
         routeWithoutQuery == '/reminders' ||
         routeWithoutQuery.startsWith('/reminders/') ||
-        routeWithoutQuery == '/invoices';
+        routeWithoutQuery == '/invoices' ||
+        routeWithoutQuery == '/payment-links';
     final isActive = (String route) {
       if (route == '/payments') {
         return isRentPaymentsActive;

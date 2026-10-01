@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
 import 'package:sfcapp/models/sms_template_model.dart';
 import 'package:sfcapp/services/template_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
-import 'package:sfcapp/widgets/modern_page_wrapper.dart';
+import 'package:sfcapp/widgets/shell_page.dart';
 
 /// Screen for managing SMS templates
 class SMSTemplateManagementScreen extends StatefulWidget {
@@ -66,10 +65,7 @@ class _SMSTemplateManagementScreenState extends State<SMSTemplateManagementScree
 
   @override
   Widget build(BuildContext context) {
-    final currentRoute = GoRouter.of(context).routeInformationProvider.value.location ?? '/templates/sms';
-    
-    return ModernPageWrapper(
-      currentRoute: currentRoute,
+    return ShellPage(
       title: 'SMS Templates',
       actions: [
         IconButton(

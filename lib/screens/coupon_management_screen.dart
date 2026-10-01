@@ -1,14 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
-import '../widgets/modern_page_wrapper.dart';
+import '../widgets/shell_page.dart';
 import '../theme/app_theme.dart';
 import '../models/coupon_model.dart';
 import '../services/coupon_service.dart';
 import '../providers/facility_provider.dart';
 import '../providers/auth_provider.dart';
-import '../services/modern_navigation_service.dart';
 
 /// Screen for managing coupons/specials
 class CouponManagementScreen extends ConsumerStatefulWidget {
@@ -113,14 +111,8 @@ class _CouponManagementScreenState extends ConsumerState<CouponManagementScreen>
 
   @override
   Widget build(BuildContext context) {
-    final currentRoute = GoRouter.of(context).routeInformationProvider.value.location ?? '/coupons';
-    
-    return ModernPageWrapper(
-      currentRoute: currentRoute,
+    return ShellPage(
       title: 'Coupons & Specials',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
       actions: [
         IconButton(
           icon: const Icon(Icons.add),
