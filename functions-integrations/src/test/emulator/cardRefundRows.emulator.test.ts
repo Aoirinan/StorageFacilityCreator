@@ -21,8 +21,8 @@ import { clearEmulator, emulatorDb, skipWithoutEmulator } from './firestoreEmula
 const FACILITY = 'fac-1';
 const OWNER = 'owner-1';
 const ACCOUNT = 'acct_test_facility1';
-const PI = 'pi_test_movein00000001';
-const CHARGE = 'ch_test_movein00000001';
+const PI = 'pi_test_movein_payment';
+const CHARGE = 'ch_test_movein_payment';
 
 registerStripeKeysProvider({
   getSecretKey: () => 'sk_test_fake_for_emulator_tests',
@@ -108,8 +108,8 @@ test('two units at one rate moved out the same day, both refunded against one pa
   await seed();
   const stripe = fakeStripe({ facilityId: FACILITY, tenantId: 't1' });
   // The move-out screen's ids for the two contracts (MoveOutCardRefund.requestId).
-  const first = await refundCall(36.67, `mo_contractTestA00000001_${PI}`);
-  const second = await refundCall(36.67, `mo_contractTestB00000002_${PI}`);
+  const first = await refundCall(36.67, `mo_contractTestA_${PI}`);
+  const second = await refundCall(36.67, `mo_contractTestB_${PI}`);
 
   // Keyed on charge and amount alone, the second call got the first refund
   // back: the app said it was not made, and an owner told to "only record"
@@ -121,7 +121,7 @@ test('two units at one rate moved out the same day, both refunded against one pa
   assert.equal((await row('refund_re_test_2'))?.amount, 36.67);
 
   // A retry of the first (a timeout, a second press) is the same refund.
-  const retry = await refundCall(36.67, `mo_contractTestA00000001_${PI}`);
+  const retry = await refundCall(36.67, `mo_contractTestA_${PI}`);
   assert.equal(retry.stripeRefundId, 're_test_1');
   assert.equal(stripe.refunds().length, 2);
   assert.equal((await ledgers().where('type', '==', 'refund').get()).size, 2);
@@ -140,7 +140,7 @@ test('the webhook landing after processRefund keeps its tenant, reference and au
   await seed();
   // An online move-in payment: its PaymentIntent names no tenant.
   const stripe = fakeStripe({ facilityId: FACILITY, reservationId: 'res-test-1' });
-  await refundCall(36.67, `mo_contractTestA00000001_${PI}`);
+  await refundCall(36.67, `mo_contractTestA_${PI}`);
 
   await handleChargeRefunded(refundedCharge(stripe.refunds()), ACCOUNT);
 
@@ -174,7 +174,7 @@ test('the webhook landing first: processRefund then names the tenant, and the we
   await handleChargeRefunded(refundedCharge([{ id: 're_test_1', amount: 3667, status: 'succeeded' }]), ACCOUNT);
   assert.equal((await row('refund_re_test_1'))!.tenantId, null);
 
-  await refundCall(36.67, `mo_contractTestA00000001_${PI}`);
+  await refundCall(36.67, `mo_contractTestA_${PI}`);
   assert.equal(stripe.refunds()[0].id, 're_test_1');
 
   const after = (await row('refund_re_test_1'))!;

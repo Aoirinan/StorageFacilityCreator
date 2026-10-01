@@ -71,9 +71,9 @@ test('a refund made in the Stripe dashboard (no row yet) is written as before', 
 
 test("the move-out screen's request id is accepted, and keys each move-out's refund apart", () => {
   // MoveOutCardRefund.requestId: mo_<contract>_<PaymentIntent>.
-  const unitA = refundRequestId('mo_contractTestA00000001_pi_test_0000000000000001');
-  const unitB = refundRequestId('mo_contractTestB00000002_pi_test_0000000000000001');
-  assert.equal(unitA, 'mo_contractTestA00000001_pi_test_0000000000000001');
+  const unitA = refundRequestId('mo_contractTestA_pi_test_payment');
+  const unitB = refundRequestId('mo_contractTestB_pi_test_payment');
+  assert.equal(unitA, 'mo_contractTestA_pi_test_payment');
   assert.ok(unitB);
   // A tenant moved out of two units at the same rate on the same day, both
   // refunded by card against one payment: same charge, same amount. Keyed
@@ -84,7 +84,7 @@ test("the move-out screen's request id is accepted, and keys each move-out's ref
   assert.equal(refundIdempotencyKey('ch_test_1', 3667, unitA), refundIdempotencyKey('ch_test_1', 3667, unitA));
   assert.equal(
     refundIdempotencyKey('ch_test_1', 3667, unitA),
-    'refund_ch_test_1_3667_mo_contractTestA00000001_pi_test_0000000000000001',
+    'refund_ch_test_1_3667_mo_contractTestA_pi_test_payment',
   );
   // Within Stripe's 255-character limit at the longest id the screen sends.
   assert.ok(refundIdempotencyKey(`ch_${'x'.repeat(40)}`, 99999999, 'm'.repeat(64)).length <= 255);
