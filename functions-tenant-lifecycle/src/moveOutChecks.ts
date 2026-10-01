@@ -165,3 +165,20 @@ export function pendingCardRefund(contract: DocData): { requested: number; since
   const since = typeof at?.toDate === 'function' ? at.toDate().toISOString() : null;
   return { requested, since };
 }
+
+/**
+ * When a move-out that left a card refund to the screen was committed, for
+ * the first press to check its refund against (`cardRefundSince`): the
+ * [contract] read back after the commit has it as its pending record's
+ * `at`. A second session can press Complete in the time between the commit
+ * and the first press's answer, be offered the pending refund
+ * (pendingCardRefund) and make it. Any refund row on the ledger from then
+ * on may be that refund, and the first press planning its own from what
+ * is left put it on another payment, or at another amount, under another
+ * processRefund key, so Stripe refunded it twice. [startedAt], taken
+ * before the transaction, stands in when the record is not there to read:
+ * it is earlier, so it rules out no more than the commit would.
+ */
+export function cardRefundSince(contract: DocData | undefined, startedAt: Date): string {
+  return (contract ? pendingCardRefund(contract)?.since : null) ?? startedAt.toISOString();
+}

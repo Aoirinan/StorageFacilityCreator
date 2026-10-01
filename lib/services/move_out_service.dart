@@ -445,21 +445,13 @@ class MoveOutService {
         print('✅ [MoveOut] Cloud Function completed successfully');
       }
 
-      final moveOut = moveOutResultFromServer(data, calculation);
-      // A card refund is not made by processMoveOut: it answers with the
-      // amount, refunded here through processRefund. Never on a retry of a
-      // finished move-out (the server answers 0 then): one the first press
-      // left pending is the screen's to ask the owner about
-      // (MoveOutResult.pendingCardRefund).
-      final due = cardRefundDue(data);
-      if (!moveOut.success || due <= 0) return moveOut;
-      final outcome = await MoveOutCardRefund.refundAfterMoveOut(
+      return afterProcessMoveOut(
+        data,
+        calculation,
         facilityId: facilityId,
         tenantId: tenantId,
         contractId: contractId,
-        amount: due,
       );
-      return withCardRefund(moveOut, outcome);
     } on FirebaseFunctionsException catch (e) {
       if (kDebugMode) {
         print('❌ [MoveOut] Cloud Function error: ${e.code} - ${e.message}');
@@ -477,6 +469,52 @@ class MoveOutService {
         error: 'Failed to process move-out: $e',
       );
     }
+  }
+
+  /// What processMoveOut answered ([data]), with the card refund it left to
+  /// the screen made. processMoveOut does not make one: it answers with the
+  /// amount, refunded here through processRefund. Never on a retry of a
+  /// finished move-out (the server answers 0 then): one the first press
+  /// left pending is the screen's to ask the owner about
+  /// (MoveOutResult.pendingCardRefund). The refund is checked against the
+  /// commit ([cardRefundSince]): a second session can press Complete while
+  /// this answer is on its way, be offered the pending refund and make it,
+  /// and this press then planned its own from what that left, on another
+  /// payment or at another amount, which Stripe refunded again.
+  /// [readLedger] and [call] are for tests.
+  @visibleForTesting
+  static Future<MoveOutResult> afterProcessMoveOut(
+    Map<String, dynamic> data,
+    MoveOutCalculation calculation, {
+    required String facilityId,
+    required String tenantId,
+    required String contractId,
+    Future<List<Map<String, dynamic>>> Function()? readLedger,
+    ProcessRefundCall? call,
+  }) async {
+    final moveOut = moveOutResultFromServer(data, calculation);
+    final due = cardRefundDue(data);
+    if (!moveOut.success || due <= 0) return moveOut;
+    final outcome = await MoveOutCardRefund.refundAfterMoveOut(
+      facilityId: facilityId,
+      tenantId: tenantId,
+      contractId: contractId,
+      amount: due,
+      since: cardRefundSince(data),
+      readLedger: readLedger,
+      call: call,
+    );
+    return withCardRefund(moveOut, outcome);
+  }
+
+  /// When processMoveOut committed a move-out that left a card refund to
+  /// the screen (`cardRefundSince`): any refund row on the ledger from then
+  /// on may be another press's refund of this one. Null from a server from
+  /// before it, whose first press refunds unchecked, as before.
+  @visibleForTesting
+  static DateTime? cardRefundSince(Map<String, dynamic> data) {
+    final since = data['cardRefundSince'];
+    return since is String ? DateTime.tryParse(since) : null;
   }
 
   /// The move-out date as processMoveOut takes it: the calendar day the
