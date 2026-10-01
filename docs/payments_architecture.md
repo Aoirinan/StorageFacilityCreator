@@ -342,7 +342,11 @@ All new functions check feature flags before processing:
   webhook recorded and its owner notification. With no tenant (refunded or disputed before the move-in
   completed) nothing goes on any ledger: it is recorded on `publicMoveInPayments/{paymentIntentId}`
   (`untenantedRefunds` / `untenantedDisputes`), which also stops that payment completing a move-in, and the owner
-  gets a notification (`functions-integrations/src/moveInPaymentTenant.ts`).
+  gets a notification (`functions-integrations/src/moveInPaymentTenant.ts`). The reservation that payment paid
+  for (`checkoutPaidPaymentIntentId`), if still open, is cancelled (`cancelReason`
+  `paid-move-in-returned:refund|dispute`) and its hold on the unit released, instead of keeping the unit for up
+  to a day for a renter who can no longer finish; `confirmPublicMoveInCheckout` no longer reports such a payment
+  as paid.
 - A lost dispute is collected with **Record payment for this dispute** on its ledger row (cash, check, Venmo,
   Zelle, bank transfer, other, the card on file, or a payment link). Every one of these puts the dispute's id on
   the payment's ledger row (`metadata.disputeId`), so the payment nets against the dispute and stays out of what

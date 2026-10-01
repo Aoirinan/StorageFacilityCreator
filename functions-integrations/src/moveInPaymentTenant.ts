@@ -1,6 +1,11 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-import { UNTENANTED_DISPUTES_FIELD, UNTENANTED_REFUNDS_FIELD } from '@sfc/functions-shared';
+import {
+  CHECKOUT_PAID_FIELD,
+  UNTENANTED_DISPUTES_FIELD,
+  UNTENANTED_REFUNDS_FIELD,
+  unitHoldRef,
+} from '@sfc/functions-shared';
 
 /**
  * Online move-in payments and the tenant they paid for.
@@ -30,7 +35,9 @@ import { UNTENANTED_DISPUTES_FIELD, UNTENANTED_REFUNDS_FIELD } from '@sfc/functi
  * owner gets an in-app notification. That record also stops the payment from
  * completing a move-in afterwards (completePublicMoveIn refuses a payment
  * that has one), which is right: the money has been handed back or taken
- * back.
+ * back. So the reservation that payment paid for is cancelled and its hold
+ * on the unit released, rather than kept for up to a day for a renter who
+ * can no longer finish.
  */
 export const PUBLIC_MOVE_IN_PAYMENTS_COLLECTION = 'publicMoveInPayments';
 export const PUBLIC_MOVE_IN_PAYMENT_TYPE = 'public_move_in';
@@ -102,23 +109,29 @@ function hasText(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
-function alertMessage(money: UntenantedMoveInMoney, reservationId: string | null): string {
+function alertMessage(money: UntenantedMoveInMoney, reservationId: string | null, released: boolean): string {
   const reservation = reservationId ? ` (reservation ${reservationId})` : '';
+  const cannotMoveIn = released
+    ? 'That payment can no longer be used to move in, so the reservation was cancelled and the unit is free to rent again.'
+    : 'That payment can no longer be used to move in.';
   if (money.kind === 'refund') {
     return (
       `A refund of ${dollars(money.amountCents)} was made on an online move-in payment${reservation} ` +
       'that never completed a move-in, so there is no tenant to post it to and nothing was put on any ledger. ' +
-      'That payment can no longer be used to move in. Check the reservation and the payment in your Stripe Dashboard.'
+      `${cannotMoveIn} Check the ${released ? '' : 'reservation and the '}payment in your Stripe Dashboard.`
     );
   }
   return (
     `A card dispute of ${dollars(money.amountCents)}` +
     (money.reason ? ` (${money.reason})` : '') +
     ` was opened on an online move-in payment${reservation} that never completed a move-in, ` +
-    'so there is no tenant to post it to and nothing was put on any ledger. That payment can no longer be used ' +
-    'to move in. Respond to the dispute in your Stripe Dashboard.'
+    `so there is no tenant to post it to and nothing was put on any ledger. ${cannotMoveIn} ` +
+    'Respond to the dispute in your Stripe Dashboard.'
   );
 }
+
+/** Reservation statuses a returned payment's reservation is cancelled from (as completion's refusals close them). */
+const RELEASABLE_RESERVATION_STATUSES = new Set(['pending', 'confirmed', 'expired']);
 
 /**
  * The tenant a move-in PaymentIntent paid for, or, when there is none, a
@@ -180,6 +193,26 @@ export async function resolveMoveInTenantOrRecord(params: {
       return { tenantId: reservation.tenantId, source: 'reservation' };
     }
 
+    // The payment can no longer move anyone in (completion refuses it once
+    // this is recorded). The reservation it paid for kept the payment
+    // (CHECKOUT_PAID_FIELD), so the renter could not pay again, and its hold
+    // kept the unit from everyone for up to PAID_HOLD_MAX_HOURS after the
+    // payment. That reservation is cancelled and its hold released, as
+    // completion does when it refuses and refunds a paid renter. Not for a
+    // refund the move-in itself made (`refund`: that path already closed or
+    // reopened the reservation), and not when the reservation records
+    // another payment: the hold is that one's.
+    const releases =
+      !payment?.refund &&
+      reservationRef !== null &&
+      reservation !== null &&
+      reservation.facilityId === facilityId &&
+      RELEASABLE_RESERVATION_STATUSES.has(String(reservation.status ?? '')) &&
+      reservation[CHECKOUT_PAID_FIELD] === paymentIntent.id;
+    const unitId = releases ? docIdOf(reservation?.unitId) : null;
+    const holdRef = unitId ? unitHoldRef(db, facilityId, unitId) : null;
+    const holdSnap = holdRef ? await tx.get(holdRef) : null;
+
     const field = money.kind === 'refund' ? UNTENANTED_REFUNDS_FIELD : UNTENANTED_DISPUTES_FIELD;
     const entry: Record<string, unknown> = {
       amountCents: money.amountCents,
@@ -200,6 +233,17 @@ export async function resolveMoveInTenantOrRecord(params: {
       },
       { merge: true },
     );
+    if (releases && reservationRef) {
+      tx.update(reservationRef, {
+        status: 'cancelled',
+        cancelledAt: timestamp,
+        cancelledBy: 'system@stripe-webhook',
+        cancelReason: `paid-move-in-returned:${money.kind}`,
+        returnedPaymentIntentId: paymentIntent.id,
+        updatedAt: timestamp,
+      });
+      if (holdRef && holdSnap?.exists && holdSnap.get('reservationId') === reservationId) tx.delete(holdRef);
+    }
     // Once. And not for a refund the move-in itself made because it could
     // not complete: that path records `refund` here and tells the owner.
     const ownerAlreadyTold = money.kind === 'refund' && Boolean(payment?.refund);
@@ -209,7 +253,7 @@ export async function resolveMoveInTenantOrRecord(params: {
         tenantId: null,
         tenantName: null,
         type: 'STRIPE_ACTION_REQUIRED',
-        message: alertMessage(money, reservationId),
+        message: alertMessage(money, reservationId, releases),
         readAt: null,
         createdAt: timestamp,
         createdBy: 'system@stripe-webhook',

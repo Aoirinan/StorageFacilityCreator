@@ -382,3 +382,97 @@ test('the refund is made and posted even when withdrawing the webhook\'s record 
   assert.equal(result.stripeRefundId, 're_1');
   assert.equal(fake.read(`${LEDGERS}/refund_re_1`)!.tenantId, 't_old');
 });
+
+// A payment returned before the move-in: the reservation it paid for, and its
+// hold on the unit. Checkout records the payment on the reservation
+// (checkoutPaidPaymentIntentId) and holds the unit until a day after it.
+
+const HOLD = 'facilities/f1/mapEngine/activeHolds/items/u1';
+const HELD_UNTIL = new Date(Date.now() + 20 * 60 * 60 * 1000);
+
+/** Paid at checkout, not yet moved in: the reservation names the payment and holds unit u1. */
+function paidNotMovedIn(reservation: Record<string, unknown> = {}, hold: Record<string, unknown> = {}) {
+  const ctx = moveInSetup();
+  ctx.fake.seed('publicReservations/res_1', {
+    facilityId: 'f1',
+    unitId: 'u1',
+    status: 'pending',
+    checkoutPaidPaymentIntentId: PI,
+    ...reservation,
+  });
+  ctx.fake.seed(HOLD, { facilityId: 'f1', unitId: 'u1', reservationId: 'res_1', status: 'active', expiresAt: HELD_UNTIL, ...hold });
+  return ctx;
+}
+
+const RETURNED: Array<[string, () => Stripe.Event, string, string]> = [
+  ['refunded in Stripe', () => event('charge.refunded', refundedCharge('re_1', 1000), ACCOUNT), 'refund', 'moveInPaymentRefund_re_1'],
+  ['disputed', () => event('charge.dispute.created', dispute(), ACCOUNT), 'dispute', 'moveInPaymentDispute_du_movein'],
+];
+
+for (const [label, returned, kind, alert] of RETURNED) {
+  test(`a payment ${label} before the move-in cancels the reservation it paid for and frees the unit`, async () => {
+    const { fake } = paidNotMovedIn();
+
+    await dispatchStripeWebhookEvent(returned());
+
+    // Before: the reservation kept the payment and the unit stayed held for a
+    // day after it ("Unit is currently in checkout" for anyone), while the
+    // renter could neither finish nor pay again.
+    const reservation = fake.read('publicReservations/res_1')!;
+    assert.equal(reservation.status, 'cancelled');
+    assert.equal(reservation.cancelledBy, 'system@stripe-webhook');
+    assert.equal(reservation.cancelReason, `paid-move-in-returned:${kind}`);
+    assert.equal(reservation.returnedPaymentIntentId, PI);
+    assert.equal(fake.read(HOLD), undefined);
+    assert.deepEqual(fake.list(NOTIFICATIONS), [alert]);
+    assert.match(String(fake.read(`${NOTIFICATIONS}/${alert}`)!.message), /the reservation was cancelled and the unit is free to rent again/);
+
+    // Redelivered: nothing more.
+    const writes = fake.writes.length;
+    await dispatchStripeWebhookEvent(returned());
+    assert.deepEqual(
+      fake.writes.slice(writes).filter((w) => w.path.startsWith('publicReservations/') || w.path === HOLD),
+      [],
+    );
+  });
+}
+
+test('a reservation that records another payment keeps its hold when this one is returned', async () => {
+  // A second payment for the same reservation: the hold is that payment's.
+  const { fake } = paidNotMovedIn({ checkoutPaidPaymentIntentId: 'pi_other' });
+
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge('re_1', 1000), ACCOUNT));
+
+  assert.equal(fake.read('publicReservations/res_1')!.status, 'pending');
+  assert.ok(fake.read(HOLD));
+  assert.ok(untenantedRefunds(fake)?.re_1);
+  assert.doesNotMatch(String(fake.read(`${NOTIFICATIONS}/moveInPaymentRefund_re_1`)!.message), /cancelled/);
+});
+
+test('a refund the move-in itself made leaves the reservation and the hold to that path', async () => {
+  const { fake } = paidNotMovedIn();
+  fake.seed(MOVE_IN_PAYMENT, { paymentIntentId: PI, facilityId: 'f1', reservationId: 'res_1', refund: { status: 'pending' } });
+
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge('re_1', 1000), ACCOUNT));
+
+  assert.equal(fake.read('publicReservations/res_1')!.status, 'pending');
+  assert.ok(fake.read(HOLD));
+});
+
+test('a hold that has passed to another reservation is not released', async () => {
+  const { fake } = paidNotMovedIn({}, { reservationId: 'res_other' });
+
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge('re_1', 1000), ACCOUNT));
+
+  assert.equal(fake.read('publicReservations/res_1')!.status, 'cancelled');
+  assert.equal(fake.read(HOLD)!.reservationId, 'res_other');
+});
+
+test('a reservation already closed is left as it is', async () => {
+  const { fake } = paidNotMovedIn({ status: 'cancelled', cancelReason: 'renter' });
+
+  await dispatchStripeWebhookEvent(event('charge.dispute.created', dispute(), ACCOUNT));
+
+  assert.equal(fake.read('publicReservations/res_1')!.cancelReason, 'renter');
+  assert.ok(fake.read(HOLD));
+});
