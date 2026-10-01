@@ -747,6 +747,74 @@ test('a refund resumed after the facility moved Stripe accounts is made on the a
   assertFirstRefundCall(calls.refunds[0]);
 });
 
+// A refund or card dispute made in Stripe before the renter finished: the
+// Connect webhook records it on the payment's use record, with no tenant
+// (functions-integrations moveInPaymentTenant.ts).
+
+const RETURNED_IN_STRIPE: Array<[string, Record<string, unknown>]> = [
+  ['refunded in part from the Dashboard', {
+    untenantedRefunds: { re_dashboard: { amountCents: 1000, status: 'succeeded', connectedAccountId: ACCOUNT } },
+  }],
+  ['disputed', {
+    untenantedDisputes: { du_early: { amountCents: 2500, status: 'needs_response', reason: 'fraudulent', connectedAccountId: ACCOUNT } },
+  }],
+];
+
+for (const [label, recorded] of RETURNED_IN_STRIPE) {
+  test(`a payment ${label} before the renter finished is not read as a move-in, and nothing refunds it`, async () => {
+    const inMemory = new InMemoryFirestore();
+    seedCheckout(inMemory, 34);
+    const { webhook, settle, complete, calls, refunds } = load(inMemory, { sessions: { [SESSION]: paidSession(inMemory) } });
+    await webhook();
+    assert.equal((await settle(31)).alerted, 1);
+
+    inMemory.seed(USE_PATH, {
+      paymentIntentId: PI,
+      facilityId: FACILITY,
+      reservationId: RESERVATION,
+      ...recorded,
+      updatedBy: 'system@stripe-webhook',
+    });
+    assert.deepEqual(await settle(46), { refunded: 0, alerted: 0, closed: 1, skipped: 0 });
+
+    // Before: rewritten to "...and has now finished moving in." and marked read.
+    const alert = inMemory.read(UNFINISHED_ALERT_PATH) as Record<string, any>;
+    assert.doesNotMatch(alert.message, /has now finished moving in/);
+    assert.match(alert.message, /^Rita Renter paid online for unit U1, and then part or all of the payment was refunded in Stripe, or the charge was disputed/);
+    assert.match(alert.message, /will not be refunded automatically/);
+    assert.equal(alert.readAt, null);
+    assert.equal(alert.metadata.resolution, 'returned');
+    // Before: deleted as if the renter had moved in.
+    assert.ok(inMemory.read(PAID_PATH));
+    // Written once, however often the sweep runs.
+    const written = JSON.stringify(inMemory.read(UNFINISHED_ALERT_PATH));
+    await settle(60);
+    assert.equal(JSON.stringify(inMemory.read(UNFINISHED_ALERT_PATH)), written);
+
+    // The renter coming back is told what happened (before: that the payment
+    // had completed a move-in), and is not moved in.
+    await assert.rejects(() => complete(), (err: any) => {
+      assert.equal(err.message, refunds.PAYMENT_RETURNED_BEFORE_MOVE_IN_MESSAGE);
+      return true;
+    });
+    // The same when completion would have refused and refunded it.
+    inMemory.seed(UNIT_PATH, { ...UNIT_DATA, monthlyRate: 150 });
+    await assert.rejects(() => complete(), (err: any) => {
+      assert.equal(err.message, refunds.PAYMENT_RETURNED_BEFORE_MOVE_IN_MESSAGE);
+      return true;
+    });
+    assert.deepEqual(tenants(inMemory), []);
+
+    // A day after paying the record goes. Nothing was ever refunded here: the
+    // webhook told the owner to deal with it in Stripe.
+    assert.deepEqual(await settle(24 * 60 + 1), { refunded: 0, alerted: 0, closed: 1, skipped: 0 });
+    assert.equal(inMemory.read(PAID_PATH), undefined);
+    assert.equal(JSON.stringify(inMemory.read(UNFINISHED_ALERT_PATH)), written);
+    assert.deepEqual(calls.refunds, []);
+    assert.equal((inMemory.read(USE_PATH) as Record<string, any>).refund, undefined);
+  });
+}
+
 test.after(() => {
   testEnv.cleanup();
 });

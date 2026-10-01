@@ -292,6 +292,7 @@ class PaymentOperationsNotifier extends StateNotifier<AsyncValue<void>> {
     String? notes,
     String? reference,
     String? disputeId,
+    String? disputeRequestId,
   }) async {
     state = const AsyncValue.loading();
     try {
@@ -303,6 +304,7 @@ class PaymentOperationsNotifier extends StateNotifier<AsyncValue<void>> {
         notes: notes,
         reference: reference,
         disputeId: disputeId,
+        disputeRequestId: disputeRequestId,
       );
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {

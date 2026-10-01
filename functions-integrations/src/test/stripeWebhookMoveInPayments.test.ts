@@ -9,6 +9,11 @@
  * completed) nothing goes on a ledger, and the move-in payment record and
  * the owner are told.
  *
+ * Checkout's PaymentIntents carry no facilityId either, only `type` and
+ * `reservationId` (functions-public-website publicMoveIn.ts), so the
+ * PaymentIntents here have that shape. The facility is found through the
+ * same records, and the event must still come from its account.
+ *
  * Runs the deployed webhook dispatch against an in-memory Firestore.
  * Made-up ids only: this repo is public.
  */
@@ -22,16 +27,17 @@ const PI = 'pi_movein';
 const MOVE_IN_PAYMENT = `publicMoveInPayments/${PI}`;
 const NOTIFICATIONS = 'facilities/f1/Notifications';
 
-function moveInSetup() {
+/** What checkout puts on a move-in's PaymentIntent: no facilityId, no tenantId. */
+const CHECKOUT_METADATA = { type: 'public_move_in', reservationId: 'res_1' };
+
+function moveInPaymentIntent(metadata: Record<string, string> = CHECKOUT_METADATA) {
+  return { id: PI, object: 'payment_intent', amount: 12500, status: 'succeeded', metadata };
+}
+
+function moveInSetup(metadata: Record<string, string> = CHECKOUT_METADATA, options: { reservation?: boolean } = {}) {
   const ctx = setup();
-  ctx.stripe.put(ACCOUNT, PI, {
-    id: PI,
-    object: 'payment_intent',
-    amount: 12500,
-    status: 'succeeded',
-    metadata: { type: 'public_move_in', reservationId: 'res_1', facilityId: 'f1' },
-  });
-  ctx.fake.seed('publicReservations/res_1', { facilityId: 'f1', status: 'pending' });
+  ctx.stripe.put(ACCOUNT, PI, moveInPaymentIntent(metadata));
+  if (options.reservation !== false) ctx.fake.seed('publicReservations/res_1', { facilityId: 'f1', status: 'pending' });
   return ctx;
 }
 
@@ -192,4 +198,63 @@ test('a dispute on a move-in payment that never completed a move-in goes on no l
   assert.equal(recorded.reason, 'product_not_received');
   assert.deepEqual(fake.list(NOTIFICATIONS), ['moveInPaymentDispute_du_movein']);
   assert.match(String(fake.read(`${NOTIFICATIONS}/moveInPaymentDispute_du_movein`)!.message), /card dispute of \$125\.00/);
+});
+
+// The facility, when the PaymentIntent does not name one.
+
+test('the facility of a move-in PaymentIntent that names none is found through its reservation', async () => {
+  const { fake } = moveInSetup();
+  assert.equal(moveInPaymentIntent().metadata.facilityId, undefined);
+
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge(), ACCOUNT));
+
+  // Before: "missing facilityId metadata", and nothing recorded anywhere, so
+  // the renter could still complete the move-in with money handed back.
+  const record = fake.read(MOVE_IN_PAYMENT)!;
+  assert.equal(record.facilityId, 'f1');
+  assert.ok((record.untenantedRefunds as Record<string, unknown>).re_1);
+  assert.deepEqual(fake.list(NOTIFICATIONS), ['moveInPaymentRefund_re_1']);
+});
+
+test('the facility is found through the move-in payment record when the reservation is gone', async () => {
+  const { fake } = moveInSetup(CHECKOUT_METADATA, { reservation: false });
+  fake.seed(MOVE_IN_PAYMENT, { paymentIntentId: PI, facilityId: 'f1', reservationId: 'res_1', tenantId: 't_new' });
+
+  await dispatchStripeWebhookEvent(event('charge.dispute.funds_withdrawn', dispute(), ACCOUNT));
+
+  assert.equal(fake.read(`${LEDGERS}/dispute_du_movein`)!.tenantId, 't_new');
+});
+
+test('an older move-in PaymentIntent that names its facility is handled as before', async () => {
+  const { fake } = moveInSetup({ ...CHECKOUT_METADATA, facilityId: 'f1' });
+  completeMoveIn(fake);
+
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge('re_1', 5000), ACCOUNT));
+
+  assert.equal(fake.read(`${LEDGERS}/refund_re_1`)!.tenantId, 't_new');
+});
+
+test('a move-in PaymentIntent no record names a facility for writes nothing', async () => {
+  const { fake } = moveInSetup(CHECKOUT_METADATA, { reservation: false });
+
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge(), ACCOUNT));
+  await dispatchStripeWebhookEvent(event('charge.dispute.created', dispute(), ACCOUNT));
+
+  assert.deepEqual(fake.writes.filter((w) => !w.path.startsWith('stripeWebhookEvents/')), []);
+});
+
+test('another account\'s PaymentIntent naming this facility\'s reservation is refused, not recorded', async () => {
+  const { fake, stripe } = moveInSetup();
+  completeMoveIn(fake);
+  stripe.put('acct_other', PI, moveInPaymentIntent());
+
+  await dispatchStripeWebhookEvent(event('charge.refunded', refundedCharge(), 'acct_other'));
+  await dispatchStripeWebhookEvent(event('charge.dispute.funds_withdrawn', dispute(), 'acct_other'));
+
+  assert.deepEqual(ledgerRows(fake), []);
+  assert.equal(fake.read(MOVE_IN_PAYMENT)!.untenantedRefunds, undefined);
+  assert.deepEqual(fake.list(NOTIFICATIONS), []);
+  const refusals = fake.list('stripeWebhookRefusals');
+  assert.equal(refusals.length, 2);
+  for (const id of refusals) assert.equal(fake.read(`stripeWebhookRefusals/${id}`)!.facilityId, 'f1');
 });

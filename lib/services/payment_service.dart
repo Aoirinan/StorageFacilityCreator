@@ -661,7 +661,8 @@ class PaymentService {
   /// the money pays back a lost card dispute (see [manualPaymentLedgerMetadata]),
   /// so it is not rent and never moves paidThrough. It is recorded by the
   /// server ([recordDisputePaymentByHand]), which checks the amount against
-  /// what the dispute has out as the payment is written.
+  /// what the dispute has out as the payment is written, once per
+  /// [disputeRequestId] (the dialog's, so a retry from it records once).
   static Future<String> recordManualPayment({
     required String facilityId,
     required String tenantId,
@@ -671,6 +672,7 @@ class PaymentService {
     String? reference,
     bool appliesToRent = true,
     String? disputeId,
+    String? disputeRequestId,
   }) async {
     final cleanDisputeId = disputeId?.trim() ?? '';
     if (cleanDisputeId.isNotEmpty) {
@@ -682,6 +684,7 @@ class PaymentService {
         method: method,
         reference: reference,
         notes: notes,
+        requestId: disputeRequestId,
       );
     }
     try {
@@ -903,6 +906,10 @@ class PaymentService {
   /// transaction with the check that the dispute is this tenant's, still
   /// open, and has at least [amount] left. It never moves paidThrough.
   /// Returns the facility payment's id.
+  ///
+  /// [requestId] should be made once per payment and sent again on every
+  /// retry of it (DisputePaymentDialog does): with none, this call gets a new
+  /// one, and a retry after a lost answer records the payment twice.
   static Future<String> recordDisputePaymentByHand({
     required String facilityId,
     required String tenantId,

@@ -101,6 +101,47 @@ test('once the switch is on, the next event for a held dispute posts it and clos
   assert.equal(fake.read(HELD)!.resolvedBy, 'system@stripe-webhook');
 });
 
+test('a dispute whose `created` was held is marked disputed by the first event that posts its withdrawal', async () => {
+  for (const [label, next] of [
+    ['closed as lost', event('charge.dispute.closed', dispute({ status: 'lost', balance_transactions: [] }), ACCOUNT)],
+    ['funds withdrawn', event('charge.dispute.funds_withdrawn', dispute(), ACCOUNT)],
+    ['updated, money out', event('charge.dispute.updated', dispute({ status: 'under_review' }), ACCOUNT)],
+  ] as const) {
+    const { fake } = await paidTenant(false);
+    await dispatchStripeWebhookEvent(event('charge.dispute.created', dispute({ balance_transactions: [] }), ACCOUNT));
+    assert.equal(fake.read(`${PAYMENTS}/stripe_pi_1`)!.status, 'completed', label);
+
+    // `created` is not sent again once the switch is on.
+    fake.seed('appConfig/payments', { disputeLedgerEnabled: true });
+    assert.deepEqual(await dispatchStripeWebhookEvent(next), { held: false }, label);
+
+    assert.equal(fake.read(`${LEDGERS}/dispute_du_1`)!.amount, 42, label);
+    const payment = fake.read(`${PAYMENTS}/stripe_pi_1`)!;
+    // Before: still `completed`, with the money gone.
+    assert.equal(payment.status, 'disputed', label);
+    assert.equal(payment.statusBeforeDispute, 'completed', label);
+    assert.equal(payment.disputeId, 'du_1', label);
+  }
+});
+
+test('an event that posts no withdrawal, or one for a dispute the facility won, does not mark the payment disputed', async () => {
+  const { fake } = await paidTenant(false);
+  await dispatchStripeWebhookEvent(event('charge.dispute.created', dispute({ balance_transactions: [] }), ACCOUNT));
+  fake.seed('appConfig/payments', { disputeLedgerEnabled: true });
+
+  // An update before any money has moved: nothing to post, nothing to mark.
+  await dispatchStripeWebhookEvent(
+    event('charge.dispute.updated', dispute({ status: 'under_review', balance_transactions: [] }), ACCOUNT),
+  );
+  assert.equal(fake.read(`${LEDGERS}/dispute_du_1`), undefined);
+  assert.equal(fake.read(`${PAYMENTS}/stripe_pi_1`)!.status, 'completed');
+
+  // Won: withdrawn and returned at once, and the payment stands.
+  await dispatchStripeWebhookEvent(event('charge.dispute.closed', dispute({ status: 'won' }), ACCOUNT));
+  assert.ok(fake.read(`${LEDGERS}/dispute_du_1_reinstated`));
+  assert.equal(fake.read(`${PAYMENTS}/stripe_pi_1`)!.status, 'completed');
+});
+
 test('with the switch on, dispatch reports nothing held and writes no held row', async () => {
   const { fake } = await paidTenant(true);
 

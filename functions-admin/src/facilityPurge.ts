@@ -269,6 +269,9 @@ export const FACILITY_KEYED_COLLECTIONS = [
   // and, for one refunded or disputed before the move-in completed, the
   // refund or dispute the Stripe webhook recorded there.
   'publicMoveInPayments',
+  // One per paid online move-in not yet moved in or refunded: the
+  // reservation, the connected account and the amount, for the sweep.
+  'publicMoveInPaidCheckouts',
 ] as const;
 
 /** Deletes every row of [FACILITY_KEYED_COLLECTIONS] whose facilityId is [facilityId]. */

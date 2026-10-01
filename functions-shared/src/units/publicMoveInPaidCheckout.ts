@@ -24,6 +24,36 @@ import * as admin from 'firebase-admin';
 export const PUBLIC_MOVE_IN_PAYMENTS_COLLECTION = 'publicMoveInPayments';
 
 /**
+ * On a use record (PUBLIC_MOVE_IN_PAYMENTS_COLLECTION): refunds and card
+ * disputes made on the payment before it moved anyone in, keyed by the Stripe
+ * refund or dispute id. The Connect webhook writes them (functions-integrations
+ * moveInPaymentTenant.ts), with no tenant, because there is none to post them to.
+ */
+export const UNTENANTED_REFUNDS_FIELD = 'untenantedRefunds';
+export const UNTENANTED_DISPUTES_FIELD = 'untenantedDisputes';
+
+function hasEntries(value: unknown): boolean {
+  return Boolean(value) && typeof value === 'object' && Object.keys(value as object).length > 0;
+}
+
+/**
+ * Whether a use record says only that the payment was refunded in Stripe, or
+ * disputed, before the move-in was completed: it holds UNTENANTED_REFUNDS_FIELD
+ * or UNTENANTED_DISPUTES_FIELD, no tenant, and no `refund` of the move-in's own
+ * (paidMoveInRefund.ts). Such a payment moved nobody in and can no longer
+ * (completion and refusePaidMoveIn both stop at a use record), and nothing here
+ * refunds the rest of it: the webhook told the owner to deal with it in Stripe.
+ * Read as "moved in", it had the owner's "has not finished" alert rewritten to
+ * say the renter had finished, and the renter told the payment had completed a
+ * move-in.
+ */
+export function moveInPaymentReturnedBeforeMoveIn(use: Record<string, unknown> | null | undefined): boolean {
+  if (!use || use.refund) return false;
+  if (typeof use.tenantId === 'string' && use.tenantId.trim() !== '') return false;
+  return hasEntries(use[UNTENANTED_REFUNDS_FIELD]) || hasEntries(use[UNTENANTED_DISPUTES_FIELD]);
+}
+
+/**
  * One document per PaymentIntent of a paid online move-in checkout that is not
  * yet known to be used or refunded, keyed by the PaymentIntent id. The sweep
  * reads these oldest first: it tells the owner about a renter who paid and has

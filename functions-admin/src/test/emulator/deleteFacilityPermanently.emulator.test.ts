@@ -167,6 +167,14 @@ async function seedFacility(): Promise<void> {
       .collection('stripeWebhookEvents')
       .doc(`evt_${suffix}`)
       .set({ eventType: 'payment_intent.succeeded', account: 'acct_x', facilityId, tenantId: 't1' });
+    await db
+      .collection('publicMoveInPayments')
+      .doc(`pi_used_${suffix}`)
+      .set({ paymentIntentId: `pi_used_${suffix}`, facilityId, reservationId: `res-${suffix}`, tenantId: 't1' });
+    await db
+      .collection('publicMoveInPaidCheckouts')
+      .doc(`pi_paid_${suffix}`)
+      .set({ paymentIntentId: `pi_paid_${suffix}`, facilityId, reservationId: `res-${suffix}`, amountCents: 5000 });
   }
 }
 
@@ -184,6 +192,8 @@ const SEEDED_KEYED_COLLECTIONS = [
   'publicPaymentLinkExceptions',
   'stripeWebhookRefusals',
   'stripeWebhookEvents',
+  'publicMoveInPayments',
+  'publicMoveInPaidCheckouts',
 ];
 
 /** The keyed rows left, as 'collection/id'. */
@@ -197,6 +207,8 @@ async function keyedRowsLeft(): Promise<string[]> {
 
 const THEIR_KEYED_ROWS = [
   'customDomainClaims/theirs.example.com',
+  'publicMoveInPaidCheckouts/pi_paid_theirs',
+  'publicMoveInPayments/pi_used_theirs',
   'publicPaymentLinkExceptions/cs-theirs',
   'publicPaymentLinks/token-theirs',
   'publicReservations/res-theirs',
@@ -210,6 +222,8 @@ const THEIR_KEYED_ROWS = [
 const ALL_KEYED_ROWS = [
   ...THEIR_KEYED_ROWS,
   'customDomainClaims/mine.example.com',
+  'publicMoveInPaidCheckouts/pi_paid_mine',
+  'publicMoveInPayments/pi_used_mine',
   'publicPaymentLinkExceptions/cs-mine',
   'publicPaymentLinks/token-mine',
   'publicReservations/res-mine',

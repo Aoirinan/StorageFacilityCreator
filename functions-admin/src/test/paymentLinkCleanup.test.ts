@@ -58,9 +58,12 @@ test('deleting one facility deletes its link exceptions, Stripe refusals and pro
 
 test('online move-in payment records go with their facility, and with a platform purge', () => {
   // Tenant ids and amounts, and refunds or disputes the webhook recorded on
-  // a move-in payment that never completed a move-in.
-  assert.ok((FACILITY_KEYED_COLLECTIONS as readonly string[]).includes('publicMoveInPayments'));
-  assert.ok((PURGE_ROOT_COLLECTIONS as readonly string[]).includes('publicMoveInPayments'));
+  // a move-in payment that never completed a move-in. The paid checkouts the
+  // sweep has still to settle name the facility, account and amount too.
+  for (const collection of ['publicMoveInPayments', 'publicMoveInPaidCheckouts']) {
+    assert.ok((FACILITY_KEYED_COLLECTIONS as readonly string[]).includes(collection), collection);
+    assert.ok((PURGE_ROOT_COLLECTIONS as readonly string[]).includes(collection), collection);
+  }
 });
 
 test('a rotated payment link keeps the link but not the old token\'s checkout session', () => {

@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import type Stripe from 'stripe';
 import { getStripeClient } from '@sfc/functions-shared';
 import { dispatchStripeWebhookEvent } from '../stripeWebhook';
-import { fraudDisputeAutopayNotificationId } from '../disputeFraudAutopayPause';
+import { fraudDisputeAutopayNotificationId, LEGACY_SUBSCRIPTION_NOT_CANCELLED_NOTE } from '../disputeFraudAutopayPause';
 import { portalAutopayPausedForDispute } from '../stripeFacilityTenantPortalAutopay';
 import { setTenantAutopay } from '../stripeFacilityAutopaySet';
 import { ACCOUNT, event, linkPaymentIntent, setup } from './support/webhookFakes';
@@ -159,4 +159,116 @@ test('the portal pause reads only a dispute id', () => {
   assert.equal(portalAutopayPausedForDispute({ autopay: { pausedForDisputeId: null } }), false);
   assert.equal(portalAutopayPausedForDispute({ autopay: { pausedForDisputeId: '' } }), false);
   assert.equal(portalAutopayPausedForDispute({ autopay: { pausedForDisputeId: 'du_1' } }), true);
+});
+
+// The tenant's legacy AutoPay subscription on the platform account.
+
+const BILLING = `${TENANT}/billing/default`;
+
+/**
+ * Stripe's subscription calls on the platform client: cancel answers as
+ * [cancel] says, and retrieve finds what FakeStripeObjects holds.
+ */
+function legacyStripe(cancel: (id: string) => Promise<unknown>) {
+  const calls: string[] = [];
+  const client = getStripeClient() as unknown as Record<string, Record<string, unknown>>;
+  client.subscriptions.cancel = async (id: string) => {
+    calls.push(id);
+    return cancel(id);
+  };
+  return calls;
+}
+
+test('a fraudulent dispute also cancels the legacy AutoPay subscription that would charge the card, and drops its id', async () => {
+  const { fake } = armedTenant();
+  fake.seed(BILLING, { autopayEnabled: true, stripeSubscriptionId: 'sub_legacy' });
+  const cancelled = legacyStripe(async (id) => ({ id, status: 'canceled' }));
+
+  await dispatchStripeWebhookEvent(event('charge.dispute.created', dispute(), ACCOUNT));
+
+  // Before: the cards were disarmed and the subscription kept charging the reported card.
+  assert.deepEqual(cancelled, ['sub_legacy']);
+  const billing = fake.read(BILLING)!;
+  assert.equal(billing.stripeSubscriptionId, undefined);
+  assert.equal(billing.autopayEnabled, false);
+  const notice = fake.read(NOTICE)!;
+  assert.equal((notice.metadata as Record<string, unknown>).legacySubscriptionId, 'sub_legacy');
+  assert.equal((notice.metadata as Record<string, unknown>).legacySubscriptionCancelled, true);
+  assert.doesNotMatch(String(notice.message), /could not be cancelled/);
+});
+
+test('a legacy subscription alone counts as autopay being on', async () => {
+  const { fake } = armedTenant();
+  fake.seed(CARD, { ...fake.read(CARD)!, autopayEnabled: false });
+  fake.seed(BILLING, { autopayEnabled: false, stripeSubscriptionId: 'sub_legacy' });
+  const cancelled = legacyStripe(async (id) => ({ id, status: 'canceled' }));
+
+  await dispatchStripeWebhookEvent(event('charge.dispute.created', dispute(), ACCOUNT));
+
+  assert.deepEqual(cancelled, ['sub_legacy']);
+  const notice = fake.read(NOTICE)!;
+  // Before: "Autopay was not on", while the subscription charged the card monthly.
+  assert.equal((notice.metadata as Record<string, unknown>).autopayWasOn, true);
+  assert.match(String(notice.message), /Autopay was turned off for Pat Tenant/);
+});
+
+test('a legacy subscription Stripe already ended counts as cancelled', async () => {
+  const { fake } = armedTenant();
+  fake.seed(BILLING, { autopayEnabled: true, stripeSubscriptionId: 'sub_gone' });
+  legacyStripe(async () => {
+    throw Object.assign(new Error("No such subscription: 'sub_gone'"), { code: 'resource_missing' });
+  });
+
+  await dispatchStripeWebhookEvent(event('charge.dispute.created', dispute(), ACCOUNT));
+
+  assert.equal(fake.read(BILLING)!.stripeSubscriptionId, undefined);
+  assert.equal((fake.read(NOTICE)!.metadata as Record<string, unknown>).legacySubscriptionCancelled, true);
+});
+
+test('a legacy subscription that could not be cancelled keeps its id, staff are told, and the dispute still posts', async () => {
+  const { fake, stripe } = armedTenant();
+  fake.seed(BILLING, { autopayEnabled: true, stripeSubscriptionId: 'sub_live' });
+  stripe.put(null, 'sub_live', { id: 'sub_live', status: 'active' });
+  const cancelled = legacyStripe(async () => {
+    throw Object.assign(new Error('Rate limit exceeded'), { type: 'StripeRateLimitError' });
+  });
+
+  const outcome = await dispatchStripeWebhookEvent(
+    event('charge.dispute.funds_withdrawn', dispute({ balance_transactions: [{ amount: -4200 }] }), ACCOUNT),
+  );
+
+  assert.deepEqual(cancelled, ['sub_live']);
+  // The id stays where the facility delete refusal and Disable autopay look for it.
+  assert.equal(fake.read(BILLING)!.stripeSubscriptionId, 'sub_live');
+  const notice = fake.read(NOTICE)!;
+  assert.match(String(notice.message), /Autopay was turned off for Pat Tenant/);
+  assert.ok(String(notice.message).endsWith(LEGACY_SUBSCRIPTION_NOT_CANCELLED_NOTE));
+  assert.equal((notice.metadata as Record<string, unknown>).legacySubscriptionCancelled, false);
+  // The cards are still disarmed, and a failed cancel does not hold the dispute back.
+  assert.deepEqual(await cardsAutopayWouldCharge(fake), []);
+  assert.deepEqual(outcome, { held: false });
+  assert.ok(fake.read('facilities/f1/ledgers/dispute_du_1'));
+});
+
+test('the legacy subscription is cancelled once per dispute, like the pause', async () => {
+  const { fake } = armedTenant();
+  fake.seed(BILLING, { autopayEnabled: true, stripeSubscriptionId: 'sub_legacy' });
+  const cancelled = legacyStripe(async (id) => ({ id, status: 'canceled' }));
+
+  await dispatchStripeWebhookEvent(event('charge.dispute.created', dispute(), ACCOUNT));
+  // Somehow written again: a later event for the same dispute leaves it to staff.
+  fake.seed(BILLING, { ...fake.read(BILLING)!, stripeSubscriptionId: 'sub_other' });
+  await dispatchStripeWebhookEvent(event('charge.dispute.updated', dispute({ status: 'under_review' }), ACCOUNT));
+
+  assert.deepEqual(cancelled, ['sub_legacy']);
+  assert.equal(fake.read(BILLING)!.stripeSubscriptionId, 'sub_other');
+});
+
+test('a tenant with no legacy subscription makes no Stripe subscription call', async () => {
+  armedTenant();
+  const cancelled = legacyStripe(async () => assert.fail('nothing to cancel'));
+
+  await dispatchStripeWebhookEvent(event('charge.dispute.created', dispute(), ACCOUNT));
+
+  assert.deepEqual(cancelled, []);
 });

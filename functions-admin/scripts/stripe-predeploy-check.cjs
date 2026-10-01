@@ -51,22 +51,42 @@ const MONEY_EVENT_TYPES = [
 const DISPUTE_TYPES = ['dispute', 'dispute_reversal'];
 
 /**
- * The order the payment-links-and-disputes change must deploy in. Each step
- * after the first reads or writes what the ones before it changed.
+ * The order the whole train deploys in: this change with the online move-in
+ * (PR #55), move-out (#56), team invites (#58) and move-in pricing (#60) work
+ * it carries. Why each step is where it is is on its line.
+ * docs/payments_architecture.md lists the same steps (a test checks they
+ * agree), and so does PR #57's description.
  */
 const REQUIRED_DEPLOY_ORDER = [
-  '1. firebase deploy --only functions:automation,functions:tenant-lifecycle,functions:messaging-twilio' +
-    ' -- FIRST: autopay, the delinquency job, the reminders, the portal balance and the rent reminder text' +
-    ' leave card disputes and failed attempts out of what they collect.',
-  '2. firebase deploy --only functions:integrations -- the Stripe webhook and payment callables.' +
-    ' appConfig/payments.disputeLedgerEnabled stays OFF. Then, in the Stripe Dashboard, add' +
-    ' payment_intent.payment_failed to the Connect webhook destination.',
-  '3. firebase deploy --only functions:public-website -- payment links (confirmPublicPaymentCheckout is new).',
-  '4. firebase deploy --only functions:admin -- facility and account delete, platform purge.',
-  "5. Hosting (the Flutter app) LAST: the old server ignores the app's disputeId and has no confirmPublicPaymentCheckout.",
-  '6. Only after 1-5: set appConfig/payments.disputeLedgerEnabled = true in the Firebase console, then re-run' +
-    ' this check with --after-deploy. Held disputes post on their next Stripe event, or resend one of their' +
-    ' eventIds from the Stripe Dashboard.',
+  'Before step 1: run this check and node scripts/predeploy-online-move-in-checks.mjs (both read-only),' +
+    ' vendor functions-shared, and build the Flutter app (flutter build web --release --no-wasm-dry-run),' +
+    ' so steps 3-6 run back to back. Not ./deploy.ps1: it deploys indexes after functions, and rules before' +
+    ' hosting.',
+  '1. firebase deploy --only firestore:indexes -- then wait until Notifications (type, readAt, createdAt)' +
+    ' and publicMoveInPayments (refund.status, createdAt) are Enabled. Without them the move-in refund' +
+    ' sweep fails every run and the move-in alerts banner shows nothing.',
+  '2. firebase deploy --only functions:automation,functions:messaging-twilio,functions:admin -- autopay, the' +
+    ' delinquency job, the reminders and the rent reminder text leave card disputes and failed attempts out' +
+    ' of what they collect; admin is facility and account delete and platform purge.',
+  '3. firebase deploy --only functions:public-website -- online move-in and its refund sweep, first-month' +
+    ' proration, payment links (confirmPublicPaymentCheckout is new).',
+  '4. firebase deploy --only functions:integrations -- straight after step 3: it holds the unit for a paid' +
+    ' move-in, which only the step-3 sweep settles. The Stripe webhook and payment callables.' +
+    ' appConfig/payments.disputeLedgerEnabled stays OFF.',
+  '5. firebase deploy --only functions:tenant-lifecycle -- straight after step 4: the portal balance, and' +
+    ' processMoveOut, which no longer posts a card refund as made. No card move-outs from here until step 6' +
+    ' is live: the old screen shows no refund and makes none.',
+  '6. firebase deploy --only hosting -- the build made before step 1, straight after step 5. Never before' +
+    " steps 3-5: the old server ignores the app's disputeId, has no confirmPublicPaymentCheckout, and posts" +
+    ' card move-out refunds as made.',
+  '7. In the Stripe Dashboard, add payment_intent.payment_failed to the Connect webhook destination' +
+    ' (needs steps 4 and 5: the old portal counts a failed record as owed).',
+  '8. node scripts/audit-team-access.mjs (read-only) and decide each finding, then' +
+    " firebase deploy --only firestore:rules -- after hosting: the new rules refuse the old app's invite" +
+    ' acceptance.',
+  '9. Last: set appConfig/payments.disputeLedgerEnabled = true in the Firebase console, then re-run this' +
+    ' check with --after-deploy. Held disputes post on their next Stripe event, or resend one of their' +
+    ' eventIds from the Stripe Dashboard. (It needs steps 1-7; if step 8 is held up, it may go first.)',
 ];
 
 function parseArgs(argv) {
@@ -205,12 +225,14 @@ async function main() {
   const projectId = String(args.get('project') || '').trim();
   if (!projectId) throw new Error('Pass --project=<firebase-project-id>.');
   const afterDeploy = args.get('after-deploy') === true;
-  console.error(['REQUIRED DEPLOY ORDER (payment links and card disputes):', ...REQUIRED_DEPLOY_ORDER].join('\n'));
+  console.error(
+    ['REQUIRED DEPLOY ORDER (payment links and disputes, with PRs #55, #56, #58 and #60):', ...REQUIRED_DEPLOY_ORDER].join('\n'),
+  );
   admin.initializeApp({ projectId });
   const report = await runPredeployChecks(admin.firestore(), { afterDeploy });
   if (report.disputeLedgerEnabled && !afterDeploy) {
     console.error(
-      'appConfig/payments.disputeLedgerEnabled is ON. It must stay off until steps 1-5 are deployed.',
+      'appConfig/payments.disputeLedgerEnabled is ON. It must stay off until steps 1-7 are done.',
     );
   }
   console.log(JSON.stringify({ projectId, generatedAt: new Date().toISOString(), ...report }, null, 2));

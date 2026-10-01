@@ -385,7 +385,7 @@ refused, refusals already recorded, the dispute ledger switch). It prints the de
 The Connect webhook destination must subscribe to `payment_intent.succeeded`, `payment_intent.payment_failed`,
 `checkout.session.completed`, `charge.refunded`, all five `charge.dispute.*` events above,
 `setup_intent.succeeded` and `account.updated`. Add `payment_intent.payment_failed` (missing as of 2026-09-24)
-only after functions integrations and tenant-lifecycle are deployed (step 2 below).
+only after functions integrations and tenant-lifecycle are deployed (step 7 below).
 
 ### Dispute ledger switch and deploy order
 
@@ -399,18 +399,53 @@ would ask the tenant to pay it again, and the old app would put it on an invoice
 `dispute_ledger_off`, and does not mark the event processed. The fraud autopay pause and move-in records still
 happen.
 
-Required order:
+Required order. It covers the whole train this branch carries: payment links and disputes (PR #57), online
+move-in (#55), move-out and refunds (#56), team invites (#58) and move-in pricing (#60). When they ship
+together it replaces each of their own deploy notes. The pre-deploy check prints the same steps
+(`functions-admin/scripts/stripe-predeploy-check.cjs`, `REQUIRED_DEPLOY_ORDER`; a test checks the two agree).
 
-1. `firebase deploy --only functions:automation,functions:tenant-lifecycle,functions:messaging-twilio` FIRST.
-2. `firebase deploy --only functions:integrations` (switch stays off), then add `payment_intent.payment_failed`
-   to the Connect destination in the Stripe Dashboard.
-3. `firebase deploy --only functions:public-website`.
-4. `firebase deploy --only functions:admin`.
-5. Hosting LAST (the old server ignores the app's `disputeId` and has no `confirmPublicPaymentCheckout`).
-6. Then set `appConfig/payments.disputeLedgerEnabled` to true, and re-run the pre-deploy check with
+Before step 1: run the pre-deploy check and `node scripts/predeploy-online-move-in-checks.mjs` (both read-only),
+vendor functions-shared, and build the Flutter app (`flutter build web --release --no-wasm-dry-run`), so steps 3
+to 6 run back to back. Do not use `./deploy.ps1` for this: it deploys indexes after functions, and rules before
+hosting.
+
+1. `firebase deploy --only firestore:indexes`, then wait until `Notifications (type, readAt, createdAt)` and
+   `publicMoveInPayments (refund.status, createdAt)` are Enabled. Without them the move-in refund sweep fails
+   every run and the move-in alerts banner shows nothing.
+2. `firebase deploy --only functions:automation,functions:messaging-twilio,functions:admin`: autopay, the
+   delinquency job, the reminders and the rent reminder text leave card disputes and failed attempts out of
+   what they collect; admin is facility and account delete and platform purge.
+3. `firebase deploy --only functions:public-website`: online move-in and its refund sweep, first-month
+   proration, payment links (`confirmPublicPaymentCheckout` is new).
+4. `firebase deploy --only functions:integrations`, straight after step 3: it holds the unit for a paid move-in,
+   which only the step-3 sweep settles. The switch stays off.
+5. `firebase deploy --only functions:tenant-lifecycle`, straight after step 4: the portal balance, and
+   `processMoveOut`, which no longer posts a card refund as made. No card move-outs from here until step 6 is
+   live: the old move-out screen shows no refund and makes none.
+6. `firebase deploy --only hosting` (the build made before step 1), straight after step 5. Never before steps 3
+   to 5: the old server ignores the app's `disputeId`, has no `confirmPublicPaymentCheckout`, and posts card
+   move-out refunds as made.
+7. In the Stripe Dashboard, add `payment_intent.payment_failed` to the Connect destination (it needs steps 4 and
+   5: the old portal counts a failed record as owed).
+8. `node scripts/audit-team-access.mjs` (read-only) and decide each finding, then
+   `firebase deploy --only firestore:rules`. After hosting: the new rules refuse the old app's invite
+   acceptance.
+9. Last, set `appConfig/payments.disputeLedgerEnabled` to true, and re-run the pre-deploy check with
    `--after-deploy`. A held dispute posts on its next Stripe event (every dispute sends
    `charge.dispute.closed` when it ends); to post one sooner, resend one of its `eventIds` from the Stripe
-   Dashboard. Posting closes its held row (`resolved: true`).
+   Dashboard. Posting closes its held row (`resolved: true`). The switch needs steps 1 to 7; if step 8 is held
+   up, it may go first.
+
+What the order cannot give every PR, and why:
+- #60 asks for public-website and hosting together. Steps 4 and 5 sit between them, because integrations must
+  follow public-website at once (#55) and hosting must follow integrations and tenant-lifecycle (#56 and this
+  PR). In that gap a renter in a US evening with no move-in date is refused at checkout ("refresh the page")
+  before any money is taken, so run steps 3 to 6 back to back.
+- #58 lists functions integrations after the rules. Here it goes before hosting, and so before the rules,
+  because the new app needs it and the new rules need the new app. Nothing in #58's integrations change (the
+  suspended-owner checkout refusal) reads or depends on the rules.
+- #56 asks for the window between tenant-lifecycle and hosting to be as short as possible: it is one deploy,
+  step 5 to step 6.
 
 ### Enhanced Idempotency
 

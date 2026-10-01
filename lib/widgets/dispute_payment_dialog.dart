@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:sfcapp/models/payment_model.dart';
+import 'package:sfcapp/services/payment_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
 
 /// How staff take the money for a lost card dispute.
 enum DisputePaymentWay {
@@ -18,7 +20,9 @@ enum DisputePaymentWay {
 /// What the dialog returns: [method] is only read for [DisputePaymentWay.byHand].
 /// [tenantConsent] is true only for the card on file, once staff have
 /// confirmed the tenant agreed; it is sent to chargeTenantOffSession, which
-/// refuses a dispute charge without it.
+/// refuses a dispute charge without it. [requestId] is made when the dialog
+/// opens and is the same on every press of it: recordDisputePaymentByHand
+/// records a by-hand payment once per id.
 typedef DisputePaymentEntry = ({
   DisputePaymentWay way,
   double amount,
@@ -26,7 +30,11 @@ typedef DisputePaymentEntry = ({
   String? reference,
   String? notes,
   bool tenantConsent,
+  String requestId,
 });
+
+/// Records a by-hand dispute payment for the dialog ([DisputePaymentDialog.onRecordByHand]).
+typedef DisputeHandPaymentRecorder = Future<void> Function(DisputePaymentEntry entry);
 
 /// Stripe's smallest card charge; the callable refuses less.
 const double _minimumCardCharge = 0.5;
@@ -59,6 +67,14 @@ const String cardConsentLabel = 'The tenant has agreed to this charge on their c
 /// ([disputeReason]) it is not offered at all (the server refuses it too).
 /// The amount cap is checked by the server as well: by hand through
 /// recordDisputePaymentByHand, the card and the link by their callables.
+///
+/// With [onRecordByHand], a by-hand payment is recorded while the dialog is
+/// open, and the dialog closes only once it has been. If recording fails
+/// (a refusal, or a timeout after which the server may well have recorded
+/// it), the dialog stays open with the error, and pressing Record payment
+/// again sends the same request id, so the server records it once. Before,
+/// the dialog closed first and every attempt made a new id: a retry after a
+/// lost answer recorded the payment twice.
 class DisputePaymentDialog extends StatefulWidget {
   final double outstanding;
   final bool hasCardOnFile;
@@ -66,11 +82,14 @@ class DisputePaymentDialog extends StatefulWidget {
   /// Stripe's reason for the dispute (the dispute row's `metadata.reason`).
   final String? disputeReason;
 
+  final DisputeHandPaymentRecorder? onRecordByHand;
+
   const DisputePaymentDialog({
     super.key,
     required this.outstanding,
     required this.hasCardOnFile,
     this.disputeReason,
+    this.onRecordByHand,
   });
 
   @override
@@ -88,6 +107,15 @@ class _DisputePaymentDialogState extends State<DisputePaymentDialog> {
   /// The method recorded when [_way] is by hand.
   PaymentMethod _method = PaymentMethod.cash;
   String? _error;
+
+  /// One id for every press of this dialog (see [DisputePaymentEntry]).
+  final String _requestId = PaymentService.newDisputePaymentRequestId();
+
+  /// [DisputePaymentDialog.onRecordByHand] is running.
+  bool _saving = false;
+
+  /// Why the last by-hand recording failed.
+  String? _saveError;
 
   /// Staff confirmed the tenant agreed to the card charge.
   bool _cardConsent = false;
@@ -130,7 +158,8 @@ class _DisputePaymentDialogState extends State<DisputePaymentDialog> {
     });
   }
 
-  void _submit() {
+  Future<void> _submit() async {
+    if (_saving) return;
     final amount = double.tryParse(_amountController.text.trim());
     final cents = amount == null ? null : (amount * 100).round() / 100;
     String? error;
@@ -148,14 +177,35 @@ class _DisputePaymentDialogState extends State<DisputePaymentDialog> {
       setState(() => _error = error);
       return;
     }
-    Navigator.pop<DisputePaymentEntry>(context, (
+    final DisputePaymentEntry entry = (
       way: _way,
       amount: cents!,
       method: _method,
       reference: _way == DisputePaymentWay.byHand ? _trimmed(_referenceController) : null,
       notes: _trimmed(_notesController),
       tenantConsent: _way == DisputePaymentWay.cardOnFile && _cardConsent,
-    ));
+      requestId: _requestId,
+    );
+    final record = widget.onRecordByHand;
+    if (entry.way == DisputePaymentWay.byHand && record != null) {
+      setState(() {
+        _saving = true;
+        _error = null;
+        _saveError = null;
+      });
+      try {
+        await record(entry);
+      } catch (e) {
+        if (!mounted) return;
+        setState(() {
+          _saving = false;
+          _saveError = ErrorMessageHelper.getUserFriendlyMessage(e);
+        });
+        return;
+      }
+      if (!mounted) return;
+    }
+    Navigator.pop<DisputePaymentEntry>(context, entry);
   }
 
   @override
@@ -234,6 +284,15 @@ class _DisputePaymentDialogState extends State<DisputePaymentDialog> {
               ),
               maxLines: 2,
             ),
+            if (_saveError != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                'Not recorded: $_saveError Press Record payment to try again; '
+                'trying again from here never records it twice.',
+                key: const ValueKey('dispute-payment-save-error'),
+                style: TextStyle(color: AppTheme.error),
+              ),
+            ],
             const SizedBox(height: 12),
             Text(
               'Booked against this dispute, not as rent: autopay still charges '
@@ -246,9 +305,9 @@ class _DisputePaymentDialogState extends State<DisputePaymentDialog> {
         ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        TextButton(onPressed: _saving ? null : () => Navigator.pop(context), child: const Text('Cancel')),
         ElevatedButton(
-          onPressed: _submit,
+          onPressed: _saving ? null : _submit,
           child: Text(switch (_way) {
             DisputePaymentWay.byHand => 'Record payment',
             DisputePaymentWay.cardOnFile => 'Charge card',

@@ -4,7 +4,7 @@ import type Stripe from 'stripe';
 import { getStripeClient } from '@sfc/functions-shared';
 import { eventAccountMatchesFacility } from './connectedAccountGuard';
 import { isAlreadyExistsError } from './firestoreErrors';
-import { isMoveInPaymentIntent, resolveMoveInTenantOrRecord } from './moveInPaymentTenant';
+import { isMoveInPaymentIntent, moveInPaymentFacilityId, resolveMoveInTenantOrRecord } from './moveInPaymentTenant';
 
 /**
  * Who a refund row belongs to once this event is merged into it: the
@@ -75,7 +75,11 @@ export async function handleChargeRefunded(
     const requestOptions = connectedAccountId ? { stripeAccount: connectedAccountId } : {};
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, requestOptions);
 
-    const facilityId = paymentIntent.metadata?.facilityId;
+    // An online move-in's PaymentIntent names no facility: found through the
+    // move-in's records instead, and still checked against the account below.
+    const facilityId =
+      paymentIntent.metadata?.facilityId ||
+      (isMoveInPaymentIntent(paymentIntent) ? await moveInPaymentFacilityId(paymentIntent) : null);
     const tenantId: string | null = paymentIntent.metadata?.tenantId || null;
     // A refund of a payment staff took for a card dispute (the charge or
     // link carried the dispute's id) reopens that dispute, not rent. Untagged,
@@ -84,7 +88,12 @@ export async function handleChargeRefunded(
     const disputeId = paymentIntent.metadata?.disputeId || null;
 
     if (!facilityId) {
-      functions.logger.warn('Charge refunded but missing facilityId metadata');
+      functions.logger.warn(
+        isMoveInPaymentIntent(paymentIntent)
+          ? 'Charge refunded on an online move-in payment that no move-in record names a facility for'
+          : 'Charge refunded but missing facilityId metadata',
+        { paymentIntentId, chargeId: charge.id },
+      );
       return;
     }
 

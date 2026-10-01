@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type * as admin from 'firebase-admin';
 import { FakeFirestore } from '@sfc/functions-shared/testing/fakeFirestore';
 
@@ -101,21 +103,72 @@ test('an unresolved refusal alone needs a person; a resolved one does not', asyn
   assert.equal(report.needsAttention, true);
 });
 
-test('the report carries the required deploy order: consumers first, hosting last, the dispute switch after all', async () => {
+/** The `firebase deploy --only ...` targets in [text], in the order they appear. */
+function deployTargets(text: string): string[] {
+  return [...text.matchAll(/firebase deploy --only ([a-z:,-]+)/g)].map((m) => m[1]);
+}
+
+test('the report carries the required deploy order for the whole train, and each step comes after what it needs', async () => {
   const report = (await check.runPredeployChecks(new FakeFirestore().firestore())) as unknown as {
     requiredDeployOrder: string[];
   };
   const order = report.requiredDeployOrder;
-  const step = (text: string) => order.findIndex((line) => line.includes(text));
-
-  assert.ok(step('functions:automation,functions:tenant-lifecycle,functions:messaging-twilio') === 0);
-  assert.ok(step('functions:integrations') > step('functions:automation'));
-  assert.ok(step('payment_intent.payment_failed') === step('functions:integrations'));
-  assert.ok(step('functions:public-website') > step('functions:integrations'));
-  assert.ok(step('functions:admin') > step('functions:public-website'));
-  assert.ok(step('Hosting') > step('functions:admin'));
-  assert.ok(step('disputeLedgerEnabled = true') > step('Hosting'));
   assert.deepEqual(check.REQUIRED_DEPLOY_ORDER, order);
+  const step = (text: string) => {
+    const at = order.findIndex((line) => line.includes(text));
+    assert.ok(at >= 0, `no step mentions ${text}`);
+    return at;
+  };
+
+  // The read-only checks and the app build come before anything is deployed.
+  assert.equal(step('predeploy-online-move-in-checks.mjs'), 0);
+  assert.equal(step('flutter build web'), 0);
+  // #55: the move-in refund sweep and the alerts banner need the indexes.
+  assert.equal(step('--only firestore:indexes'), 1);
+  assert.ok(step('--only firestore:indexes') < step('--only functions:public-website'));
+  // This PR: autopay, the delinquency job and the reminders before the webhook.
+  assert.ok(step('functions:automation,functions:messaging-twilio') < step('--only functions:integrations'));
+  // #55: the webhook holds units for paid move-ins only the public-website sweep settles.
+  assert.equal(step('--only functions:integrations'), step('--only functions:public-website') + 1);
+  // #56: integrations and tenant-lifecycle, then hosting straight after; never hosting first.
+  assert.equal(step('--only functions:tenant-lifecycle'), step('--only functions:integrations') + 1);
+  assert.equal(step('--only hosting'), step('--only functions:tenant-lifecycle') + 1);
+  // This PR: the Connect destination sends failures only once the portal and the webhook handle them.
+  assert.ok(step('payment_intent.payment_failed') > step('--only functions:tenant-lifecycle'));
+  assert.ok(step('payment_intent.payment_failed') > step('--only functions:integrations'));
+  // #58: hosting, then the team-access audit, then the rules.
+  assert.ok(step('--only firestore:rules') > step('--only hosting'));
+  assert.equal(step('audit-team-access.mjs'), step('--only firestore:rules'));
+  // This PR: the dispute ledger switch after everything else.
+  assert.equal(step('disputeLedgerEnabled = true'), order.length - 1);
+  // Every codebase the train changes, deployed exactly once.
+  assert.deepEqual(
+    deployTargets(order.join('\n')).flatMap((t) => t.split(',')).sort(),
+    [
+      'firestore:indexes',
+      'firestore:rules',
+      'functions:admin',
+      'functions:automation',
+      'functions:integrations',
+      'functions:messaging-twilio',
+      'functions:public-website',
+      'functions:tenant-lifecycle',
+      'hosting',
+    ],
+  );
+});
+
+test('docs/payments_architecture.md lists the same deploy steps in the same order', () => {
+  // lib/test/ -> functions-admin/ -> repo root.
+  const doc = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'docs', 'payments_architecture.md'), 'utf8');
+  const start = doc.indexOf('### Dispute ledger switch and deploy order');
+  assert.ok(start >= 0);
+  const end = doc.indexOf('\n### ', start + 1);
+  const section = doc.slice(start, end < 0 ? undefined : end);
+
+  assert.deepEqual(deployTargets(section), deployTargets(check.REQUIRED_DEPLOY_ORDER.join('\n')));
+  assert.match(section, /payment_intent\.payment_failed/);
+  assert.match(section, /audit-team-access\.mjs/);
 });
 
 test('the dispute ledger switch on before the deploy needs a person; after it, it is expected', async () => {

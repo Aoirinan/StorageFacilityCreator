@@ -11,7 +11,7 @@ import {
 import { eventAccountMatchesFacility } from './connectedAccountGuard';
 import { isDisputeLedgerEnabled, recordHeldDispute, resolveHeldDispute } from './disputeLedgerGate';
 import { FRAUDULENT_DISPUTE_REASON, pauseAutopayForFraudDispute } from './disputeFraudAutopayPause';
-import { isMoveInPaymentIntent, resolveMoveInTenantOrRecord } from './moveInPaymentTenant';
+import { isMoveInPaymentIntent, moveInPaymentFacilityId, resolveMoveInTenantOrRecord } from './moveInPaymentTenant';
 
 /** held: the dispute ledger is switched off, so nothing was posted and the event must not be marked processed. */
 export type DisputeHandlerOutcome = { held: boolean };
@@ -137,8 +137,9 @@ export function disputeMoneyMovement(
  *   redelivered and concurrent events converge on one of each.
  * - The payment records `disputeStatus` on every event, from the newest event
  *   by Stripe's `created` time (a same-second tie goes to the later stage);
- *   `created` also marks it `disputed`, keeping the status it had in
- *   `statusBeforeDispute`, and a win (or the money coming back) restores it.
+ *   `created`, or the event that posts the withdrawal, also marks it
+ *   `disputed`, keeping the status it had in `statusBeforeDispute`, and a win
+ *   (or the money coming back) restores it.
  * - Once reversed, the original counts as settled (`metadata.allocatedAmount`)
  *   so the app never offers it for an invoice again, and any unpaid invoice
  *   staff made from it is voided: a won dispute leaves nothing to bill.
@@ -159,10 +160,11 @@ export function disputeMoneyMovement(
  * is written. Errors propagate: the webhook returns 500 and Stripe redelivers.
  *
  * Before any of that:
- * - An online move-in payment carries no tenantId: its tenant is looked up
- *   through the move-in's own records (moveInPaymentTenant.ts). A dispute on
- *   one that never completed a move-in goes on no ledger; it is recorded on
- *   the move-in payment and the owner is told.
+ * - An online move-in payment carries no tenantId, and no facilityId either:
+ *   both are looked up through the move-in's own records
+ *   (moveInPaymentTenant.ts). A dispute on one that never completed a
+ *   move-in goes on no ledger; it is recorded on the move-in payment and the
+ *   owner is told.
  * - A `fraudulent` dispute switches the tenant's autopay off and tells staff
  *   (disputeFraudAutopayPause.ts), whatever else happens.
  * - Nothing is posted, to the ledger or the payment, while
@@ -193,14 +195,20 @@ export async function handleDisputeCreated(
   }
 
   const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, {}, requestOptions);
-  const facilityId = paymentIntent.metadata?.facilityId;
+  // An online move-in's PaymentIntent names no facility: found through the
+  // move-in's records instead, and still checked against the account below.
+  const facilityId =
+    paymentIntent.metadata?.facilityId ||
+    (isMoveInPaymentIntent(paymentIntent) ? await moveInPaymentFacilityId(paymentIntent) : null);
   let tenantId: string | null = paymentIntent.metadata?.tenantId || null;
 
   if (!facilityId) {
-    functions.logger.warn('Dispute payment intent has no facilityId metadata', {
-      disputeId: dispute.id,
-      paymentIntentId,
-    });
+    functions.logger.warn(
+      isMoveInPaymentIntent(paymentIntent)
+        ? 'Dispute on an online move-in payment that no move-in record names a facility for'
+        : 'Dispute payment intent has no facilityId metadata',
+      { disputeId: dispute.id, paymentIntentId },
+    );
     return { held: false };
   }
 
@@ -327,7 +335,11 @@ export async function handleDisputeCreated(
           update.status = paymentSnap.get('statusBeforeDispute') || 'completed';
           update.notes = `Dispute closed in the facility's favour (${newestStatus || 'funds returned'})`;
         }
-      } else if (eventType === 'charge.dispute.created') {
+      } else if (eventType === 'charge.dispute.created' || postedOriginal) {
+        // Also when this event posts the withdrawal: a `created` held while
+        // the ledger switch was off is not resent, and a dispute whose next
+        // event was `closed` as lost (or the withdrawal) took the money with
+        // the payment still showing as standing.
         if (currentStatus !== 'disputed') update.statusBeforeDispute = currentStatus ?? null;
         update.status = 'disputed';
         update.notes = `Dispute created: ${reason}`;

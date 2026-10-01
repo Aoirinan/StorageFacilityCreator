@@ -1,14 +1,18 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
+import { UNTENANTED_DISPUTES_FIELD, UNTENANTED_REFUNDS_FIELD } from '@sfc/functions-shared';
 
 /**
  * Online move-in payments and the tenant they paid for.
  *
- * An online move-in's PaymentIntent carries only `type: 'public_move_in'`,
- * `reservationId` and `facilityId` (functions-public-website publicMoveIn.ts):
- * the renter is not a tenant yet when they pay. So a refund or a card
- * dispute on one found no `tenantId`, and the webhook wrote its ledger row
- * with `tenantId: null`: on no tenant's ledger, and nobody told.
+ * An online move-in's PaymentIntent carries only `type: 'public_move_in'` and
+ * `reservationId` (functions-public-website publicMoveIn.ts); ones made
+ * before checkout stopped adding it carry `facilityId` too. The renter is not
+ * a tenant yet when they pay. So a refund or a card dispute on one found no
+ * `tenantId`, and the webhook wrote its ledger row with `tenantId: null`: on
+ * no tenant's ledger, and nobody told. With no `facilityId` either, the
+ * refund and dispute handlers stopped before looking: the facility is found
+ * through the same records ([moveInPaymentFacilityId]).
  *
  * The tenant is found where completing the move-in recorded it, in the same
  * transaction that created them: `publicMoveInPayments/{paymentIntentId}`
@@ -45,7 +49,40 @@ export type MoveInTenantResolution =
   /** The records name another facility: nothing written anywhere. */
   | { tenantId: null; recorded: false };
 
-const RESERVATION_ID = /^[^/]{1,128}$/;
+const DOC_ID = /^[^/]{1,128}$/;
+
+function docIdOf(value: unknown): string | null {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return DOC_ID.test(text) ? text : null;
+}
+
+/**
+ * The facility an online move-in PaymentIntent paid, when its metadata does
+ * not name one: checkout leaves `facilityId` off the PaymentIntent, so the
+ * old charge.refunded handler could not post a move-in's refund to a ledger
+ * the move-in had never posted its payment to. Without this, every refund
+ * and dispute on such a payment was dropped before the tenant lookup below:
+ * a renter who disputed the charge, or was refunded from the Dashboard,
+ * could still complete the move-in, and one who had completed it never had
+ * the refund or dispute posted.
+ *
+ * Read from the move-in's own records, both written by the server: the use
+ * record (`publicMoveInPayments/{paymentIntentId}.facilityId`), else the
+ * reservation the PaymentIntent names (`publicReservations/{reservationId}`).
+ * Null when neither names one. The caller still checks that the event came
+ * from that facility's own connected account (eventAccountMatchesFacility):
+ * anyone can put a reservation id in a PaymentIntent's metadata.
+ */
+export async function moveInPaymentFacilityId(paymentIntent: PaymentIntentLike): Promise<string | null> {
+  const db = admin.firestore();
+  const payment = await db.collection(PUBLIC_MOVE_IN_PAYMENTS_COLLECTION).doc(paymentIntent.id).get();
+  const fromPayment = payment.exists ? docIdOf(payment.get('facilityId')) : null;
+  if (fromPayment) return fromPayment;
+  const reservationId = docIdOf(paymentIntent.metadata?.reservationId);
+  if (!reservationId) return null;
+  const reservation = await db.collection('publicReservations').doc(reservationId).get();
+  return reservation.exists ? docIdOf(reservation.get('facilityId')) : null;
+}
 
 function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
@@ -91,8 +128,7 @@ export async function resolveMoveInTenantOrRecord(params: {
 }): Promise<MoveInTenantResolution> {
   const { facilityId, paymentIntent, money } = params;
   const db = admin.firestore();
-  const reservationIdRaw = String(paymentIntent.metadata?.reservationId || '').trim();
-  const reservationId = RESERVATION_ID.test(reservationIdRaw) ? reservationIdRaw : null;
+  const reservationId = docIdOf(paymentIntent.metadata?.reservationId);
   const paymentRef = db.collection(PUBLIC_MOVE_IN_PAYMENTS_COLLECTION).doc(paymentIntent.id);
   const reservationRef = reservationId ? db.collection('publicReservations').doc(reservationId) : null;
   const facilityRef = db.collection('facilities').doc(facilityId);
@@ -121,7 +157,7 @@ export async function resolveMoveInTenantOrRecord(params: {
       return { tenantId: reservation.tenantId, source: 'reservation' };
     }
 
-    const field = money.kind === 'refund' ? 'untenantedRefunds' : 'untenantedDisputes';
+    const field = money.kind === 'refund' ? UNTENANTED_REFUNDS_FIELD : UNTENANTED_DISPUTES_FIELD;
     const entry: Record<string, unknown> = {
       amountCents: money.amountCents,
       status: money.status,

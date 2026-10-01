@@ -40,12 +40,12 @@ This rollout plan ensures safe, gradual deployment of the enhanced Stripe Connec
 - [ ] Verify the Connect destination (events from connected accounts) subscribes to
   `payment_intent.succeeded`, `payment_intent.payment_failed`, `checkout.session.completed`,
   `charge.refunded`, the five `charge.dispute.*` events above, `setup_intent.succeeded` and
-  `account.updated` (`payment_intent.payment_failed` was missing on 2026-09-24). Add it right after
-  deploying functions integrations, which follows automation, tenant-lifecycle and messaging-twilio: the
-  old handler can set a paid payment back to failed, and the old portal counts a failed record as owed.
-  See docs/payments_architecture.md, "Dispute ledger switch and deploy order".
-- [ ] Leave `appConfig/payments.disputeLedgerEnabled` off until functions automation, tenant-lifecycle,
-  messaging-twilio, integrations, public-website, admin and hosting are all deployed, then turn it on.
+  `account.updated` (`payment_intent.payment_failed` was missing on 2026-09-24). Add it only once functions
+  integrations and tenant-lifecycle are both deployed (step 7 of the order): the old handler can set a paid
+  payment back to failed, and the old portal counts a failed record as owed. See
+  docs/payments_architecture.md, "Dispute ledger switch and deploy order".
+- [ ] Leave `appConfig/payments.disputeLedgerEnabled` off until steps 1 to 7 of that order are done (indexes,
+  every functions codebase, hosting and the Connect event), then turn it on.
 - [ ] A test-mode project only: set `STRIPE_ACCEPT_TEST_MODE_EVENTS=true` for the integrations codebase, or
   every connected-account event there is ignored as test mode. Never on the live project.
 - [ ] Verify products exist: `sfc_base_monthly_75`, `sfc_addon_monthly_75`

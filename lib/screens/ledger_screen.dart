@@ -795,30 +795,35 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
     final paymentMethodId = widget.tenant.stripe.defaultPaymentMethodId;
     final hasCardOnFile = paymentMethodId != null && paymentMethodId.isNotEmpty;
     final messenger = ScaffoldMessenger.of(context);
+    final tenant = widget.tenant;
+    final payments = ref.read(paymentOperationsProvider.notifier);
     final entry = await showDialog<DisputePaymentEntry>(
       context: context,
       builder: (_) => DisputePaymentDialog(
         outstanding: outstanding,
         hasCardOnFile: hasCardOnFile,
         disputeReason: dispute.metadata?['reason'] as String?,
+        // Recorded with the dialog still open, so a failed attempt can be
+        // pressed again under the same request id and is recorded once.
+        onRecordByHand: (entry) => payments.recordManualPayment(
+          facilityId: tenant.facilityId,
+          tenantId: tenant.id,
+          amount: entry.amount,
+          method: entry.method,
+          notes: entry.notes,
+          reference: entry.reference,
+          disputeId: disputeId,
+          disputeRequestId: entry.requestId,
+        ),
       ),
     );
     if (entry == null || !mounted || _recordingDisputePayment) return;
-    final tenant = widget.tenant;
     final amountText = '\$${entry.amount.toStringAsFixed(2)}';
     setState(() => _recordingDisputePayment = true);
     try {
       switch (entry.way) {
         case DisputePaymentWay.byHand:
-          await ref.read(paymentOperationsProvider.notifier).recordManualPayment(
-                facilityId: tenant.facilityId,
-                tenantId: tenant.id,
-                amount: entry.amount,
-                method: entry.method,
-                notes: entry.notes,
-                reference: entry.reference,
-                disputeId: disputeId,
-              );
+          // Already recorded by the dialog (onRecordByHand).
           if (mounted) {
             ref.invalidate(paymentListProvider(tenant.facilityId));
             ref.invalidate(paymentStatsProvider(tenant.facilityId));

@@ -1,6 +1,11 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-import { PUBLIC_MOVE_IN_PAYMENTS_COLLECTION, getStripeClient, timestampToDate } from '@sfc/functions-shared';
+import {
+  PUBLIC_MOVE_IN_PAYMENTS_COLLECTION,
+  getStripeClient,
+  moveInPaymentReturnedBeforeMoveIn,
+  timestampToDate,
+} from '@sfc/functions-shared';
 import { ONLINE_MOVE_IN_REVIEW_TYPE } from './onlineMoveInReview';
 import { resolveMoveInPaymentStripeAccountId } from './moveInPayment';
 import {
@@ -21,6 +26,16 @@ export { PUBLIC_MOVE_IN_PAYMENTS_COLLECTION };
 
 export const PAYMENT_ALREADY_USED_MESSAGE =
   'This payment has already been used to complete a move-in. Contact the facility.';
+
+/**
+ * For a payment refunded in Stripe, or disputed, before the move-in was
+ * completed: the Connect webhook recorded that on its use record
+ * (moveInPaymentReturnedBeforeMoveIn), which stops it moving anyone in. It
+ * did not complete a move-in, so PAYMENT_ALREADY_USED_MESSAGE was untrue.
+ */
+export const PAYMENT_RETURNED_BEFORE_MOVE_IN_MESSAGE =
+  'Part or all of this payment was refunded, or the charge was disputed with the card issuer, before the ' +
+  'move-in was finished, so it cannot be used to move in. Contact the facility.';
 
 /** For a paid Checkout Session whose payment completion refused and refunded. */
 export const PAYMENT_REFUNDED_MESSAGE =
@@ -525,9 +540,13 @@ export async function refusePaidMoveIn(params: PaidMoveInContext & {
     const holdSnap = holdRef ? await tx.get(holdRef) : null;
     if (useSnap.exists) {
       const used = (useSnap.data() || {}) as Record<string, any>;
-      // Refunded already: finish that one. Used: it completed a move-in, and
-      // is not refunded.
+      // Refunded already: finish that one. Refunded or disputed in Stripe
+      // before any move-in: left to the owner, whom the webhook told. Used:
+      // it completed a move-in, and is not refunded.
       if (used.refund) return { kind: 'resume' as const, record: used };
+      if (moveInPaymentReturnedBeforeMoveIn(used)) {
+        throw new functions.https.HttpsError('failed-precondition', PAYMENT_RETURNED_BEFORE_MOVE_IN_MESSAGE);
+      }
       throw new functions.https.HttpsError('failed-precondition', PAYMENT_ALREADY_USED_MESSAGE);
     }
     const reservation = (reservationSnap.data() || {}) as Record<string, any>;

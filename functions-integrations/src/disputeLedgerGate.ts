@@ -22,8 +22,9 @@ import { STRIPE_WEBHOOK_REFUSALS_COLLECTION } from '@sfc/functions-shared';
  * webhook writes none of that, whatever order the codebases deploy in.
  *
  * Turn it on only after every one of those is deployed (see
- * docs/payments_architecture.md, "Deploy order"): in the Firebase console,
- * `appConfig/payments`, set `disputeLedgerEnabled` (boolean) to true.
+ * docs/payments_architecture.md, "Dispute ledger switch and deploy order"):
+ * in the Firebase console, `appConfig/payments`, set `disputeLedgerEnabled`
+ * (boolean) to true.
  * Disputes held while it was off are listed in `stripeWebhookRefusals` with
  * reason `dispute_ledger_off`. Each posts on its next Stripe event (a dispute
  * always sends `charge.dispute.closed` when it ends); to post one sooner,

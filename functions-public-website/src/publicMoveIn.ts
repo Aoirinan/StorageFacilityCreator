@@ -13,6 +13,7 @@ import {
   isInternalUseUnit,
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
+  moveInPaymentReturnedBeforeMoveIn,
   readActiveTenantUnitClaims,
   sendFacilityEmailWithCompliance,
   unitNotOfferedOnlineReason,
@@ -69,6 +70,7 @@ import type { MoveInReviewReason, MoveInUnitChanges } from './onlineMoveInReview
 import {
   PAYMENT_ALREADY_USED_MESSAGE,
   PAYMENT_REFUNDED_MESSAGE,
+  PAYMENT_RETURNED_BEFORE_MOVE_IN_MESSAGE,
   PUBLIC_MOVE_IN_PAYMENTS_COLLECTION,
   isRefundedMoveInPayment,
   paymentOwnership,
@@ -2020,6 +2022,16 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     if (paymentUseSnap?.exists) {
       const used = (paymentUseSnap.data() || {}) as Record<string, any>;
       if (used.refund) return { kind: 'refund-decided', record: used };
+      // Refunded in Stripe, or disputed, before this move-in: it moved
+      // nobody in, and the webhook told the owner.
+      if (moveInPaymentReturnedBeforeMoveIn(used)) {
+        functions.logger.warn('Public move-in: payment refunded or disputed before the move-in', {
+          facilityId,
+          reservationId,
+          paymentIntentId: verifiedPaymentIntentId,
+        });
+        throw new functions.https.HttpsError('failed-precondition', PAYMENT_RETURNED_BEFORE_MOVE_IN_MESSAGE);
+      }
       functions.logger.warn('Public move-in: payment already used', {
         facilityId,
         reservationId,

@@ -78,6 +78,7 @@ typedef _ManualCall = ({double amount, PaymentMethod method, String? reference, 
 /// The ledger's by-hand path ends here: PaymentOperationsNotifier.recordManualPayment.
 class _RecordingOperations extends PaymentOperationsNotifier {
   final calls = <_ManualCall>[];
+  final requestIds = <String?>[];
 
   @override
   Future<void> recordManualPayment({
@@ -88,8 +89,10 @@ class _RecordingOperations extends PaymentOperationsNotifier {
     String? notes,
     String? reference,
     String? disputeId,
+    String? disputeRequestId,
   }) async {
     calls.add((amount: amount, method: method, reference: reference, disputeId: disputeId));
+    requestIds.add(disputeRequestId);
   }
 }
 
@@ -243,6 +246,64 @@ void main() {
       expect(splitPostedLedgerEntries(entries).disputed, 0);
     });
 
+    testWidgets('a by-hand dispute payment pressed again after a lost answer is recorded once', (tester) async {
+      final store = _useStore();
+      final sent = <Map<String, dynamic>>[];
+      PaymentService.disputeHandPaymentCallerForTesting = (payload) async {
+        sent.add(payload);
+        // recordDisputePaymentByHand: one payment per request id.
+        final path = 'facilities/f1/ledgers/disputehand_${payload['requestId']}';
+        final already = store.data(path) != null;
+        if (!already) {
+          store.put(path, {
+            'tenantId': 't1',
+            'facilityId': 'f1',
+            'type': 'payment',
+            'amount': -(payload['amount'] as num),
+            'status': 'posted',
+            'metadata': {'disputeId': payload['disputeId']},
+          });
+        }
+        // The first answer never arrives (a timeout after the server wrote it).
+        if (sent.length == 1) throw Exception('deadline-exceeded');
+        return {'success': true, 'outcome': already ? 'already_recorded' : 'recorded', 'paymentId': 'disputehand_x'};
+      };
+      addTearDown(() => PaymentService.disputeHandPaymentCallerForTesting = null);
+      tester.view.physicalSize = const Size(1200, 2400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      const params = LedgerParams(tenantId: 't1', facilityId: 'f1');
+      final source = StreamController<List<LedgerEntry>>.broadcast();
+      addTearDown(source.close);
+      await tester.pumpWidget(ProviderScope(
+        overrides: [ledgerStreamProvider(params).overrideWith((ref) => source.stream)],
+        child: MaterialApp(home: Scaffold(body: LedgerScreen(tenant: _tenant))),
+      ));
+      source.add(_lostDispute());
+      await tester.pump();
+      await tester.pump();
+
+      await tester.tap(find.text(_action));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Record payment'));
+      await tester.pumpAndSettle();
+
+      // The dialog stays open and says it failed.
+      expect(find.byType(DisputePaymentDialog), findsOneWidget);
+      expect(find.byKey(const ValueKey('dispute-payment-save-error')), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Record payment'));
+      await tester.pumpAndSettle();
+
+      // Before: the dialog closed on the first press and the second press,
+      // from a new dialog, made a new id, so the server recorded it twice.
+      expect(sent, hasLength(2));
+      expect(sent[1]['requestId'], sent[0]['requestId']);
+      expect(_ledgerRows(store), hasLength(1));
+      expect(find.byType(DisputePaymentDialog), findsNothing);
+      expect(find.text('\$100.00 recorded against the card dispute'), findsOneWidget);
+    });
+
     test('rent recorded by hand still moves paid-through and carries no dispute id', () async {
       final store = _useStore();
 
@@ -281,6 +342,9 @@ void main() {
     expect(operations.calls, [
       (amount: 100.0, method: PaymentMethod.cash, reference: '0042', disputeId: 'du_1'),
     ]);
+    // The dialog's own request id, so a retry from it is recorded once.
+    expect(operations.requestIds.single, matches(RegExp(r'^[A-Za-z0-9]{24}$')));
+    expect(find.byType(DisputePaymentDialog), findsNothing);
 
     source.add([..._lostDispute(), _handPayment(100)]);
     await tester.pump();
@@ -435,6 +499,86 @@ void main() {
       expect(results.single?.way, DisputePaymentWay.byHand);
       expect(results.single?.tenantConsent, isFalse);
     });
+
+    testWidgets('each opening of the dialog has its own request id', (tester) async {
+      final results = await open(tester);
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Record payment'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Record payment'));
+      await tester.pumpAndSettle();
+
+      expect(results, hasLength(2));
+      expect(results[0]!.requestId, matches(RegExp(r'^[A-Za-z0-9]{24}$')));
+      // A second payment for the same dispute is a new payment.
+      expect(results[1]!.requestId, isNot(results[0]!.requestId));
+    });
+
+    testWidgets('a refused by-hand payment keeps the dialog open, and a second press sends the same request id',
+        (tester) async {
+      final attempts = <DisputePaymentEntry>[];
+      final results = <DisputePaymentEntry?>[];
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () async => results.add(await showDialog<DisputePaymentEntry>(
+                context: context,
+                builder: (_) => DisputePaymentDialog(
+                  outstanding: 100,
+                  hasCardOnFile: false,
+                  onRecordByHand: (entry) async {
+                    attempts.add(entry);
+                    if (attempts.length == 1) throw Exception('That card dispute has \$40.00 left to collect.');
+                  },
+                ),
+              )),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Record payment'));
+      await tester.pumpAndSettle();
+      expect(results, isEmpty);
+      expect(find.byKey(const ValueKey('dispute-payment-save-error')), findsOneWidget);
+
+      await tester.enterText(find.byKey(const ValueKey('dispute-payment-amount')), '40');
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Record payment'));
+      await tester.pumpAndSettle();
+
+      expect(attempts.map((a) => a.amount), [100, 40]);
+      expect(attempts[1].requestId, attempts[0].requestId);
+      expect(results.single?.amount, 40);
+      expect(find.byType(DisputePaymentDialog), findsNothing);
+    });
+  });
+
+  test('the request id given for a dispute payment by hand is the one sent', () async {
+    _useStore();
+    final sent = <Map<String, dynamic>>[];
+    PaymentService.disputeHandPaymentCallerForTesting = (payload) async {
+      sent.add(payload);
+      return {'success': true, 'outcome': 'recorded', 'paymentId': 'disputehand_x'};
+    };
+    addTearDown(() => PaymentService.disputeHandPaymentCallerForTesting = null);
+
+    for (var i = 0; i < 2; i++) {
+      await PaymentService.recordManualPayment(
+        facilityId: 'f1',
+        tenantId: 't1',
+        amount: 60,
+        method: PaymentMethod.cash,
+        disputeId: 'du_1',
+        disputeRequestId: 'reqAAAAAAAAAAAAAAAAAAAAA',
+      );
+    }
+
+    expect(sent.map((p) => p['requestId']), ['reqAAAAAAAAAAAAAAAAAAAAA', 'reqAAAAAAAAAAAAAAAAAAAAA']);
   });
 
   test('a dispute payment by hand goes to the server with a request id, and the app writes nothing', () async {
